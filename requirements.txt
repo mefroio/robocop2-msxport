@@ -1,0 +1,3 @@
+# Optional: tools/m68kdis.py (Capstone) and tools/amigaemu.py (Unicorn); everything else uses the stdlib.
+capstone>=5.0
+unicorn>=2.1

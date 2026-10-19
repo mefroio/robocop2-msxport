@@ -1,0 +1,8 @@
+build/
+amiga/*.adf
+*.adf
+*.rom
+*.dsk
+__pycache__/
+*.pyc
+.DS_Store

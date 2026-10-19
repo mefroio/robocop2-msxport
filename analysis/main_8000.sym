@@ -1,0 +1,75 @@
+# Symbols of the main code (loaded at $8000). Format: ADDRESS NAME [comment]
+# Extra entries and data ranges for the disassembler:
++entry f6b8
++entry fd76
++entry f6a0
++entry ac9a
++entry fd30
++entry f9dc
++entry bdec
++entry fda2
++entry f788
++entry fe14
++entry 1015e
++entry 1015c
++entry 10266
++entry 101dc
++entry 101cc
+8000  start            BRA to the initialisation; followed by 10 public BRA.W entries
+8050  level_number     word: current level (incremented when completed)
+802c  vbl_counter      byte: incremented by the VBL; the main loop waits for >= 2 (25 Hz)
+80c2  main_loop        per-frame loop (2 VBLs)
+1015e irq_l6_exter     level 6 handler (CIA-B)
+1015c irq_l4_audio     level 4 handler (audio)
+10266 irq_l3_vbl       level 3 handler (VBL/copper/blitter)
+101dc irq_l2_ports     level 2 handler (CIA-A: keyboard)
+101cc irq_l1           level 1 handler
+# --- found via REA/Ghidra (session 2026-10-19) ---
++data 8664 86fa        level header table (3 x 40 bytes)
++data beb0 c130        object type descriptors (16 bytes)
++data 9d0c 9ec4        per-level object type tables
++data a562 ab00        per-level object lists
+871a  level_init           initialises the current level (load, camera, palette, objects)
+8664  level_headers        3 x 40 bytes: pointers patched into the code, initial camera, palette
+86fa  level_load_table     BRA.W per level: [level] restarts, [level+4] loads a new level
+82ec  load_level0          briefing, SPERMA (if needed) and DATAL1
+8582  load_level1          statistics, bonus stages ($8382 D0=2, $8420 D0=1), PIC4 ($11e06 D0=3), MADEX and DATAL2
+8524  load_level2          statistics, bonus stages ($8382 D0=4, $8420 D0=5), PIC7 ($11e06 D0=6) and DATAL3
+8352  restart_level0
+8614  load_level_music     loads MU1 at $18000 if needed and starts the player
+85d8  show_level_stats
+9c06  activate_objects     activates objects of the level list inside the camera window
+9d96  objtype_act_offsets  word per type: activator offset from $9ec4
+9ec4  objtype_act_base
+a562  objlist_level0       12-byte entries: type, ?, ?, ?, x, y (end: negative word)
+a828  objlist_level1
+aa3a  objlist_level2
+bcca  draw_background      redraws 19x12 16x16 map tiles ($38000) into the back buffer with the blitter
+c3e4  update_objects       5 slots at $be4; dispatches through the type descriptor ($beb0 + 16*type)
+beb0  objtype_descriptors  [score.w][handler.w][death.w][energy.w][0][0][width.w][height.w]
+acec  update_player        joystick ($802e), weapon modes, effects ($15f4) and drawing
+ab08  draw_bob             BOB mask+4 planes, clipped to 288x177, cookie-cut
+fe96  clear_game_vars      clears $b00-$16eb, enables DMA ($87e0), copper $10332
+f9dc  setup_ciab_timer
+11a20 game_boot            opening sequence: Data East, Ocean/Special FX, title
+1049e copper_game          in-game copper list (32 colours, modulos $72)
+12352 copper_picture       copper list of the static screens (BPLCON0 at $123e0)
+fff6  palette_level0       31 colours (COLOR01..31)
+10036 palette_level12
+b04   camera_x
+b06   camera_y
+b16   back_buffer          drawing buffer (swapped with EORI.L #$18e00)
+b1e   level_data_base      $28000 (DATAL): tile graphics = base + (map_word & ~$7f)
+b26   vscroll_line_offset  (camera_y & 15) * 152
+be4   object_slots         5 slots; structure-of-arrays fields (x -$80, y -$20, type +$20, flags +$21)
+8b32  update_special_objects  walks the per-level list ($8fc0/$8fe0/$9008) and dispatches via $8b92
+8b9e  special_vehicle_l0      level 1 vehicle (x $440-$4df); BOBs $3e180 (48x24), $3e450/$3e6d0 (16x16)
++data b4e2 b58a        player animation table (17 states x 8 bytes)
+b94a  draw_player          composes RoboCop at $7e3a0 (4 planes x $248) from PERMA -> hardware sprites
+b4e2  player_anim_table    [steps-1][list offset][height][0]; frame = 16 bytes (PERMA offset, BLTSIZE, modulo, x@12, y@13)
+9626  spawnlist_level0     enemy spawning: 14 bytes (x.w @0, type.b @4, flags.b @7, reload.w @8, counter.w @10)
+97b0  spawnlist_level1
+99e2  spawnlist_level2
+8de6  special_lift         special object type 0 (lifts/platforms), every level
+8f02  special_l1           special object type 4, level 2 only
+11e06 show_picture         shows PIC('1'+D0): 0/3/6 before levels 1/2/3, 8 = game over (PIC9)

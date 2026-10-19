@@ -1,0 +1,65 @@
+PYTHON ?= python3
+VENV ?= $(HOME)/.venvs/msxports
+VPYTHON ?= $(VENV)/bin/python
+BUILD ?= build
+DISK1 ?= amiga/Robocop 2 (1991)(Ocean)[cr Melnok](Disk 1 of 2).adf
+DISK2 ?= amiga/Robocop 2 (1991)(Ocean)[cr Melnok](Disk 2 of 2).adf
+X := $(BUILD)/extracted
+
+.PHONY: setup list extract pics ram seeds rea-asm sprites msx mock rom disasm test clean
+
+setup:
+	$(PYTHON) -m venv "$(VENV)"
+	"$(VENV)/bin/pip" install -r requirements.txt
+
+list:
+	$(PYTHON) -I tools/rc2files.py list "$(DISK1)" "$(DISK2)"
+
+extract:
+	$(PYTHON) -I tools/rc2files.py extract "$(DISK1)" "$(DISK2)" "$(X)"
+
+pics: extract
+	$(PYTHON) -I tools/planar.py $(X)/files/DATAE_00.bin $(BUILD)/png/DATAE.png --width 320 --height 200 --planes 4 --offset 32 --pal-offset 0
+	$(PYTHON) -I tools/planar.py $(X)/files/OAS_02.bin $(BUILD)/png/OAS.png --width 320 --height 200 --planes 4 --offset 32 --pal-offset 0
+	$(PYTHON) -I tools/planar.py $(X)/files/TPIC_03.bin $(BUILD)/png/TPIC.png --width 320 --height 200 --planes 6 --offset 0x80 --pal-offset 0 --ham
+	$(PYTHON) -I tools/planar.py $(X)/files/PICF_23.bin $(BUILD)/png/PICF.png --width 320 --height 256 --planes 6 --offset 0x80 --pal-offset 0 --ham
+	for p in PIC1_08 PIC2_14 PIC3_12 PIC4_16 PIC5_19 PIC6_20 PIC7_21 PIC9_11; do \
+		$(PYTHON) -I tools/planar.py $(X)/files/$$p.bin $(BUILD)/png/$$p.png --width 320 --height 176 --planes 6 --offset 0x80 --pal-offset 0 --ham; \
+	done
+
+ram: extract
+	$(PYTHON) -I tools/ramimage.py $(X) $(BUILD)/ram/level1 RB1 MU1 DATAL1 SPERMA PERMA
+	$(PYTHON) -I tools/ramimage.py $(X) $(BUILD)/ram/level2 RB1 MU1 DATAL2 MADEX SPERMA PERMA
+	$(PYTHON) -I tools/ramimage.py $(X) $(BUILD)/ram/level3 RB1 MU1 DATAL3 PERMA
+
+seeds: extract
+	$(PYTHON) -I tools/ghidra_seeds.py $(X)/boot/main_8000.bin analysis/main_8000.sym analysis/ghidra_seeds.tsv
+
+rea-asm: ram
+	tools/rea_dump_asm.sh "$(CURDIR)/$(BUILD)/ram/level1_full.bin" 3
+
+sprites: rea-asm
+	$(PYTHON) -I tools/bobcatalog.py catalog
+	$(PYTHON) -I tools/bobcatalog.py sheets
+	$(PYTHON) -I tools/player.py $(BUILD)/sprites/robocop.png
+
+msx: extract
+	$(PYTHON) -I tools/msxconv.py level $(X)/files/DATAL1_10.bin --pal-file $(X)/boot/main_8000.bin \
+		--pal-addr 0xfff6 --rows 51 -o $(BUILD)/msx/level1
+
+rom: msx
+	$(PYTHON) -I tools/mkrom.py $(BUILD)/msx/level1 $(BUILD)/msx/rc2.rom
+
+mock: extract
+	$(VPYTHON) -I tools/msxmock.py
+	$(VPYTHON) -I tools/msxmock_or3.py
+
+disasm: extract
+	$(VPYTHON) -I tools/m68kdis.py $(X)/boot/main_8000.bin --base 0x8000 --sym analysis/main_8000.sym \
+		--a6 0xdff002 --scan-gaps -o $(BUILD)/dis/main_8000.s
+
+test:
+	$(PYTHON) -I -m unittest discover -s tests -v
+
+clean:
+	rm -rf "$(BUILD)"
