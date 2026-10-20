@@ -1,55 +1,99 @@
-; VDP routines (V9938/V9958). They run with interrupts disabled.
+; VDP routines (V9938/V9958).
+; Interrupts may be enabled: every port 99h sequence (register write, VRAM address,
+; status read) runs with interrupts disabled and leaves R#15 = 0 (see isr.asm).
 
 ; Writes A to register B.
-wrreg:  out (VDP_CTRL),a
+wrreg:  di
+        out (VDP_CTRL),a
         ld a,b
         or 0x80
         out (VDP_CTRL),a
+        ei
         ret
 
-; Waits for the end of the VDP command (S#2 bit 0 = CE).
-vdp_wait:
+; Z if the command engine is idle (S#2 bit 0 = CE). Does not block; changes only A.
+vdp_busy:
+        di
         ld a,2
         out (VDP_CTRL),a
         ld a,0x8F
         out (VDP_CTRL),a
-vw_lp:  in a,(VDP_CTRL)
-        rrca
-        jr c,vw_lp
+        in a,(VDP_CTRL)
+        push af
         xor a
         out (VDP_CTRL),a
         ld a,0x8F
         out (VDP_CTRL),a
+        ei
+        pop af
+        and 1
         ret
 
-; Sends 15 bytes at HL to R#32..R#46 (starts the command).
+; Waits for the end of the running command.
+vdp_wait:
+        call vdp_busy
+        jr nz,vdp_wait
+        ret
+
+; Sends the 15 bytes at HL to R#32..R#46 (starts the command).
 vdp_cmd:
+        di
         ld a,32
         out (VDP_CTRL),a
         ld a,0x80+17
         out (VDP_CTRL),a
+        ei
         ld bc,15*256 + VDP_IND
         otir
         ret
 
-; Waits for the start of VBLANK (S#0 bit 7; reading clears the flag).
-wait_vbl:
-        in a,(VDP_CTRL)
-        and 0x80
-        jr z,wait_vbl
+; Sets the VRAM write address E:HL (E = bit 16) for port 98h.
+vram_write:
+        di
+        ld a,h
+        rlca
+        rlca
+        and 3
+        sla e
+        sla e
+        or e
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a            ; R#14 = A16..A14
+        ld a,l
+        out (VDP_CTRL),a
+        ld a,h
+        and 0x3F
+        or 0x40
+        out (VDP_CTRL),a
+        ei
         ret
 
-; NZ if a VBLANK is already pending.
-vbl_pending:
-        in a,(VDP_CTRL)
-        and 0x80
+; Copies B*256 bytes from HL to port 98h (B = 0: 64 KiB is not supported).
+vram_blocks:
+        ld c,VDP_DATA
+vb_lp:  push bc
+        ld b,0
+        otir
+        pop bc
+        djnz vb_lp
         ret
 
-; SCREEN 5 + settings, VDP ID, palette and tiles (pages 2-3) from the ROM.
+; SCREEN 5, 212 lines, VDP ID, IM 2, palette, tiles (pages 2-3), HUD and sprite tables.
+; Returns with the display off and no VDP interrupt enabled.
 vdp_setup:
         ld a,5
         call CHGMOD
         di
+        ld a,0x02                   ; display off, no VBLANK interrupt, 16x16 sprites
+        out (VDP_CTRL),a
+        ld a,0x81
+        out (VDP_CTRL),a
+        ld a,R0_IE1_OFF
+        out (VDP_CTRL),a
+        ld a,0x80
+        out (VDP_CTRL),a
+        call isr_init               ; no VDP interrupt source is enabled yet
         ld a,1
         ld b,15
         call wrreg
@@ -63,16 +107,13 @@ vdp_setup:
         xor a
         ld b,7
         call wrreg                  ; border colour = 0
-        ld a,0x0A
+        ld a,R8_SPR_OFF
         ld b,8
-        call wrreg                  ; sprites off (SPD), VR=1
+        call wrreg
         ld a,(RG9SAV)
-        and 0x7F
+        or 0x80
         ld b,9
-        call wrreg                  ; 192 lines
-        xor a
-        ld b,1
-        call wrreg                  ; display off during the upload
+        call wrreg                  ; 212 lines (keeps the 50/60 Hz setting)
         xor a
         ld b,16
         call wrreg
@@ -80,30 +121,56 @@ vdp_setup:
         ld bc,32*256 + VDP_PAL
         otir
         ; tiles: 64 KiB from the ROM -> VRAM 10000h-1FFFFh
-        ld a,4
-        ld b,14
-        call wrreg
-        xor a
-        out (VDP_CTRL),a
-        ld a,0x40
-        out (VDP_CTRL),a
+        ld e,1
+        ld hl,0
+        call vram_write
         ld d,BANK_TILES
         ld e,8
 ut_bank:
         ld a,d
         call bank_8000
         ld hl,0x8000
-        ld c,VDP_DATA
+        ld b,32
         push de
-        ld e,32
-ut_blk: ld b,0
-        otir
-        dec e
-        jr nz,ut_blk
+        call vram_blocks
         pop de
         inc d
         dec e
         jr nz,ut_bank
+        ; HUD: page 3 from line HUD_VRAM_LINE (after the tiles, which cover pages 2-3)
+        ld e,1
+        ld hl,VRAM_HUD & 0xFFFF
+        call vram_write
+        ld a,HUD_IMG_BANK
+        call bank_8000
+        ld hl,0x8000
+        ld b,HUD_LINES/2            ; 128 bytes per line: 256 per pair of lines
+        call vram_blocks
+        if HUD_LINES & 1
+        ld bc,128*256 + VDP_DATA
+        otir                        ; the odd last line
+        endif
+        ; sprite tables: both SATs end at sprite 0 (Y = 216)
+        ld e,1
+        ld hl,(SPR_COL_A + 0x200) & 0xFFFF
+        call vram_write
+        ld a,216
+        out (VDP_DATA),a
+        ld e,1
+        ld hl,(SPR_COL_B + 0x200) & 0xFFFF
+        call vram_write
+        ld a,216
+        out (VDP_DATA),a
+        ld a,R5_SET_A
+        ld (spr_set),a
+        ld b,5
+        call wrreg
+        ld a,R11_SPR
+        ld b,11
+        call wrreg
+        ld a,R6_PAT
+        ld b,6
+        call wrreg
         ; fixed parameters of the tile HMMM
         ld hl,16
         ld (cmdbuf+8),hl
@@ -113,6 +180,4 @@ ut_blk: ld b,0
         ld (cmdbuf+13),a
         ld a,0xD0
         ld (cmdbuf+14),a
-        ld a,0x40
-        ld b,1
-        jp wrreg                    ; display on, no VDP interrupt
+        ret

@@ -41,18 +41,31 @@ rea-asm: ram
 sprites: rea-asm
 	$(PYTHON) -I tools/bobcatalog.py catalog
 	$(PYTHON) -I tools/bobcatalog.py sheets
-	$(PYTHON) -I tools/player.py $(BUILD)/sprites/robocop.png
+	$(PYTHON) -I tools/player.py $(BUILD)/sprites
 
-msx: extract
+$(BUILD)/ram/level1_full.bin:
+	$(MAKE) ram
+
+$(BUILD)/sprites/catalog.json:
+	$(MAKE) sprites
+
+msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json
+	$(VPYTHON) -I tools/msxsprites.py $(X)/boot/main_8000.bin $(X)/files/PERMA_05.bin $(X)/files/DATAL1_10.bin \
+		--rows 51 --bobs $(BUILD)/sprites/catalog.json --ram $(BUILD)/ram/level1_full.bin --level level1 \
+		$(BUILD)/msx/robocop
 	$(PYTHON) -I tools/msxconv.py level $(X)/files/DATAL1_10.bin --pal-file $(X)/boot/main_8000.bin \
-		--pal-addr 0xfff6 --rows 51 -o $(BUILD)/msx/level1
+		--pal-addr 0xfff6 --rows 51 --joint $(BUILD)/msx/robocop -o $(BUILD)/msx/level1
+	$(PYTHON) -I tools/msxhud.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud --black 4
+	$(PYTHON) -I tools/msxhudrt.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud_rt
+	$(PYTHON) -I tools/player.py --inc $(BUILD)/msx/player.inc
 
 rom: msx
-	$(PYTHON) -I tools/mkrom.py $(BUILD)/msx/level1 $(BUILD)/msx/rc2.rom
+	$(PYTHON) -I tools/mkrom.py $(BUILD)/msx/level1 $(BUILD)/msx/rc2.rom $(ROMOPTS)
 
 mock: extract
 	$(VPYTHON) -I tools/msxmock.py
 	$(VPYTHON) -I tools/msxmock_or3.py
+	$(VPYTHON) -I tools/msxmock_budget.py
 
 disasm: extract
 	$(VPYTHON) -I tools/m68kdis.py $(X)/boot/main_8000.bin --base 0x8000 --sym analysis/main_8000.sym \

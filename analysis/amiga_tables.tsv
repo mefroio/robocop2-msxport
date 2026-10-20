@@ -1,0 +1,64 @@
+# Tables of the original that the MSX port's game logic reads, copied into its logic banks at
+# build time by tools/amitab.py (no data of the game in the repository).
+# LABEL         ADDRESS COUNT KIND          BANK    comment
+obj_desc        bea6    424   w             c1      object types 0-52: 16-byte records [0, 0, width, height, score (BCD), handler offset, death offset, hit point index]
+diff_tab        c716    32    b             c1      hit points per index: 4 difficulties x 8 ($8060 points at one; load_level0 $8314 takes the first)
+mk_tab          c59c    106   w             c1      map-marker spawn tables of the 3 levels: [band mask, type, y offset], each ends with a negative word
+l1_hdr          8664    20    w             l1      level 1 header (level_init $871A): lists, start, relocation, marker table, lowest camera, timer, spawn delay, marker mask, palette
+spawn_l1        9626    394   x             l1      level 1 spawn list (28 x 14 bytes + the end word): x, y, type.b, ?, ?, flags.b (bit 6 once, bit 7 at the screen edge), reload, counter, spawned.b (bit 7), ?
+dbg_tpl         f841    20    b             c1      the counts' message "NUKE      HOSTe    " (frame_keys writes the numbers at +5 and +15)
+num3_tab        f855    33    b             c1      3-character numbers 0-10 for that message ($F750)
+t45_gfx         ede2    16    w             l1      type 45 (hostage): offset of the waving top's frame from $498DC per game frame & 1Eh
+t45_dy          ee02    16    w             l1      its y offset per game frame & 1Eh
+obj_types       9d0c    204   w             c2      map object types ($00-$84, multiples of 4): +0 look table (long), +88h flags for the collision slot, +8Ah activator offset from $9EC4, +110h width - 1, +112h height - 1
+obj_looks       a1aa    476   w             c2      map object look tables (longs: look block or -1 destroyed) and look blocks (map words) of all levels
+expl_snd        f37c    9     b             fixed   explosion types ($F366): sound request ($B2D)
+expl_t1         f3bc    9     b             fixed   explosion types: byte for $D44 + slot
+expl_t2         f3c5    9     b             fixed   explosion types: byte for $D4C + slot
+conv_words      a0b4    16    w             c2      conveyor activator ($A038): 4 phases x [left end, middle (odd), right end, middle (even)] map words
+objl_l1         a562    710   x             l1      level 1 object list (59 x 12 bytes + the end word): type, look, hits (high byte bit 7: animated), value, x, y
+aim_dir         d0d6    9     b             c1      $D0A6: direction (word index: 0 up, 2 up right ... 0Eh up left) per (3 * row + column) of RoboCop around the object (4: same cell)
+death_snd       c336    8     b             c1      death $C31E: sound ($B2D) per game frame & 7
+eb_snd          f5d2    30    b             c1      enemy bullets ($F5BC): sound ($B2F) per bullet type
+eb_vx           f658    18    w             c1      enemy bullets: x speed per direction (word index)
+eb_vy           f67c    18    w             c1      enemy bullets: y speed per direction
+t4_gx           d046    8     w             l1      type 4: gun's x offset per direction (for its muzzle flash and bullet)
+t4_gy           d056    8     w             l1      type 4: gun's y offset per direction
+t4_tgfx         d066    8     w             l1      type 4: torso graphic offset from $57192 per direction
+t4_tx           d076    8     w             l1      type 4: torso x offset per direction
+t4_ty           d086    8     w             l1      type 4: torso y offset per direction
+t4_tsize        d096    8     w             l1      type 4: torso BLTSIZE per direction
+wk1_dy          c9a4    8     w             c1      walker $C948: y bob per step (& 0Eh)
+wk1_gfx         c9b4    16    w             c1      walker $C948: legs graphic offset from $4BD06 per step (+10h facing right)
+wk1_size        c9d4    16    w             c1      walker $C948: legs BLTSIZE
+wk1_dx          c9f4    16    w             c1      walker $C948: legs x offset
+wk2_gfx         cbfa    20    w             c1      walker $CC4A: legs graphic offset from $4F1D6 per step (+14h facing right; 10h/12h kneeling)
+wk2_size        cc22    20    w             c1      walker $CC4A: legs BLTSIZE
+wk2_dx          ccd2    20    w             c1      walker $CC4A: legs x offset
+gm_dir          cb12    8     w             c1      gunman $CA7C: drawing index per aim direction
+gm_bdir         cb22    8     w             c1      gunman: bullet direction per aim direction
+gm_bx           cb32    6     w             c1      gunman: bullet x offset per drawing index
+gm_by           cb3e    6     w             c1      gunman: bullet y offset
+gm_gfx          cb4a    6     w             c1      gunman: torso graphic offset from $4E466
+gm_size         cb56    6     w             c1      gunman: torso BLTSIZE
+gm_dx           cb62    6     w             c1      gunman: torso x offset
+t30_dy          ca2e    8     w             l1      type 30: y bob per step
+t29_gfx         d856    8     w             l1      type 29 walking: torso graphic offset from $40BB0 per step (+2210h facing right)
+t29_dy          d866    8     w             l1      type 29 walking: torso y offset
+t29_sdx         d94a    14    w             l1      type 29 shooting: x offset per phase (+0Eh facing right)
+t29_sgfx        d966    14    w             l1      type 29 shooting: graphic offset from $41150
+t29_ssize       d984    14    w             l1      type 29 shooting: BLTSIZE
+ex_size         f140    40    w             c1      explosions ($F080): BLTSIZE per frame
+ex_gfx          f1c6    40    l             c1      explosions: graphics per frame
+exc_dx          f2c2    9     w             c1      explosion with D5 high byte 4 ($F266): first part's x offset per frame - 1
+exc_dy          f2d4    9     w             c1      ... y offset
+exc_gfx         f2e6    9     w             c1      ... graphic offset from $45250
+exc_size        f2f8    9     w             c1      ... BLTSIZE
+exc_dx2         f30a    9     w             c1      ... second part's x offset
+exc_dy2         f31c    9     w             c1      ... y offset
+exc_gfx2        f32e    9     w             c1      ... graphic offset from $45250
+exc_size2       f340    9     w             c1      ... BLTSIZE (0: none)
+ex_lim          f07a    2     w             c1      explosions: limit of the $D76 cycle (38h), threshold of the chain explosions (30h)
+eb_gfx          f4a4    23    l             c1      enemy bullets ($F3CE): graphics per type
+eb_par          f500    46    w             c1      enemy bullets: per type [BLTSIZE, explosion type on a wall (negative: goes through)]
+eb_anim         f55c    46    w             c1      enemy bullets: per type [animation step, animation limit] (odd frames)

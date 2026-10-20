@@ -58,12 +58,32 @@ source of truth, because the Ghidra session inside REA is ephemeral.
 ## MSX build
 
 ```sh
-make msx      # level 1 conversion: palette, tiles, map (build/msx/level1/)
+make msx      # level 1 conversion: joint palette, RoboCop and BOB sprites, tiles, map and attributes, HUD and its run-time data, RoboCop's logic tables (build/msx/)
 make rom      # MegaROM (KonamiSCC/MegaRAM mapper) in build/msx/rc2.rom
+make rom ROMOPTS="DEMO_ACTORS=2"    # build options (tools/mkrom.py OPTIONS: DEMO_ACTORS, FORCE_V9938)
+make rom ROMOPTS="JOY=70:30:r,105:10:d"   # test ROM playing a joystick script instead of the controls
 ```
 
 The engine is Z80 assembly in `msx/` (z80asm 1.8). Run it in openMSX with
-`carta insert build/msx/rc2.rom -romtype KonamiSCC`.
+`carta insert build/msx/rc2.rom -romtype KonamiSCC`. RoboCop is played with joystick port 1
+or the keyboard (cursor keys, SPACE/RETURN fire), at the NTSC original's 30 game frames per
+second on 50 and 60 Hz machines (`msx/player.asm`).
+
+The game logic is checked against the original: `tools/amigaemu.py game --ram
+build/ram/level1_full.bin --gframes N --joy F:C:KEYS ... --trace A.jsonl` runs the Amiga code
+with a joystick script and traces its variables per game frame; a ROM built with the same
+script (`JOY=...`) traced with `rc2_trace FILE N ADDR TARGET` (`tools/openmsx_rc2.tcl`, the
+`tick_start` and `game_tick` addresses from `build/msx/rc2.labels`) is compared with
+`tools/tracecmp.py A.jsonl FILE`.
+
+Checking a run in headless openMSX (MSX-AI `msx_local_cmd`): `source tools/openmsx_rc2.tcl`,
+then `rc2_snaps DIR N SECS` (or `rc2_snaps_when` for a condition) saves VRAM, RAM and VDP
+registers; `tools/checkrun.py DIR build/msx/level1 build/msx/hud` rebuilds every frame
+(`tools/msxframe.py`) and compares it pixel by pixel with the map, the HUD and every sprite
+object (RoboCop and the BOBs) as converted, reports lines where the SAT holds more than 8
+sprites and checks that the tile area of VRAM is untouched. `rc2_prof SECS LOG LABELS` +
+`tools/proflog.py LOG` profile the main loop (addresses from `build/msx/rc2.labels`);
+`rc2_count_too_fast` counts lost VRAM writes.
 
 ## Documentation
 

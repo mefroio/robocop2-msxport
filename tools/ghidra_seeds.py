@@ -91,16 +91,20 @@ def activation_handlers(img: Image) -> dict[int, int]:
     return out
 
 
-def read_sym(path: Path) -> dict[int, str]:
-    names = {}
+def read_sym(path: Path) -> tuple[dict[int, str], list[int]]:
+    """Names, and the extra entries (+entry lines: code reached only through jump tables)."""
+    names, entries = {}, []
     for line in path.read_text().splitlines():
         s = line.strip()
+        if s.startswith("+entry"):
+            entries.append(int(s.split()[1], 16))
+            continue
         if not s or s.startswith(("#", "+")):
             continue
         parts = s.split(None, 2)
         if len(parts) >= 2:
             names[int(parts[0], 16)] = parts[1]
-    return names
+    return names, entries
 
 
 def main(argv: list[str]) -> int:
@@ -108,8 +112,10 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     img = Image(Path(argv[1]).read_bytes())
-    names = read_sym(Path(argv[2]))
+    names, entries = read_sym(Path(argv[2]))
     funcs: dict[int, str | None] = dict(FIXED)
+    for a in entries:
+        funcs.setdefault(a, None)
     for base, prefix in PC_TABLES.items():
         for i, t in enumerate(bra_chain(img, base)):
             funcs.setdefault(t, f"{prefix}_{i}" if prefix else None)

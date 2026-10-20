@@ -1,3 +1,6 @@
-# Optional: tools/m68kdis.py (Capstone) and tools/amigaemu.py (Unicorn); everything else uses the stdlib.
+# Optional: tools/m68kdis.py (Capstone), tools/amigaemu.py (Unicorn), the mockups and
+# tools/msxpic.py (numpy, Pillow); everything else uses the stdlib.
 capstone>=5.0
 unicorn>=2.1
+numpy>=1.26
+Pillow>=10.0

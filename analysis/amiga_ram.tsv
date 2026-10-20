@@ -1,0 +1,172 @@
+# The game's variables ($0B00-$16EB, cleared by clear_game_vars $FE96) and globals ($8000-$80FF)
+# that the MSX port mirrors (msx/msx.inc AM / AG: the same offsets, words and longs little-endian).
+# tools/tracecmp.py --ram compares the listed fields of both traces, frame by frame.
+# Format: ADDRESS SIZE(1/2/4) NAME [comment]
+0b00 2 game_frame
+0b04 2 camera_x
+0b06 2 camera_y
+0b08 2 camera_y_max
+0b2c 1 snd_b2c         sound requests $B2C-$B31 (frame_keys plays and clears them)
+0b2d 1 snd_b2d
+0b2e 1 snd_b2e
+0b2f 1 snd_b2f
+0b30 1 snd_b30
+0b31 1 snd_b31
+15ca 1 level_started
+15cb 1 level_start_step
+15cc 2 player_hot_x
+15ce 2 player_hot_y
+15d0 2 player_x
+15d4 2 player_y
+15da 2 player_aim
+15dc 2 player_anim
+15de 2 player_15de
+15e0 2 player_vy
+15e2 2 player_state
+15e4 1 player_anim_back
+15e6 1 player_airborne
+15e8 2 player_anim_last
+1674 2 player_floor
+1676 2 player_arm
+1678 1 player_jump_wait
+1679 1 aim_delay
+167a 1 lift_flag0
+167b 1 lift_flag1
+167c 1 lift_flag2
+167d 1 lift_flag3
+1696 2 player_pending_state
+1698 2 reversed_controls
+16cd 1 fade_level
+16ce 1 fade_in
+802d 1 keyboard_joy
+802e 1 joystick
+804d 1 input_lock
+# --- objects (update_objects $C3E4): enemy slots k = 0..4 at $BE4 + 4k, fields as arrays
+0b64 2 obj0_y
+0b66 2 obj0_yf
+0b68 2 obj1_y
+0b6a 2 obj1_yf
+0b6c 2 obj2_y
+0b6e 2 obj2_yf
+0b70 2 obj3_y
+0b72 2 obj3_yf
+0b74 2 obj4_y
+0b76 2 obj4_yf
+0b84 4 obj0_l60
+0b88 4 obj1_l60
+0b8c 4 obj2_l60
+0b90 4 obj3_l60
+0b94 4 obj4_l60
+0ba4 4 obj0_l40
+0ba8 4 obj1_l40
+0bac 4 obj2_l40
+0bb0 4 obj3_l40
+0bb4 4 obj4_l40
+0bc4 2 obj0_x
+0bc6 2 obj0_xf
+0bc8 2 obj1_x
+0bca 2 obj1_xf
+0bcc 2 obj2_x
+0bce 2 obj2_xf
+0bd0 2 obj3_x
+0bd2 2 obj3_xf
+0bd4 2 obj4_x
+0bd6 2 obj4_xf
+0be4 2 obj0_w0
+0be6 1 obj0_face
+0be7 1 obj0_b3
+0be8 2 obj1_w0
+0bea 1 obj1_face
+0beb 1 obj1_b3
+0bec 2 obj2_w0
+0bee 1 obj2_face
+0bef 1 obj2_b3
+0bf0 2 obj3_w0
+0bf2 1 obj3_face
+0bf3 1 obj3_b3
+0bf4 2 obj4_w0
+0bf6 1 obj4_face
+0bf7 1 obj4_b3
+0c04 1 obj0_type
+0c05 1 obj0_hp
+0c06 1 obj0_flash
+0c07 1 obj0_touch
+0c08 1 obj1_type
+0c09 1 obj1_hp
+0c0a 1 obj1_flash
+0c0b 1 obj1_touch
+0c0c 1 obj2_type
+0c0d 1 obj2_hp
+0c0e 1 obj2_flash
+0c0f 1 obj2_touch
+0c10 1 obj3_type
+0c11 1 obj3_hp
+0c12 1 obj3_flash
+0c13 1 obj3_touch
+0c14 1 obj4_type
+0c15 1 obj4_hp
+0c16 1 obj4_flash
+0c17 1 obj4_touch
+16b8 2 spawn_delay
+16ba 2 draw_result
+16c2 2 henchmen
+8046 1 score0
+8047 1 score1
+8048 1 score2
+8049 1 score3
+# --- state in the code area (amigaemu CODE_BLOCKS; MSX: AC_VARS and the list copies)
+9626 rec:wwbbbbwwbb:28 spawn msx=dd80
+b2d8 2 cam_dx msx=dd00
+b2fc 2 cam_dy msx=dd02
+c44a 2 marker_step msx=dd06
+c598 4 marker_ptr msx=dd08 ptr=c59c:mk_tab
+c53d 1 marker_mask msx=dd04
+804a 1 timer_min
+804b 1 timer_sec
+8032 1 last_key
+8033 1 key_handled
+804e 1 paused
+16be 2 hostages
+16c0 2 nukes
+169a 2 energy_target
+16db 1 rescued0
+16dc 1 rescued1
+16dd 1 rescued2
+16de 1 rescued3
+16df 1 rescued4
+16e0 1 rescued5
+16e1 1 rescued6
+16e2 1 rescued7
+16e3 1 rescued8
+16e4 1 rescued9
+16e5 1 rescued10
+16e6 1 rescued11
+16e7 1 rescued12
+16e8 1 rescued13
+16e9 1 rescued14
+16ea 1 rescued15
+169c 2 energy_shown
+16ac 2 w16ac
+# --- map objects' collision slots (activate_objects $9C06): A4 = $BD8 + 4k (k 0-2 here; on
+# from $BE4 they are the enemy slots' fields)
+0bd8 2 mslot0_x
+0bdc 2 mslot1_x
+0be0 2 mslot2_x
+0b78 2 mslot0_y
+0b7c 2 mslot1_y
+0b80 2 mslot2_y
+0bf8 4 mslot0_entry
+0bfc 4 mslot1_entry
+0c00 4 mslot2_entry
+0c18 1 mslot0_flags
+0c19 1 mslot0_5
+0c1a 1 mslot0_hit
+0c1c 1 mslot1_flags
+0c1d 1 mslot1_5
+0c1e 1 mslot1_hit
+0c20 1 mslot2_flags
+0c21 1 mslot2_5
+0c22 1 mslot2_hit
+169e 2 relocate_count
+1694 2 pickup_next
+a562 rec:wwwwww:59 objl msx=ee00

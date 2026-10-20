@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execution bench for the Robocop 2 68000 code on top of Unicorn (experimental, parked).
+"""Execution bench for the Robocop 2 68000 code on top of Unicorn.
 
 Code analysis goes through REA + Ghidra (project rule); this bench only emulates the
 Amiga hardware needed for the game code to run and be inspected (it is not a full
@@ -13,13 +13,25 @@ Amiga emulator):
 - game loader intercepted at $100 (A0 = name): loads the files from build/extracted
   to their name-table destination, as the trackloader would;
 - VBL interrupt (level 3) injected every frame when enabled;
+- joystick in port 2 (JOY1DAT, fire on CIA-A PRA bit 7);
 - write watchpoints and address breakpoints, for tracing.
+
+"run" boots from the boot block's entry (the intro still fails on the logo plotting). "game"
+skips it: it loads a level's RAM image (tools/ramimage.py), installs the interrupt vectors and
+runs the game's own new-game path without the title (hardware setup $FEDA, lives and score
+$FFC4, level_init $871A), then main_loop. At the start of every game frame (after main_loop's
+VBL wait, $80CC) it applies the joystick script and records the traced variables: a reference
+for the MSX port of the game logic (the logic only depends on the inputs and on the random
+generator $B32, which reads CIA timers the bench returns as FFh).
 
 Depends on Unicorn (pip install unicorn).
 
 usage:
   amigaemu.py run --frames 600 [--fire 300:20] [--dump build/emu/ram.bin]
                   [--watch 0x3e810-0x40000] [--screenshot build/emu/frame.png]
+  amigaemu.py game --ram build/ram/level1_full.bin --gframes 200 [--joy 10:40:r --joy 60:5:rf ...]
+                   [--trace OUT.jsonl] [--screenshot build/emu/game.png]
+     (--joy GAMEFRAME:COUNT:KEYS, keys among u d l r f, game frames counted from the first)
 """
 from __future__ import annotations
 
@@ -177,6 +189,8 @@ class AmigaEmu:
         self.frame = 0
         self.fire = False
         self.fire_script: list[tuple[int, int]] = []
+        self.joy = 0                    # JOY1DAT
+        self._sentinel_hit = False
         self.blitter = Blitter(self)
         self.watch: list[tuple[int, int]] = []
         self.write_log: list[tuple[int, int, int, str]] = []
@@ -264,7 +278,9 @@ class AmigaEmu:
             return self.intena
         if off == 0x01E:
             return self.intreq
-        if off in (0x00A, 0x00C):  # JOYxDAT
+        if off == 0x00C:  # JOY1DAT (port 2)
+            return self.joy
+        if off == 0x00A:  # JOY0DAT
             return 0
         if off == 0x016:  # POTGOR: secondary buttons released
             return 0xFF00
@@ -317,19 +333,37 @@ class AmigaEmu:
         self.uc.reg_write(UC_M68K_REG_A7, 0x7FFF0)
         self.uc.reg_write(UC_M68K_REG_PC, 0x8000)
 
+    def do_rte(self) -> bool:
+        """Unicorn's m68k raises an exception on RTE: done here (68000 frame: SR, PC)."""
+        pc = self.uc.reg_read(UC_M68K_REG_PC)
+        if self.read_word(pc) != 0x4E73:
+            return False
+        sp = self.uc.reg_read(UC_M68K_REG_A7)
+        sr, ret = struct.unpack(">HI", bytes(self.uc.mem_read(sp, 6)))
+        self.uc.reg_write(UC_M68K_REG_A7, sp + 6)
+        self.uc.reg_write(UC_M68K_REG_SR, sr)
+        self.uc.reg_write(UC_M68K_REG_PC, ret)
+        return True
+
     def inject_vbl(self) -> bool:
+        """Level 3 at the start of the frame: VERTB, or COPER when the game uses the copper's
+        interrupt instead (Robocop 2 does: its copper list raises COPER and SOFT)."""
+        bit = 0x0020 if self.intena & 0x0020 else 0x0010
+        return self.inject(3, 0x6C, bit)
+
+    def inject(self, level: int, vector: int, bit: int) -> bool:
         sr = self.uc.reg_read(UC_M68K_REG_SR)
-        if not (self.intena & 0x4000 and self.intena & 0x0020):
+        if not (self.intena & 0x4000 and self.intena & bit):
             return False
-        if (sr >> 8) & 7 >= 3:
+        if (sr >> 8) & 7 >= level:
             return False
-        self.intreq |= 0x0020
+        self.intreq |= bit
         pc = self.uc.reg_read(UC_M68K_REG_PC)
         sp = self.uc.reg_read(UC_M68K_REG_A7) - 6
         self.uc.mem_write(sp, struct.pack(">HI", sr & 0xFFFF, pc))
         self.uc.reg_write(UC_M68K_REG_A7, sp)
-        self.uc.reg_write(UC_M68K_REG_SR, (sr & 0xF8FF) | 0x2000 | 0x0300)
-        self.uc.reg_write(UC_M68K_REG_PC, self.read_long(0x6C))
+        self.uc.reg_write(UC_M68K_REG_SR, (sr & 0xF8FF) | 0x2000 | (level << 8))
+        self.uc.reg_write(UC_M68K_REG_PC, self.read_long(vector))
         return True
 
     def run_frames(self, frames: int, insns_per_frame: int = 40000) -> None:
@@ -375,6 +409,149 @@ class AmigaEmu:
         write_png(path, 304 * 2, lines * 2, render(idx, pal, False, 2))
 
 
+SENTINEL = 0x7FF00                     # return address of call(): stops the emulation
+MUSIC = (0x18000, 0x28000)              # MU1 and its player (up to DATAL1)
+GAME_FRAME_START = 0x80CC               # main_loop right after its VBL wait
+VECTORS = {0x64: 0x101CC, 0x68: 0x101DC, 0x6C: 0x10266, 0x70: 0x1015C, 0x78: 0x1015E}
+TRACE = {                               # name: (address, size, signed)
+    "game_frame": (0xB00, 2, False), "player_x": (0x15D0, 2, True), "player_y": (0x15D4, 2, True),
+    "state": (0x15E2, 2, False), "anim": (0x15DC, 2, False), "aim": (0x15DA, 2, False),
+    "vy": (0x15E0, 2, True), "airborne": (0x15E6, 1, False), "camera_x": (0xB04, 2, True),
+    "camera_y": (0xB06, 2, True), "joy": (0x802E, 1, False), "energy": (0x169A, 2, True),
+}
+
+
+RAM_BLOCK = (0xB00, 0x16EC)              # the game's variables (clear_game_vars $FE96)
+GLOB_BLOCK = (0x8000, 0x8100)            # globals of the main code
+CODE_BLOCKS = (                          # state kept inside the code area (tools/amigacov.py)
+    (0x9626, 0x97B0),                    # level 1 spawn list
+    (0xA562, 0xA828),                    # level 1 object list
+    (0xB2D6, 0xB2DA), (0xB2FA, 0xB2FE),  # the camera's offsets (immediates obj32 patches)
+    (0xC44A, 0xC44C),                    # the marker scan's step
+    (0xC53C, 0xC53E),                    # the marker spawn interval (moveq immediate)
+    (0xC598, 0xC59C),                    # the marker table's last entry
+)
+
+
+def joy_value(keys: str) -> int:
+    """JOY1DAT for the keys u d l r (fire is on the CIA)."""
+    up, down, left, right = ("u" in keys), ("d" in keys), ("l" in keys), ("r" in keys)
+    return (left << 9) | ((up ^ left) << 8) | (right << 1) | (down ^ right)
+
+
+class GameBench(AmigaEmu):
+    def __init__(self, extracted: Path, ram: Path, *, verbose: bool = False):
+        super().__init__(extracted, verbose=verbose)
+        self.ram_image = ram
+        self.pulse_fire = False
+        self.uc.hook_add(UC_HOOK_CODE, self._on_sentinel, None, SENTINEL, SENTINEL + 1)
+        # the music player (MU1 at $18000, called from the interrupt) waits on audio hardware the
+        # bench lacks: every call into it returns at once (the game logic does not depend on it)
+        self.uc.hook_add(UC_HOOK_CODE, self._on_music, None, MUSIC[0], MUSIC[1] - 1)
+
+    def _on_music(self, uc, address, size, user_data):
+        sp = uc.reg_read(UC_M68K_REG_A7)
+        uc.reg_write(UC_M68K_REG_PC, self.read_long(sp))
+        uc.reg_write(UC_M68K_REG_A7, sp + 4)
+
+    def _on_sentinel(self, uc, address, size, user_data):
+        self._sentinel_hit = True
+        uc.emu_stop()
+
+    def call(self, addr: int, max_frames: int = 5000) -> None:
+        """Runs the routine at addr (VBLs injected) until it returns."""
+        sp = self.uc.reg_read(UC_M68K_REG_A7) - 4
+        self.uc.mem_write(sp, struct.pack(">I", SENTINEL))
+        self.uc.reg_write(UC_M68K_REG_A7, sp)
+        self.uc.reg_write(UC_M68K_REG_PC, addr)
+        self._sentinel_hit = False
+        for _ in range(max_frames):
+            self._run_one_frame()
+            if self._sentinel_hit:
+                return
+        raise RuntimeError(f"${addr:05x} did not return in {max_frames} frames\n{self.regs_text()}")
+
+    def _run_one_frame(self, insns: int = 40000) -> None:
+        if self.pulse_fire:
+            self.fire = (self.frame // 10) % 2 == 1     # (briefing and pictures wait for fire)
+        budget = insns
+        soft_at = insns // 2                            # the copper list's SOFT (level 1: frame count)
+        while budget > 0 and not self._sentinel_hit:
+            if soft_at is not None and budget <= soft_at:
+                soft_at = None
+                self.inject(1, 0x64, 0x0004)
+            pc = self.uc.reg_read(UC_M68K_REG_PC)
+            if pc == SENTINEL:
+                self._sentinel_hit = True
+                break
+            chunk = min(budget, 5000)
+            try:
+                self.uc.emu_start(pc, 0xFFFFFFFE, 0, chunk)
+            except UcError as e:
+                if not self.do_rte():
+                    raise RuntimeError(f"CPU fault in frame {self.frame}: {e}\n{self.regs_text()}") from e
+                budget -= 100
+                continue
+            if self._pending_loader:
+                self._pending_loader = False
+                self._service_loader()
+                budget -= 100
+                continue
+            budget -= chunk
+        self.vpos = 0
+        if not self._sentinel_hit:      # (no interrupt on top of a routine that returned)
+            self.inject_vbl()
+        self.frame += 1
+
+    def start_level(self) -> None:
+        self.uc.mem_write(0, self.ram_image.read_bytes())
+        for vec, handler in VECTORS.items():
+            self.uc.mem_write(vec, struct.pack(">I", handler))
+        self.uc.reg_write(UC_M68K_REG_SR, 0x2000)
+        self.uc.reg_write(UC_M68K_REG_A7, 0x80000)
+        self.uc.reg_write(a_reg(6), 0xDFF002)   # the game keeps A6 on the custom chips (DMACONR)
+        self.call(0xFEDA)                # hardware setup
+        self.call(0xFFC4)                # level 1, score, lives
+        self.pulse_fire = True
+        self.call(0x871A)                # level_init (briefing and picture: fire pressed)
+        self.pulse_fire = False
+        self.fire = False
+        self.uc.reg_write(UC_M68K_REG_A7, 0x80000)
+        self.uc.reg_write(UC_M68K_REG_PC, 0x80C2)
+
+    def read_var(self, addr: int, size: int, signed: bool) -> int:
+        v = int.from_bytes(bytes(self.uc.mem_read(addr, size)), "big", signed=signed)
+        return v
+
+    def play(self, game_frames: int, script: list[tuple[int, int, str]], ram: bool = False) -> list[dict]:
+        """Runs game frames from main_loop; returns the traced variables at each frame start (with
+        ram: also the game's variables $B00-$16EB, globals $8000-$80FF and the state kept in the
+        code area, CODE_BLOCKS, as hex)."""
+        hits = []
+
+        def on_frame(uc, address, size, user_data):
+            n = len(hits)
+            keys = "".join(k for s, c, k in script if s <= n < s + c)
+            self.joy = joy_value(keys)
+            self.fire = "f" in keys
+            row = {name: self.read_var(*spec) for name, spec in TRACE.items()} | {"keys": keys}
+            if ram:
+                row["ram"] = bytes(uc.mem_read(RAM_BLOCK[0], RAM_BLOCK[1] - RAM_BLOCK[0])).hex()
+                row["glob"] = bytes(uc.mem_read(GLOB_BLOCK[0], GLOB_BLOCK[1] - GLOB_BLOCK[0])).hex()
+                row["code"] = {f"{lo:x}": bytes(uc.mem_read(lo, hi - lo)).hex() for lo, hi in CODE_BLOCKS}
+            hits.append(row)
+            if len(hits) > game_frames:
+                uc.emu_stop()
+                self._sentinel_hit = True
+
+        h = self.uc.hook_add(UC_HOOK_CODE, on_frame, None, GAME_FRAME_START, GAME_FRAME_START + 1)
+        self._sentinel_hit = False
+        while not self._sentinel_hit:
+            self._run_one_frame()
+        self.uc.hook_del(h)
+        return hits[:game_frames]
+
+
 def parse_range(s: str) -> tuple[int, int]:
     lo, hi = s.split("-")
     return int(lo, 0), int(hi, 0)
@@ -382,7 +559,12 @@ def parse_range(s: str) -> tuple[int, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("run",))
+    ap.add_argument("cmd", choices=("run", "game"))
+    ap.add_argument("--ram", type=Path, default=ROOT / "build" / "ram" / "level1_full.bin")
+    ap.add_argument("--gframes", type=int, default=100, help="game: game frames to play")
+    ap.add_argument("--joy", action="append", default=[], help="game: GAMEFRAME:COUNT:KEYS (u d l r f)")
+    ap.add_argument("--trace", type=Path, help="game: JSON lines of the traced variables")
+    ap.add_argument("--trace-ram", action="store_true", help="game: also the variables' blocks in the trace")
     ap.add_argument("--extracted", type=Path, default=ROOT / "build" / "extracted")
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--insns", type=int, default=40000, help="instructions per frame")
@@ -392,6 +574,23 @@ def main() -> int:
     ap.add_argument("--screenshot", type=Path)
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
+    if a.cmd == "game":
+        bench = GameBench(a.extracted, a.ram, verbose=a.verbose)
+        bench.start_level()
+        script = []
+        for j in a.joy:
+            f, c, k = j.split(":")
+            script.append((int(f), int(c), k))
+        rows = bench.play(a.gframes, script, a.trace_ram)
+        if a.trace:
+            a.trace.parent.mkdir(parents=True, exist_ok=True)
+            a.trace.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        for r in rows[:: max(1, len(rows) // 12)]:
+            print({k: v for k, v in r.items() if k not in ("ram", "glob", "code")})
+        print(f"VBL frames {bench.frame}, game frames {len(rows)}, level {bench.read_word(0x8050)}")
+        if a.screenshot:
+            bench.screenshot(a.screenshot)
+        return 0
     emu = AmigaEmu(a.extracted, verbose=a.verbose)
     emu.fire_script = [tuple(int(x) for x in f.split(":")) for f in a.fire]
     emu.watch = [parse_range(w) for w in a.watch]

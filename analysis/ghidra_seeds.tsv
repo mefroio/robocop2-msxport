@@ -7,6 +7,7 @@
 0x8582	function	load_level1
 0x86dc	function	level_load_1
 0x86de	function	level_load_3
+0x8b9a	function
 0x8b9e	function	special_vehicle_l0
 0x8de6	function	special_lift
 0x8f02	function	special_l1
@@ -25,6 +26,11 @@
 0xac56	function
 0xac6e	function
 0xac84	function
+0xac9a	function
+0xaed2	function
+0xaf08	function
+0xaf90	function
+0xbdec	function	read_joystick
 0xc1fa	function
 0xc1fc	function
 0xc25c	function
@@ -76,6 +82,7 @@
 0xeb0a	function	obj41_update
 0xec02	function	obj43_update
 0xec22	function	obj44_update
+0xecac	function
 0xed1e	function	obj45_update
 0xee22	function	obj46_update
 0xee30	function	obj47_update
@@ -84,46 +91,153 @@
 0xeee2	function	obj50_update
 0xf10a	function
 0xf266	function
+0xf6a0	function
+0xf6b8	function	panel_update_digits
+0xf788	function
+0xf876	function
+0xf9dc	function	setup_ciab_timer
+0xfbfc	function
+0xfc04	function
+0xfcbe	function
+0xfd1a	function
+0xfd30	function	set_weapon
+0xfd76	function	message_queue
+0xfda2	function	message_ticker
+0xfe14	function
 0x1015c	function	irq_l4_audio
 0x1015e	function	irq_l6_exter
 0x101cc	function	irq_l1
 0x101dc	function	irq_l2_ports
 0x10266	function	irq_l3_vbl
 0x1171e	function
+0xb00	label	game_frame
 0xb04	label	camera_x
 0xb06	label	camera_y
+0xb08	label	camera_y_max
 0xb16	label	back_buffer
 0xb1e	label	level_data_base
 0xb26	label	vscroll_line_offset
+0xb2c	label	sound_requests
+0xb3c	label	lift_table
 0xbe4	label	object_slots
+0xd78	label	fire_latch
+0x15ca	label	level_started
+0x15cb	label	level_start_step
+0x15cc	label	player_hot_x
+0x15ce	label	player_hot_y
+0x15d0	label	player_x
+0x15d4	label	player_y
+0x15d6	label	player_relocate_xy
+0x15da	label	player_aim
+0x15dc	label	player_anim_counter
+0x15de	label	player_15de
+0x15e0	label	player_vy
+0x15e2	label	player_state
+0x15e4	label	player_anim_back
+0x15e6	label	player_airborne
+0x15e8	label	player_anim_last
+0x15f4	label	effect_types
+0x1614	label	effect_dirs
+0x1634	label	effect_x
+0x1654	label	effect_y
+0x1674	label	player_floor
+0x1676	label	player_arm_override
+0x1678	label	player_jump_wait
+0x1679	label	aim_delay
+0x167a	label	lift_flags
+0x168e	label	player_hitbox
+0x1692	label	effect_next
+0x1696	label	player_pending_state
+0x1698	label	reversed_controls
+0x169a	label	energy_target
+0x169c	label	energy_shown
+0x16a0	label	muzzle_flash_timer
+0x16a2	label	muzzle_flash_x
+0x16a4	label	muzzle_flash_y
+0x16aa	label	energy_refill
+0x16bc	label	death_counter
+0x16cc	label	death_flag
+0x16cd	label	fade_level
+0x16ce	label	fade_in
 0x802c	label	vbl_counter
+0x802d	label	keyboard_joy
+0x802e	label	joystick
+0x8030	label	weapon_ammo
+0x8032	label	last_key
+0x8034	label	lives
+0x8036	label	player_sprite_ptr
+0x8046	label	score
+0x804a	label	timer
+0x804d	label	input_lock
 0x8050	label	level_number
+0x8054	label	message_read
+0x8056	label	message_write
+0x8058	label	message_column
+0x805a	label	message_countdown
+0x805c	label	weapon
 0x85d8	label	show_level_stats
 0x8614	label	load_level_music
+0x865a	label	msg_timeout
 0x8664	label	level_headers
 0x86fa	label	level_load_table
 0x871a	label	level_init
+0x88de	label	panel_draw_head
+0x896a	label	panel_draw_icon
+0x89be	label	update_energy_can
 0x8b32	label	update_special_objects
 0x9626	label	spawnlist_level0
 0x97b0	label	spawnlist_level1
 0x99e2	label	spawnlist_level2
 0x9c06	label	activate_objects
+0x9c76	label	map_object_look
 0x9d96	label	objtype_act_offsets
 0x9ec4	label	objtype_act_base
+0x9fc4	label	obj_relocate
 0xa562	label	objlist_level0
 0xa828	label	objlist_level1
 0xaa3a	label	objlist_level2
+0xacbc	label	spawn_effect
+0xacdc	label	aim_table
 0xacec	label	update_player
+0xaf76	label	icon_offsets
+0xafae	label	punch_dx
+0xaff8	label	player_move
+0xb32c	label	player_hitboxes
+0xb3ae	label	player_state_params
+0xb3f6	label	player_xstep
+0xb408	label	player_head_tables
+0xb43e	label	player_arm_tables
+0xb4da	label	player_flash_offsets
 0xb4e2	label	player_anim_table
 0xb94a	label	draw_player
 0xbcca	label	draw_background
+0xbd72	label	lift_check
+0xbe26	label	joy1dat_table
 0xbeb0	label	objtype_descriptors
+0xc222	label	msg_protect
+0xc238	label	msg_suspect
+0xc24b	label	msg_cain_destroyed
 0xc3e4	label	update_objects
-0xf9dc	label	setup_ciab_timer
+0xd46c	label	msg_chase_cain
+0xdc76	label	msg_arrest
+0xed11	label	msg_extra_life
+0xf76c	label	frame_keys
+0xf80e	label	palette_flash
+0xf82c	label	msg_pause_off
+0xf837	label	msg_pause_on
+0xf841	label	msg_debug
+0xf878	label	palette_fades
+0xfd52	label	weapon_ammo_table
+0xfd5a	label	weapon_icon_table
+0xfd92	label	message_slots
 0xfe96	label	clear_game_vars
+0xffd8	label	init_lives
 0xfff6	label	palette_level0
 0x10036	label	palette_level12
+0x10254	label	key_joy_table
 0x1049e	label	copper_game
+0x105d2	label	panel_draw_digit
+0x10620	label	panel_draw_char
 0x11a20	label	game_boot
 0x11e06	label	show_picture
 0x12352	label	copper_picture

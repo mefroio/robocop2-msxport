@@ -15,6 +15,17 @@
 +entry 10266
 +entry 101dc
 +entry 101cc
+# executed on the bench (tools/amigacov.py, level 1) but reached only through jump tables
++entry 8b9a
++entry aed2
++entry af08
++entry af90
++entry ecac
++entry f876
++entry fbfc
++entry fc04
++entry fcbe
++entry fd1a
 8000  start            BRA to the initialisation; followed by 10 public BRA.W entries
 8050  level_number     word: current level (incremented when completed)
 802c  vbl_counter      byte: incremented by the VBL; the main loop waits for >= 2 (25 Hz)
@@ -73,3 +84,111 @@ b4e2  player_anim_table    [steps-1][list offset][height][0]; frame = 16 bytes (
 8de6  special_lift         special object type 0 (lifts/platforms), every level
 8f02  special_l1           special object type 4, level 2 only
 11e06 show_picture         shows PIC('1'+D0): 0/3/6 before levels 1/2/3, 8 = game over (PIC9)
++data b408 b4e2        player part tables (head g/x/y, arm g/x/y, flash g)
+b408  player_head_tables   head 16x14 parts: graphic offsets from $61bd0, x, y (9 words each)
+b43e  player_arm_tables    arm+gun 32x32 parts: graphic offsets from $62030 ($b43e), x ($b472), y ($b4a6), 26 words each
+b4da  player_flash_offsets muzzle flash 16x16 parts: offsets from $65230 (4 words)
+15e2  player_state         word: animation state (index into $b4e2)
+15dc  player_anim_counter  word: frame counter within the state
+15da  player_aim           word: bits 1-2 = aim (up, diagonal up, horizontal, diagonal down)
+1676  player_arm_override  word: special arm pose (0 = from facing/aim)
+16a0  muzzle_flash_timer   word
+16a2  muzzle_flash_x       word: position in the composition buffer
+16a4  muzzle_flash_y       word
+15cc  player_hot_x         word: hotspot x of the current record + 8
+15ce  player_hot_y         word: hotspot y of the current record + 8
+15d0  player_x             word: world position
+15d4  player_y             word: world position
+8036  player_sprite_ptr    long: hardware sprite data being filled (double buffer)
+105d2 panel_draw_digit     D0 = 16x16 digit glyph ($654b0 + D0*$60, 3 planes), D1 = byte offset in the panel
+10620 panel_draw_char      D1 = character code (' ' -> glyph 41, >= '@' -> code - 'A', else code - $16), D0 = column; glyph into planes 0-2 at (40 + 8*D0, 5)
+f6b8  panel_update_digits  timer MM or SS ($b00 & 1), ammo hundreds or tens/units ($b00 & 1), one score byte ($b00 & 3), every game frame
+fd76  message_queue        A0 = string ending with a byte >= $80; 4-entry queue at $fd92
+fda2  message_ticker       one character per VBL (called by irq_l3_vbl); after the last one waits $50 VBLs, then erases columns 20..0, one per VBL
+fd30  set_weapon           D0 = weapon 0-3: ammo from $fd52, icon from $fd5a
+896a  panel_draw_icon      D0 = 16x16 icon ($676c0 + offsets at $af76) at panel (96, 25)
+88de  panel_draw_head      D0 = head graphic ($666d0 + D0*$2a8), D1 = slot (x 128 + 32*D1)
+89be  update_energy_can    energy gauge: shown level $169c follows $169a, can emptied from the top
+ffd8  init_lives           $8034 = 2, draws both heads
+8030  weapon_ammo          BCD: hundreds in the low nibble, then tens/units
+8034  lives                word
+8046  score                BCD, 7 digits in 4 bytes
+804a  timer                BCD minutes, seconds
+805c  weapon               word: 0 normal, 1 rapid fire, 2 scatter, 3 three-way
+169a  energy_target        word: 0..$100
+169c  energy_shown         word
+fd92  message_slots        4 longs: queued string pointers
+b00   game_frame           word: game frames (25 Hz), incremented by main_loop
+f76c  frame_keys           every game frame: keyboard events, pause ('P', code $19), debug key $21, then panel_update_digits
+8054  message_read         word: read index into message_slots (0, 4, 8, 12)
+8056  message_write        word: write index (a busy slot drops the message)
+8058  message_column       word: next column of the ticker
+805a  message_countdown    word: VBLs left before the erasing, then the column being erased
+16aa  energy_refill        word: game frames of refilling (energy target $102)
+16bc  death_counter        word: +4 per game frame of the death sequence (heads 3-5 in slot lives-1 from $60)
+16cc  death_flag           byte: set by update_energy_can when the shown energy goes below 0
+fd52  weapon_ammo_table    4 words: BCD ammo per weapon (000, 500, 300, 400)
+fd5a  weapon_icon_table    4 words: icon per weapon (3, 0, 2, 1)
+af76  icon_offsets         8 words: icon offsets from $676c0 ($a0 apart)
+c222  msg_protect          "PROTECT THE INNOCENTe" + $ff ('e' = glyph 36 '.')
+dc76  msg_arrest           "ARREST ARMED EMEMYe"
+c238  msg_suspect          "SUSPECT DESTROYEDe"
+c24b  msg_cain_destroyed   "CAIN DESTROYEDe"
+d46c  msg_chase_cain       "CHASE CAINe"
+ed11  msg_extra_life       "EXTRA LIFEe"
+865a  msg_timeout          "TIMEOUTe"
+f837  msg_pause_on         "PAUSE ONe"
+f82c  msg_pause_off        "PAUSE OFFe"
+f841  msg_debug            "NUKE      HOSTe     ": debug key $21 writes two numbers into it
+# --- player control (REA/Ghidra + execution bench, session 2026-10-20) ---
++data b32c b344        player hitboxes (3 x x, y, w, h words)
++data b3ae b408        player state parameters (18 x 4 bytes) and x steps (17 bytes)
++data acdc acec        aim per joystick direction bits
++data be26 be36        JOY1DAT decode table
++data 10254 10265      keyboard key -> joystick bit table (codes $40-$50)
+aff8  player_move          state machine, steps against map walls (bit 1), jumps/falls/landings (bits 0/2), lifts, camera, start of level
+bd72  lift_check           4 lifts ($B3C-$B63): on one -> y = top - 4, x += dx, flag $167A+index; N set
+bdec  read_joystick        once per game frame (after draw_player): JOY1DAT via $BE26 + fire, else the keyboard byte $802D; skipped while $804D
+f878  palette_fades        fade in ($16CE set: $16CD up to $1F, forces state $F89D) or out; palette flash countdown $F826
+f80e  palette_flash        A0 = palette shown for 4 frames ($F826), then the level palette
+acbc  spawn_effect         D3 = type, D7 = direction, D0/D1 = x/y into slot $1692 & 14 of the effect table (A3 = $15F4)
+b32c  player_hitboxes      (12, -54, 24, 54), (10, -38, 38, 38), (12, -72, 24, 72): offset in $168E
+b3ae  player_state_params  4 bytes per state: -, $15DF, $15E4 (animation backwards), hitbox offset
+b3f6  player_xstep         signed x step per state (+-3 walking and jumping)
+acdc  aim_table            aim word ($15DA) per joystick bits & 15
+afae  punch_dx             x offset per facing of the state 6/7 effect (type 8)
+be26  joy1dat_table        (JOY1DAT & $303) -> up 1, down 2, left 4, right 8 (+ $10, cleared by eor with the fire line)
+10254 key_joy_table        key code - $40 -> joystick bit: Space..Del fire, cursors, F1/right Shift $20
+802d  keyboard_joy         byte: joystick bits from the keyboard (bit 7 once a key was pressed)
+802e  joystick             byte: up 1, down 2, left 4, right 8, fire $10 (read_joystick)
+8032  last_key             byte: last key code, bit 7 = released
+804d  input_lock           byte: non-zero = read_joystick skipped
+b08   camera_y_max         word: the camera's lowest y (level header +28)
+b2c   sound_requests       bytes $B2C-$B31: effect requests ($B30 footstep 6, $B31 shot 4/$B, $B2E/$B2F $303 at the level start)
+b3c   lift_table           4 lifts x [left, right, top, dx, flag index] words ($B3C-$B63)
+15ca  level_started        byte: clear during the start-of-level sequence
+15cb  level_start_step     byte: arm pose counter (0..$24)
+15de  player_15de          word: low byte from the state table (byte 1)
+15e0  player_vy            word: vertical speed (-$14 on the ground, +2 per frame up to $1F; y += vy >> 2)
+15e4  player_anim_back     byte: animation runs backwards
+15e6  player_airborne      byte
+15e8  player_anim_last     word: steps - 1 of the state (set by draw_player)
+15f4  effect_types         8 words: shot/effect type (handlers at $AECA + type)
+1614  effect_dirs          8 words
+1634  effect_x             8 words
+1654  effect_y             8 words
+1674  player_floor         word: floor attributes & 5 under the player (bit 2: up = fire)
+1678  player_jump_wait     byte: frames before jumping again after landing / crouching
+1679  aim_delay            byte: the aim changes every third frame
+167a  lift_flags           4 bytes: player on lift n
+168e  player_hitbox        long: $B32C + offset
+1692  effect_next          word: next effect slot * 2
+1696  player_pending_state word: state for the next frame (negative = none)
+1698  reversed_controls    word: frames left with left/right swapped
+16cd  fade_level           byte: palette fade level (0..$1F)
+16ce  fade_in              byte: set = fading in (level start), clear = fading out
+d78   fire_latch           byte: fire held (cleared every 4 frames with the rapid-fire weapon)
+9c76  map_object_look      activate_objects: the object's current look (block of map words, $110/$112 = width/height - 1) copied into the map; negative look = destroyed ($F98C)
+9fc4  obj_relocate         with RoboCop in states 12/13 for $50 frames: debris, then RoboCop and the camera to ($15D6, $15D8), state $10 asked, fade-in again
+15d6  player_relocate_xy   2 words: where obj_relocate puts RoboCop (level header +20/+22)
+df6e  obj32_update         object type 32 (level 1 end): camera offsets patched, map words from its table ($DE68: x, y, word) written one per 4 frames, explosions, $16D0 level complete
