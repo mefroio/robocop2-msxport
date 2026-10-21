@@ -40,6 +40,7 @@ hud_map:
 ; State of the static HUD: timer 09:58, ammo 000, score 0000000, full can, two RoboCop heads,
 ; the icon of weapon 0, empty message line.
 hud_init:
+        call hud_upload             ; the panel as the game starts (no last game's digits)
         ld hl,hud_timer
         ld (hl),0x09
         inc hl
@@ -135,6 +136,7 @@ hud_put:
         ld b,c
         ld c,VDP_DATA
         otir
+        call vram_done
         ex de,hl
         pop hl
         ld bc,128
@@ -424,6 +426,7 @@ td_out: ld hl,(td_vram)
         ld hl,td_px
         ld c,VDP_DATA
         otir
+        call vram_done
         ld hl,(td_vram)
         ld de,128
         add hl,de
@@ -835,6 +838,8 @@ hj_dicon:
         ld (icon_shown),a
         ret
 
+        if DEMO_HUD                 ; (builds with the HUD demo only)
+
 ; ----- demo of the game's events (until the game logic is ported) -----
 
 ; Timer -1 s every 60 frames (09:58 again after 00:00); score +150 every 97 frames; ammo -1
@@ -1067,3 +1072,4 @@ bcd_ammo:
         and 15
         ld (hl),a
         ret
+        endif

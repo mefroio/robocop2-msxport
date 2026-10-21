@@ -17,7 +17,8 @@ tools/msxscreen.py's model (sprite mode 2 included) and compared with the expect
     checked;
   - every sprite object the list shows (pub_spr: RoboCop and BOBs, msx/sprites.asm) as
     tools/msxsprites.py converts its composition (full OR version, or the single-layer
-    fallback for the columns the budget dropped), object 0 in front: exact. Objects that
+    fallback for the bands the budget dropped), in SAT order (the hit spark's object, then
+    object 0 and the others: the first in front): exact. Objects that
     alternate between frames are recorded as not shown on the frames they are off. Lines where
     the SAT shown puts more than 8 sprites (the budget's layout for new positions still on its
     way: the VDP drops the last ones) are reported apart and their sprite pixels not checked;
@@ -46,6 +47,8 @@ HUD_SHOWN, EN_SHOWN, HUD_CHARS, HEADS_G, ICON_SHOWN = 0xC608, 0xC618, 0xC626, 0x
 JOB_LINES, JOBQ_N = 0xC63E, 0xC646
 LISTS = (0xC080, 0xC0A0)
 MAX_OBJ = 16
+SPARK_OBJ = MAX_OBJ - 1                         # msx/sprites.asm: first in the SAT
+SAT_ORDER = [SPARK_OBJ] + list(range(SPARK_OBJ))
 PUB_SPR = {0xC080: 0xC700, 0xC0A0: 0xC780}     # what each list's SAT shows (MAX_OBJ objects x 8 bytes)
 SPLIT_LIST = 0xC0C0
 VIEW, HUD_TOP = 163, 167
@@ -62,12 +65,12 @@ def applied_list(ram: bytes) -> tuple[dict[int, int], int, int, list[dict]]:
             n = ram[o + 1]
             pairs = ram[o + 2:o + 2 + n]
             regs = {pairs[i + 1] & 0x7F: pairs[i] for i in range(0, n, 2)}
-            cam_x, cam_y = struct.unpack_from("<HH", ram, o + 2 + n)
+            cam_x, cam_y = struct.unpack_from("<HH", ram, o + 2 + n)    # (then the game frame)
             objs = []
             for k in range(MAX_OBJ):
                 flags, ident, drop, x, y = struct.unpack_from("<BHBhh", ram, PUB_SPR[base] - RAM_BASE + 8 * k)
                 objs.append({"shown": bool(flags & 0x80), "bob": bool(flags & 1), "id": ident, "drop": drop,
-                             "x": x, "y": y})
+                             "x": x, "y": y, "sil": (flags >> 1) & 3})
             return regs, cam_x, cam_y, objs
     raise ValueError(f"no register list with seq {seq}")
 
@@ -87,8 +90,8 @@ def rgb9(pal: bytes) -> list[tuple[int, int, int]]:
 _conv_cache: dict = {}
 
 
-def converted(obj: dict, joint_pal: bytes) -> list[dict]:
-    """The columns of an object's composition, as tools/msxsprites.py cuts them."""
+def converted(obj: dict, joint_pal: bytes) -> list:
+    """The bands of an object's composition, as tools/msxsprites.py cuts them."""
     key = (obj["bob"], obj["id"])
     if key in _conv_cache:
         return _conv_cache[key]
@@ -98,46 +101,95 @@ def converted(obj: dict, joint_pal: bytes) -> list[dict]:
     import player
     main = (ROOT / "build/extracted/boot/main_8000.bin").read_bytes()
     pal = np.array([[joint_pal[2 * i] >> 4, joint_pal[2 * i + 1] & 7, joint_pal[2 * i] & 7] for i in range(16)]) / 7
+    pal12 = [struct.unpack_from(">H", main, 0xFFF6 - 0x8000 + 2 * i)[0] for i in range(31)]
+    sppal = np.array([[0, 0, 0]] + [msxsprites.amiga_rgb(c) for c in pal12[16:31]])
     if obj["bob"]:
-        fr = json.loads((ROOT / "build/msx/robocop.json").read_text())["bobs"][obj["id"]]
+        bobs = json.loads((ROOT / "build/msx/robocop.json").read_text())["bobs"]
+        fr = bobs[obj["id"]]
+        if fr.get("repeat"):                        # a frame removed: another one, moved
+            k2, dy, dx = fr["repeat"]
+            cols = msxsprites.move_layout(converted({"bob": 1, "id": k2}, joint_pal), dy, dx)
+            _conv_cache[key] = cols
+            return cols
+        if fr.get("mirror"):                        # an earlier frame's layout, mirrored
+            m, dy, dx = fr["mirror"]
+            cols = msxsprites.mirror_layout(converted({"bob": 1, "id": m}, joint_pal), bobs[m]["w"], dy, dx)
+            _conv_cache[key] = cols
+            return cols
         ram = (ROOT / "build/ram/level1_full.bin").read_bytes()
         src = msxsprites.bob_image(ram, fr["addr"], fr["w"], fr["h"])
-        bgpal = np.array([[0, 0, 0]] + [msxsprites.amiga_rgb(struct.unpack_from(">H", main, 0xFFF6 - 0x8000 + 2 * i)[0])
-                                        for i in range(15)])
-        near = msxsprites.nearest(bgpal, pal, 1)
-        tgt = np.where(src >= 0, near[np.clip(src, 0, 15)], 0)
-        cols = msxsprites.Converter(pal, msxsprites.PAIRS_ALL).composition(tgt)
+        if fr.get("spark"):                         # the hit spark: RoboCop's colours and pairs
+            tgt = np.where(src > 0, msxsprites.nearest(sppal[np.clip(src, 0, 15)], pal, 1), 0)
+            cols = msxsprites.Converter(pal, cap=msxsprites.RC_CAP).composition(tgt)
+        else:
+            bgpal = np.array([[0, 0, 0]] + [msxsprites.amiga_rgb(c) for c in pal12[:15]])
+            near = msxsprites.nearest(bgpal, pal, 1)
+            tgt = np.where(src >= 0, near[np.clip(src, 0, 15)], 0)
+            conv = msxsprites.Converter(pal, msxsprites.PAIRS_ALL, cap=msxsprites.BOB_CAP, align="bottom")
+            conv.prefer = {(b, n): order for b, n, *order in fr.get("prefer", [])}
+            cols = conv.composition(tgt)
     else:
-        perma = (ROOT / "build/extracted/files/PERMA_05.bin").read_bytes()
-        pal12 = [struct.unpack_from(">H", main, 0xFFF6 - 0x8000 + 2 * i)[0] for i in range(31)]
-        sppal = np.array([[0, 0, 0]] + [msxsprites.amiga_rgb(c) for c in pal12[16:31]])
-        g = player.Game(main, perma)
-        recs = g.records()
-        if obj["id"] < 4 * len(recs):
-            record, aim = divmod(obj["id"], 4)
-            img = np.array(g.compose(recs[record], aim))
-        else:                                       # a start-of-level arm pose (SPR_RC_ARM...)
-            arm = player.ARM_POSES[obj["id"] - 4 * len(recs)]
-            img = np.array(g.compose(recs[player.arm_record(recs)], player.ARM_AIM, arm))
-        tgt = np.where(img > 0, msxsprites.nearest(sppal[img], pal, 1), 0)
-        cols = msxsprites.Converter(pal).composition(tgt)
+        # RoboCop: the compositions as tools/msxsprites.py built them (robocop.json: the entries'
+        # compositions, those that mirror or move another one)
+        if "rc" not in _conv_cache:
+            perma = (ROOT / "build/extracted/files/PERMA_05.bin").read_bytes()
+            comps, _ = msxsprites.rc_compositions(player.Game(main, perma))
+            meta = json.loads((ROOT / "build/msx/robocop.json").read_text())
+            _conv_cache["rc"] = (comps, meta["rc_index"],
+                                 {int(c): tuple(v) for c, v in meta["rc_mirrors"].items()},
+                                 {int(c): tuple(v) for c, v in meta["rc_moves"].items()}, {})
+        comps, index, pairs, moves, lays = _conv_cache["rc"]
+
+        def layout(c: int) -> list:
+            if c not in lays:
+                if c in moves:
+                    src, dy, dx = moves[c]
+                    lays[c] = msxsprites.move_layout(layout(src), dy, dx)
+                elif c in pairs:
+                    cr, dy, dx = pairs[c]
+                    lays[c] = msxsprites.mirror_layout(layout(cr), player.BUF_W, dy, dx)
+                else:
+                    tgt = np.where(comps[c] > 0, msxsprites.nearest(sppal[comps[c]], pal, 1), 0)
+                    lays[c] = msxsprites.Converter(pal, cap=msxsprites.RC_CAP).composition(tgt)
+            return lays[c]
+
+        cols = layout(index[obj["id"]])
     _conv_cache[key] = cols
     return cols
 
 
 def expected_sprites(objs: list[dict], joint_pal: bytes) -> dict[tuple[int, int], int]:
-    """Screen pixel -> joint palette index of the sprite objects shown (object 0 in front)."""
+    """Screen pixel -> joint palette index of the sprite objects shown (SAT order: the first in
+    front)."""
     out: dict[tuple[int, int], int] = {}
-    for obj in reversed(objs):
+    for obj in [objs[k] for k in reversed(SAT_ORDER)]:
         if not obj["shown"]:
             continue
-        for k, c in enumerate(converted(obj, joint_pal)):
-            im = c["fallback"] if obj["drop"] >> k & 1 else c["full"]
-            for y in range(im.shape[0]):
-                for i in range(16):
-                    if im[y, i]:
-                        out[(obj["x"] + c["x"] + i, obj["y"] + y)] = int(im[y, i])
+        sil = silhouette_colours(joint_pal)[obj.get("sil", 0)]
+        lay = converted(obj, joint_pal)
+        for j, (y0, boxes) in enumerate(lay):
+            dropped = obj["drop"] >> (len(lay) - 1 - j) & 1      # (bands numbered from the bottom)
+            for c in boxes:
+                im = c["fallback"] if sil or dropped else c["full"]
+                for y in range(16):
+                    for i in range(16):
+                        if im[y, i]:
+                            out[(obj["x"] + c["x"] + i, obj["y"] + y0 + y)] = sil or int(im[y, i])
     return out
+
+
+def silhouette_colours(joint_pal: bytes) -> list[int]:
+    """Per silhouette mode (msx/bob.asm BM_...) the joint palette entry it is shown in (0: none):
+    tools/msxsprites.py's colour rows SPR_SIL_FLASH (the nearest to the background's colour 15)
+    and SPR_SIL_BLACK (the palette's black after entry 0)."""
+    import numpy as np
+    import msxsprites
+    main = (ROOT / "build/extracted/boot/main_8000.bin").read_bytes()
+    pal = np.array([[joint_pal[2 * i] >> 4, joint_pal[2 * i + 1] & 7, joint_pal[2 * i] & 7] for i in range(16)]) / 7
+    c15 = np.array([msxsprites.amiga_rgb(struct.unpack_from(">H", main, 0xFFF6 - 0x8000 + 2 * 14)[0])])
+    white = int(msxsprites.nearest(c15, pal, 1)[0])
+    black = next(i for i in range(1, 16) if (pal[i] == 0).all())
+    return [0, white, black, 0]
 
 
 def over_lines(vram: bytes, regs: list[int]) -> set[int]:
@@ -200,7 +252,11 @@ def main() -> int:
     prgb, hrgb = rgb9(pal_play), rgb9(pal_hud)
     hud_want = hud_expected(ram)
     sat_pending = ram[SPR_VBLANK - RAM_BASE] and ram[PUB_SEQ - RAM_BASE] == ram[APP_SEQ - RAM_BASE]
-    spr = {} if sat_pending else expected_sprites(objs, pal_play)
+    try:
+        spr = {} if sat_pending else expected_sprites(objs, pal_play)
+    except IndexError:                      # a product build records no pub_spr: render only
+        print("no sprite record (product build): sprites not checked")
+        spr, sat_pending = {}, True
     over = set() if sat_pending else over_lines(vram, regs_play)
     bad = border_px = checked = spr_ok = pending_px = 0
     diff_rows = []

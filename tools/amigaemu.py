@@ -30,7 +30,8 @@ usage:
   amigaemu.py run --frames 600 [--fire 300:20] [--dump build/emu/ram.bin]
                   [--watch 0x3e810-0x40000] [--screenshot build/emu/frame.png]
   amigaemu.py game --ram build/ram/level1_full.bin --gframes 200 [--joy 10:40:r --joy 60:5:rf ...]
-                   [--trace OUT.jsonl] [--screenshot build/emu/game.png]
+                   [--trace OUT.jsonl] [--bobs OUT.jsonl] [--screenshot build/emu/game.png]
+     (--bobs: per game frame, every draw_bob $AB08 call: A2, D4, D0, D1, minterm, drawn)
      (--joy GAMEFRAME:COUNT:KEYS, keys among u d l r f, game frames counted from the first)
 """
 from __future__ import annotations
@@ -412,6 +413,8 @@ class AmigaEmu:
 SENTINEL = 0x7FF00                     # return address of call(): stops the emulation
 MUSIC = (0x18000, 0x28000)              # MU1 and its player (up to DATAL1)
 GAME_FRAME_START = 0x80CC               # main_loop right after its VBL wait
+DRAW_BOB, DRAW_BOB_DONE = 0xAB08, 0xAC40  # draw_bob's entry and its "drawn" exit (moveq #0,D0)
+BOB_MINTERM = 0xAC16                    # the ori.w immediate the wrappers patch ($AC6E, $AC84)
 VECTORS = {0x64: 0x101CC, 0x68: 0x101DC, 0x6C: 0x10266, 0x70: 0x1015C, 0x78: 0x1015E}
 TRACE = {                               # name: (address, size, signed)
     "game_frame": (0xB00, 2, False), "player_x": (0x15D0, 2, True), "player_y": (0x15D4, 2, True),
@@ -430,6 +433,11 @@ CODE_BLOCKS = (                          # state kept inside the code area (tool
     (0xC44A, 0xC44C),                    # the marker scan's step
     (0xC53C, 0xC53E),                    # the marker spawn interval (moveq immediate)
     (0xC598, 0xC59C),                    # the marker table's last entry
+    (0x8C98, 0x8C9A),                    # RoboCop's state on the vehicle (an immediate)
+    (0x9018, 0x9088),                    # level 1 special objects' records
+    (0xB02A, 0xB02C),                    # player_move's joystick mask (moveq immediate)
+    (0xF07E, 0xF080),                    # the explosions' frame divider
+    (0xF826, 0xF828),                    # the palette flash countdown
 )
 
 
@@ -523,24 +531,74 @@ class GameBench(AmigaEmu):
         v = int.from_bytes(bytes(self.uc.mem_read(addr, size)), "big", signed=signed)
         return v
 
-    def play(self, game_frames: int, script: list[tuple[int, int, str]], ram: bool = False) -> list[dict]:
+    def play(self, game_frames: int, script: list[tuple[int, int, str]], ram: bool = False,
+             tele: list[tuple[int, int, int]] = (), god: bool = False, first: int = 0,
+             sink=None, pokes: list[tuple[int, int, int, int]] = (), bobs=None) -> list[dict]:
         """Runs game frames from main_loop; returns the traced variables at each frame start (with
         ram: also the game's variables $B00-$16EB, globals $8000-$80FF and the state kept in the
-        code area, CODE_BLOCKS, as hex)."""
+        code area, CODE_BLOCKS, as hex). Test aids, applied after a frame's row is recorded (the
+        MSX test builds do the same at the start of their game tick, tools/mkrom.py TELE / GOD):
+        tele (game frame, x, y) puts RoboCop and the camera there; god keeps the energy ($169A
+        100h) and the lives ($8034: 2) full and the level's end away ($16C4: 100h); pokes (game
+        frame, address, value, size 1/2) write the game's variables. Rows are kept
+        from game frame first on; with a sink (a text file) they are written there as JSON lines
+        instead of kept. With bobs (a text file): per game frame a JSON line of its draw_bob calls
+        [A2, D4, D0, D1 (world), minterm, drawn]."""
         hits = []
+        count = [0]
+        calls = []
+        gf = [0]
+
+        def word(reg: int) -> int:
+            v = self.uc.reg_read(reg) & 0xFFFF
+            return v - 0x10000 if v & 0x8000 else v
+
+        def on_bob(uc, address, size, user_data):
+            if address == DRAW_BOB:
+                calls.append([self.uc.reg_read(a_reg(2)) & 0xFFFFFF, self.uc.reg_read(d_reg(4)) & 0xFFFF,
+                              word(d_reg(0)), word(d_reg(1)), self.read_word(BOB_MINTERM), 0])
+            elif address == DRAW_BOB_DONE and calls:
+                calls[-1][5] = 1
+
+        hb = None
+        if bobs is not None:
+            hb = self.uc.hook_add(UC_HOOK_CODE, on_bob, None, DRAW_BOB, DRAW_BOB_DONE)
 
         def on_frame(uc, address, size, user_data):
-            n = len(hits)
+            n = count[0]
+            count[0] += 1
+            if bobs is not None:
+                if n > 0 and n - 1 >= first:
+                    bobs.write(json.dumps({"frame": n - 1, "game_frame": gf[0], "bobs": calls}) + "\n")
+                calls.clear()
+                gf[0] = self.read_var(0xB00, 2, False)
             keys = "".join(k for s, c, k in script if s <= n < s + c)
             self.joy = joy_value(keys)
             self.fire = "f" in keys
-            row = {name: self.read_var(*spec) for name, spec in TRACE.items()} | {"keys": keys}
-            if ram:
-                row["ram"] = bytes(uc.mem_read(RAM_BLOCK[0], RAM_BLOCK[1] - RAM_BLOCK[0])).hex()
-                row["glob"] = bytes(uc.mem_read(GLOB_BLOCK[0], GLOB_BLOCK[1] - GLOB_BLOCK[0])).hex()
-                row["code"] = {f"{lo:x}": bytes(uc.mem_read(lo, hi - lo)).hex() for lo, hi in CODE_BLOCKS}
-            hits.append(row)
-            if len(hits) > game_frames:
+            if n >= first:
+                row = {name: self.read_var(*spec) for name, spec in TRACE.items()} | {"keys": keys}
+                if ram:
+                    row["ram"] = bytes(uc.mem_read(RAM_BLOCK[0], RAM_BLOCK[1] - RAM_BLOCK[0])).hex()
+                    row["glob"] = bytes(uc.mem_read(GLOB_BLOCK[0], GLOB_BLOCK[1] - GLOB_BLOCK[0])).hex()
+                    row["code"] = {f"{lo:x}": bytes(uc.mem_read(lo, hi - lo)).hex() for lo, hi in CODE_BLOCKS}
+                if sink is not None:
+                    sink.write(json.dumps(row) + "\n")
+                else:
+                    hits.append(row)
+            for f, x, y in tele:
+                if f == n:
+                    uc.mem_write(0x15D0, struct.pack(">h", x))
+                    uc.mem_write(0x15D4, struct.pack(">h", y))
+                    uc.mem_write(0x0B04, struct.pack(">h", max(0, min(0x8E0, x - 0x108))))
+                    uc.mem_write(0x0B06, struct.pack(">h", max(0, y - 0x70)))
+            for f, addr, v, size in pokes:
+                if f == n:
+                    uc.mem_write(addr, (v & (0xFF if size == 1 else 0xFFFF)).to_bytes(size, "big"))
+            if god:
+                uc.mem_write(0x169A, struct.pack(">h", 0x100))
+                uc.mem_write(0x8034, struct.pack(">h", 2))
+                uc.mem_write(0x16C4, struct.pack(">h", 0x100))
+            if count[0] > game_frames:
                 uc.emu_stop()
                 self._sentinel_hit = True
 
@@ -549,7 +607,9 @@ class GameBench(AmigaEmu):
         while not self._sentinel_hit:
             self._run_one_frame()
         self.uc.hook_del(h)
-        return hits[:game_frames]
+        if hb is not None:
+            self.uc.hook_del(hb)
+        return hits[:game_frames - first]
 
 
 def parse_range(s: str) -> tuple[int, int]:
@@ -565,6 +625,10 @@ def main() -> int:
     ap.add_argument("--joy", action="append", default=[], help="game: GAMEFRAME:COUNT:KEYS (u d l r f)")
     ap.add_argument("--trace", type=Path, help="game: JSON lines of the traced variables")
     ap.add_argument("--trace-ram", action="store_true", help="game: also the variables' blocks in the trace")
+    ap.add_argument("--tele", action="append", default=[], help="game: GAMEFRAME:X:Y puts RoboCop and the camera there")
+    ap.add_argument("--god", action="store_true", help="game: energy and lives kept full, the level never ends")
+    ap.add_argument("--trace-from", type=int, default=0, help="game: trace rows from this game frame on")
+    ap.add_argument("--drive", type=Path, help="game: joystick, teleports and god mode from a tools/drivejoy.py file")
     ap.add_argument("--extracted", type=Path, default=ROOT / "build" / "extracted")
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--insns", type=int, default=40000, help="instructions per frame")
@@ -572,6 +636,7 @@ def main() -> int:
     ap.add_argument("--watch", action="append", default=[], help="write range to log, e.g. 0x3e810-0x40000")
     ap.add_argument("--dump", type=Path)
     ap.add_argument("--screenshot", type=Path)
+    ap.add_argument("--bobs", type=Path, help="game: JSON lines of each game frame's draw_bob calls")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     if a.cmd == "game":
@@ -581,10 +646,25 @@ def main() -> int:
         for j in a.joy:
             f, c, k = j.split(":")
             script.append((int(f), int(c), k))
-        rows = bench.play(a.gframes, script, a.trace_ram)
+        tele = [tuple(int(v, 0) for v in t.split(":")) for t in a.tele]
+        pokes = []
+        if a.drive:                      # (the same input as the MSX's driven trace)
+            joy_hex, tele_s, god_s, poke_s = (a.drive.read_text().split("\n") + ["", "", "", ""])[:4]
+            for n, b in enumerate(bytes.fromhex(joy_hex.strip())):
+                if b:
+                    script.append((n, 1, "".join(k for k, m in zip("udlrf", (1, 2, 4, 8, 16)) if b & m)))
+            tele += [tuple(int(v, 0) for v in t.split(":")) for t in tele_s.split()]
+            a.god = a.god or god_s.strip() == "1"
+            pokes = [tuple(int(v, 0) for v in t.split(":")) for t in poke_s.split()]
+        bobs = a.bobs.open("w") if a.bobs else None
         if a.trace:
             a.trace.parent.mkdir(parents=True, exist_ok=True)
-            a.trace.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            with a.trace.open("w") as sink:
+                rows = bench.play(a.gframes, script, a.trace_ram, tele, a.god, a.trace_from, sink, pokes, bobs)
+        else:
+            rows = bench.play(a.gframes, script, a.trace_ram, tele, a.god, a.trace_from, pokes=pokes, bobs=bobs)
+        if bobs:
+            bobs.close()
         for r in rows[:: max(1, len(rows) // 12)]:
             print({k: v for k, v in r.items() if k not in ("ram", "glob", "code")})
         print(f"VBL frames {bench.frame}, game frames {len(rows)}, level {bench.read_word(0x8050)}")

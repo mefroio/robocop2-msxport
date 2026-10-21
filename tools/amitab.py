@@ -24,7 +24,7 @@ import struct
 import sys
 from pathlib import Path
 
-BANKS = ("fixed", "c1", "c2", "l1", "l2", "l3")   # fixed code, logic modules, level banks
+BANKS = ("fixed", "c1", "c2", "c3", "l1", "l2", "l3")   # fixed code, logic modules, level banks
                                                  # (msx/rc2.asm includes every at_<bank>.inc)
 
 

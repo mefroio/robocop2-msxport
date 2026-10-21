@@ -41,9 +41,9 @@ def msx_rows(path: Path) -> list[dict]:
 
 
 FIELDS = Path(__file__).resolve().parents[1] / "analysis" / "amiga_ram.tsv"
-LABELS = Path(__file__).resolve().parents[1] / "build" / "msx" / "rc2.labels"
+LABELS = Path(__file__).resolve().parents[1] / "build" / "msx" / "rc2_ext.labels"   # (the EXTJOY=1 test ROM's)
 RAM0, GLOB0 = 0x0B00, 0x8000
-MSX_DUMPS = (0xD000, 0xDC00, 0xDD00, 0xEE00)     # openmsx_rc2.tcl rc2_trace_ram: one hex field each
+MSX_DUMPS = (0xD000, 0xDC00, 0xDD00, 0xEE00, 0xE900)     # openmsx_rc2.tcl rc2_trace_ram: one hex field each
 
 
 def fields() -> list[dict]:
@@ -80,10 +80,10 @@ def fields() -> list[dict]:
     return out
 
 
-def labels() -> dict[str, int]:
+def labels(path: Path = LABELS) -> dict[str, int]:
     out = {}
-    if LABELS.exists():
-        for line in LABELS.read_text().splitlines():
+    if path.exists():
+        for line in path.read_text().splitlines():
             if ":" in line and "equ" in line:
                 k, v = line.split(":", 1)
                 v = v.split("equ", 1)[1].strip().lstrip("$")
@@ -126,15 +126,20 @@ def msx_value(dumps: list[tuple[int, bytes]], addr: int, size: int) -> int:
     raise KeyError(f"{addr:04X}h is in no block of the MSX trace")
 
 
-def compare_ram(amiga: Path, msx: Path, show: int) -> int:
-    ref = [json.loads(line) for line in amiga.read_text().splitlines() if line.strip()]
-    got = [line.split() for line in msx.read_text().splitlines() if line.strip()]
+def compare_ram(amiga: Path, msx: Path, show: int, label_file: Path = LABELS) -> int:
     fl = fields()
-    lab = labels()
-    n = min(len(ref), len(got))
+    lab = labels(label_file)
     bad = 0
     shown = 0
-    for i in range(n):
+    n = n_ref = n_got = 0
+    fa, fm = amiga.open(), msx.open()
+    ref_lines = (line for line in fa if line.strip())
+    got_lines = (line for line in fm if line.strip())
+    for line_a, line_m in zip(ref_lines, got_lines):         # (streamed: long traces)
+        i = n
+        n += 1
+        ref = {i: json.loads(line_a)}
+        got = {i: line_m.split()}
         dumps = [(base, swapped(bytes.fromhex(h))) for base, h in zip(MSX_DUMPS, got[i])]
         diff = []
         for f in fl:
@@ -146,7 +151,10 @@ def compare_ram(amiga: Path, msx: Path, show: int) -> int:
             m = f["msx"]
             if m is None:
                 m = 0xD000 + a - RAM0 if a < GLOB0 else 0xDC00 + a - GLOB0
-            vm = msx_value(dumps, m, 2 if "ptr" in f else size)   # (MSX pointers are 16-bit)
+            try:
+                vm = msx_value(dumps, m, 2 if "ptr" in f else size)   # (MSX pointers are 16-bit)
+            except KeyError:
+                continue                                    # (an older trace without that block)
             if "ptr" in f:
                 base, label = f["ptr"]
                 va, vm = (va - base) & 0xFFFF, (vm - lab.get(label, 0)) & 0xFFFF
@@ -157,7 +165,9 @@ def compare_ram(amiga: Path, msx: Path, show: int) -> int:
             if shown < show:
                 shown += 1
                 print(f"game frame {i} ({ref[i]['keys'] or '-'}): " + ", ".join(diff[:12]))
-    print(f"{n} game frames compared ({len(ref)} Amiga, {len(got)} MSX), {len(fl)} fields: {bad} differ")
+    n_ref = n + sum(1 for line in fa if line.strip())
+    n_got = n + sum(1 for line in fm if line.strip())
+    print(f"{n} game frames compared ({n_ref} Amiga, {n_got} MSX), {len(fl)} fields: {bad} differ")
     return 1 if bad else 0
 
 
@@ -167,9 +177,11 @@ def main() -> int:
     ap.add_argument("msx", type=Path)
     ap.add_argument("--show", type=int, default=10, help="differing frames to print")
     ap.add_argument("--ram", action="store_true", help="compare the full game state (field map)")
+    ap.add_argument("--labels", type=Path, default=LABELS,
+                    help="label file of the ROM that made the MSX trace (pointer fields)")
     a = ap.parse_args()
     if a.ram:
-        return compare_ram(a.amiga, a.msx, a.show)
+        return compare_ram(a.amiga, a.msx, a.show, a.labels)
     ref = [json.loads(line) for line in a.amiga.read_text().splitlines() if line.strip()]
     got = msx_rows(a.msx)
     n = min(len(ref), len(got))

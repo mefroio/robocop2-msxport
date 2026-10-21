@@ -5,10 +5,14 @@
 ; - every port 99h sequence (register write, VRAM address, status read) runs with
 ;   interrupts disabled, and R#15 is 0 whenever interrupts are enabled;
 ; - the registers of the next frame are published as a list [seq, len, value, reg|80h, ...,
-;   cam_x, cam_y, sprite state (8 bytes)] (the tail is not sent to the VDP; it records what the
-;   list shows, for verification)
-;   through vbl_ptr (one 16-bit store, atomic); the ISR applies it at every VBLANK and
-;   copies seq to app_seq.
+;   cam_x, cam_y, game frame] (the tail is not sent to the VDP; with the list's pub_spr copy it
+;   records what the list shows, for verification)
+;   (publish) together with the sprite engine's uploads for it (sprites.asm: pq, run by
+;   spr_upload in the split interrupt); the VBLANK after they ran puts the list on screen
+;   (vbl_ptr: applied at every VBLANK, seq copied to app_seq) with its SAT;
+; - both interrupts write VRAM, so every VRAM stream of the main program sets vram_busy before
+;   its address and ends with vram_done (which writes a SAT the interrupt left meanwhile); the
+;   uploads then wait for the next frame.
 ;
 ; Split timing (openMSX VDP model): the line interrupt fires at the right border of display
 ; line (R#19 - R#23) & 255; R#1 (blank), R#8 (sprites) and R#18 take effect at the start of
@@ -33,6 +37,34 @@ isr_init:
         ld (split_armed),a
         ld (tick),a
         ld (last_tick),a
+        ld (pk_state),a             ; (the sprite engine's state the interrupts share)
+        ld (pk_mux),a
+        ld (pq_buf),a
+        ld (bq_head),a
+        ld (bq_tail),a
+        ld (vram_busy),a
+        ld (sat_due),a
+        ld (sat_mux_n),a
+        ld (spr_vblank),a
+        ld (pub_seq),a              ; the list on screen until the first one is published: one
+        ld (app_seq),a              ; that changes nothing (R#15 = 0). At power-on the RAM holds
+        ld hl,vbl_list_a            ; anything, and a list read from it once wrote R#14 and an
+        ld (vbl_ptr),hl             ; address in the middle of the tiles' upload after the title
+        ld (pk_list),hl
+        ld (hl),a                   ; (seq 0)
+        inc hl
+        ld (hl),2
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),0x8F
+        ld hl,sat_pair0
+        ld (sat_cur),hl
+        ld (sat_nb),hl
+        ld hl,pq_buf
+        ld (pq_rd),hl
+        ld a,R5_SET_A
+        ld (spr_dsp),a
         ret
 
 isr:    push af
@@ -155,17 +187,49 @@ sp_pal: ld a,1
         out (c),a
         ld a,0x99
         out (c),a                   ; V9958: no border mask in the HUD
-sp_msk: xor a
+sp_msk: ld a,SPLIT_R19
+        out (c),a
+        ld a,0x80 + 19
+        out (c),a                   ; R#19 against the HUD's R#23: its match (line V-4) is behind
+        ld a,1                      ; us, so no second line interrupt comes before the VBLANK's
+        out (c),a                   ; list (the play field's R#19 against the HUD's R#23 matched
+        ld a,0x8F                   ; below the split, while the uploads below kept the interrupts
+        out (c),a                   ; off: the VBLANK re-armed the split and that late match ran
+        in a,(c)                    ; it in the blank, the next picture all HUD page); one that
+        xor a                       ; came meanwhile is acknowledged (S#1)
         out (c),a
         ld a,0x8F
         out (c),a                   ; R#15 = 0
-        ret
+        jp spr_upload               ; sprites off until the next frame: their uploads
 
-; VBLANK: registers of the frame being shown next and the play-field palette.
+; VBLANK: registers of the frame being shown next, the play-field palette (pf_pal) and, when
+; the list is a new one, the SAT built for it (it must be in VRAM before the first display
+; line: written by the main program it often came in the middle of the picture); in the front
+; end (front_mode) only the frame count and the sound.
 isr_vblank:
+        ld a,(front_mode)
+        or a
+        jr nz,iv_tick
+        ld a,(pk_state)
+        cp 1
+        jr nz,iv_rdy
+        ld a,(split_armed)          ; (no split since the last VBLANK: the display or the line
+        or a                        ; interrupt is off) the published frame's uploads now
+        call nz,spr_upload
+        ld a,(pk_state)
+iv_rdy: cp 2
+        jr nz,iv_list
+        xor a
+        ld (pk_state),a
+        ld hl,(pk_list)
+        ld (vbl_ptr),hl             ; the published frame from this one on
+iv_list:
         ld hl,(vbl_ptr)
+        ld a,(app_seq)
+        cp (hl)
         ld a,(hl)
         ld (app_seq),a
+        push af                     ; (NZ: a new list)
         inc hl
         ld b,(hl)
         inc hl
@@ -174,14 +238,25 @@ isr_vblank:
         out (c),a
         ld a,0x90
         out (c),a                   ; R#16 = colour 1
-        ld hl,palette+2
+        ld hl,pf_pal+2
         ld bc,30*256 + VDP_PAL
         otir
         ld a,1
         ld (split_armed),a
+        pop af
+        jr nz,iv_new
+        ld a,(pk_mux)               ; the same frame: objects alternating take turns
+        or a
+        call nz,iv_satw
+        jr iv_late
+iv_new: call iv_sat                 ; (sprites.asm)
+iv_late:
+        call spr_late               ; more of the sprites' background uploads
+iv_tick:
         ld hl,tick
         inc (hl)
-        ret
+        jp snd_frame                ; the music and the sound effects (AF, BC, HL saved; it keeps
+                                    ; DE, IX, IY and the alternate registers)
 
 ; Builds split_list for the engine in use: A = 2 for the V9958 engine, else the V9938 one.
 split_init:
@@ -222,12 +297,22 @@ publish:
         inc a
         ld (pub_seq),a
         ld (hl),a
-        ld (vbl_ptr),hl             ; one store: the ISR sees the old or the new list
+        ld (pk_list),hl
+        push hl
+        ld hl,pq_buf
+        ld (pq_rd),hl               ; (its queue from the start)
+        pop hl
+        ld a,(pq_buf)               ; no uploads for it: ready at once
+        or a
+        ld a,1
+        jr nz,pb_st
+        inc a
+pb_st:  ld (pk_state),a             ; (last: the interrupts see a complete frame)
         ret
 
 ; Ends a register list being filled (HL past its last pair, the list's address on the stack):
-; appends the camera and the sprite state it shows (not sent to the VDP; for verification)
-; and publishes it.
+; appends the camera, the game frame ($B00: the tick shown is the one before) and the sprite
+; state it shows (not sent to the VDP; for verification) and publishes it.
 list_tail:
         ld de,(cam_x)
         ld (hl),e
@@ -238,7 +323,13 @@ list_tail:
         ld (hl),e
         inc hl
         ld (hl),d
+        inc hl
+        ld de,(g_frame)
+        ld (hl),e
+        inc hl
+        ld (hl),d
         pop hl                      ; the list: what its SAT shows goes to its pub_spr copy
+        if EXTJOY                   ; (test builds)
         push hl
         ld de,pub_spr
         ld a,l
@@ -249,6 +340,7 @@ lt_a:   ld hl,pub_cur
         ld bc,MAX_OBJ*8
         ldir
         pop hl
+        endif
         jp publish
 
 ; Returns HL = the list not in use by the ISR.
@@ -265,6 +357,26 @@ next_list:
 ; starts on top of one that is still pending), calling idle_work meanwhile; counts frames and
 ; late frames (more than one VBLANK since the previous call).
 wait_frame:
+        if LOCKSTEP
+        ld a,(last_tick)            ; (test builds: every frame starts LOCKSTEP VBLANKs after the
+        add a,LOCKSTEP              ; one before; lk_over counts those that came later)
+        ld b,a
+wfk_lp: ld a,(tick)
+        sub b
+        jp p,wfk_go
+        push bc
+        call idle_work
+        pop bc
+        jr wfk_lp
+wfk_go: jr z,wfk_ok
+        ld hl,lk_over
+        inc (hl)
+wfk_ok: ld a,b
+        ld (last_tick),a
+        ld a,2
+        ld (wf_n),a
+        jr wf_ok
+        endif
         ld a,(last_tick)
         ld b,a
 wf_lp:  ld a,(app_seq)
@@ -282,6 +394,7 @@ wf_idle:
         jr wf_lp
 wf_got: ld (last_tick),a
         sub b
+        ld (wf_n),a                 ; (the cadence counts them)
         dec a
         jr z,wf_ok
         ld hl,(late)

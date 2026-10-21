@@ -4,7 +4,7 @@
 ;   player_move   $AFF8 -> pl_move: state machine, steps against the walls of the map attributes
 ;                          (bit 1), jumps, falls and landings on floors (bits 0/2) and lifts ($BD72),
 ;                          animation counter, camera and the start-of-level sequence
-;   update_player $ACEC -> pl_aim: the aim (the shots come with the next step of the port)
+;   update_player $ACEC -> pl_aim: the aim; the fire, shots and effects: shots.asm pl_fire
 ;   draw_player   $B94A -> pl_frame: the state's last animation step ($15E8), the frame record and
 ;                          its hotspot; pl_show (after the scroll engine): the composition and
 ;                          its place on screen
@@ -24,8 +24,9 @@ SPR_Y_OFS:  equ -16 - 25 - 0x1E     ; VSTART = hot_y - 16 + y - camera_y - 25 ($
 WALL:       equ 2                   ; map attribute bits
 FLOOR:      equ 5
 
-; Start of level 1 (level_init $871A, clear_game_vars $FE96): the game variables cleared,
-; RoboCop and the camera at the header's position, no state asked for; the cadence for the
+; Start of level 1 (level_init $871A, clear_game_vars $FE96): the game variables cleared (with
+; the keyboard and joystick bytes, the input lock and the joystick mask), RoboCop and the camera
+; at the header's position, no state asked for; the cadence for the
 ; machine's refresh rate (RG9SAV bit 1: 50 Hz) and the view on the camera.
 pl_init:
         ld hl,AM_START
@@ -36,6 +37,18 @@ pl_init:
         ld bc,G_VARS_END - G_VARS
         xor a
         call fill
+        xor a
+        ld (g_keys),a               ; (clear_game_vars: $802D, $802E, $804D)
+        ld (g_joy),a
+        ld (g_lock),a
+        ld a,0x7F
+        ld (ac_jmask),a             ; ($B02B)
+        xor a
+        call pal_fade               ; black until the fade in
+        if INPUT_SCRIPT
+        ld hl,input_script
+        ld (sc_run),hl              ; (the script's first run, from game frame 0)
+        endif
         ld hl,LVL_X
         ld (p_x),hl
         ld (gcam_x),hl
@@ -56,23 +69,127 @@ pi_hz:  ld (g_step),a
         neg
         add a,CAD_TICK
         ld (g_acc),a                ; the first frame ticks
+        ld a,1
+        ld (wf_n),a
         jp pl_view
 
-; Once per frame, before anything else: g_tick = 1 on the frames the game ticks (30 per second,
-; as the NTSC original: its main loop waits for 2 VBLs of 60 Hz).
-CAD_TICK:   equ 10                  ; + g_step (6 at 50 Hz, 5 at 60 Hz) per frame, a tick at 10
+; Once per frame, after its list is published: g_tick = the game ticks due (TICK_HZ a second:
+; 30 as the NTSC original, whose main loop waits for 2 VBLs of 60 Hz, or 25 as the PAL one,
+; tools/mkrom.py TICK_HZ), counted on the VBLANKs since the
+; last frame (wf_n), so that late frames (busy ticks took more than their frames) are caught up
+; with ticks run in a row (the display skips their pictures).
+; At most CAD_MAX ticks in a frame (tools/mkrom.py CAD_MAX; CAD_HOLD while the V9938 scroll keeps
+; the camera at a page's edge): a longer delay is lost (only then the game slows down, as the
+; original does when its frame takes 3 VBLs).
+LAG_MAX:    equ 32                  ; pixels the view shown may lag behind the camera (cadence)
+RC_EDGE:    equ 16                  ; pixels RoboCop keeps from the screen's edges while it lags
+CAD_TICK:   equ 300 / TICK_HZ       ; + g_step (6 at 50 Hz, 5 at 60 Hz) per VBLANK, a tick at 10
+                                    ; (30 Hz) or 12 (25 Hz)
 cadence:
+        if LOCKSTEP
+        ld a,2                      ; (test builds: two ticks every frame, the first one's picture
+        ld (g_tick),a               ; skipped)
+        ld (g_tn),a
+        ret
+        endif
+        ld a,(wf_n)
+        cp 8
+        jr c,cd_n
+        ld a,8
+cd_n:   ld b,a
         ld a,(g_step)
-        ld hl,g_acc
-        add a,(hl)
+        ld c,a
+        ld a,(g_acc)
+cd_add: add a,c
+        djnz cd_add
         ld b,0
-        cp CAD_TICK
+cd_lp:  cp CAD_TICK
         jr c,cd_set
         sub CAD_TICK
         inc b
-cd_set: ld (hl),a
-        ld a,b
-        ld (g_tick),a
+        jr cd_lp
+cd_set: ld c,a
+        ld d,0                      ; none while the view shown is LAG_MAX pixels or more behind
+        call cam_lag                ; the one the game wants, or lags at all with RoboCop at the
+        jr nc,cd_cap                ; screen's edge (the scroll catches up first: he never runs off
+        call rc_safe                ; the screen), else at most CAD_MAX, CAD_HOLD while the V9938
+        jr nc,cd_cap                ; scroll kept the camera at a page's edge (its next page comes
+        ld d,CAD_MAX                ; sooner)
+        ld a,(cam_held)
+        or a
+        jr z,cd_cap
+        ld d,CAD_HOLD
+cd_cap: ld a,d
+        cp b
+        jr nc,cd_n2
+        ld b,d                      ; more due: the rest is lost (the game slows down)
+cd_n2:  ld a,b
+cd_max: ld (g_tick),a
+        ld (g_tn),a
+        ld a,c
+        ld (g_acc),a
+        ret
+
+; -> C when the view shown (cam_x, cam_y: the scroll engine holds them while its next page or row
+; is not ready) is less than LAG_MAX pixels from the one the game wants (v_x, v_y). Keeps BC.
+cam_lag:
+        ld hl,(v_x)
+        ld de,(cam_x)
+        call cl_abs
+        ret nc
+        ld hl,(v_y)
+        ld de,(cam_y)
+cl_abs: or a
+        sbc hl,de
+        jr nc,cl_p
+        ex de,hl
+        ld hl,0
+        or a
+        sbc hl,de                   ; (the distance)
+cl_p:   ld de,LAG_MAX
+        or a
+        sbc hl,de
+        ret
+
+; -> NC when the view shown lags behind the one the game wants (x) and RoboCop's sprites reach
+; within RC_EDGE pixels of the screen's left or right edge. Keeps BC.
+rc_safe:
+        ld hl,(v_x)
+        ld de,(cam_x)
+        or a
+        sbc hl,de
+        scf
+        ret z                       ; (no lag: at the map's ends he may walk to its edge)
+        ld ix,obj_tab
+        bit 7,(ix+O_FLAGS)
+        scf
+        ret z
+        ld l,(ix+O_X)
+        ld h,(ix+O_X+1)
+        ld a,(ix+O_MINDX)
+        ld e,a
+        rla
+        sbc a,a
+        ld d,a
+        push hl
+        add hl,de                   ; his left edge
+        ld de,RC_EDGE
+        or a
+        sbc hl,de
+        pop hl
+        jp p,rs_r
+        or a                        ; (NC: too far left)
+        ret
+rs_r:   ld a,(ix+O_MAXDX)
+        ld e,a
+        rla
+        sbc a,a
+        ld d,a
+        add hl,de
+        ld de,16 + RC_EDGE - 256
+        add hl,de                   ; his right edge + RC_EDGE - 256
+        ld a,h
+        rla                         ; C when it is left of the edge
         ret
 
 ; One game frame: main_loop's calls that are ported so far, in its order.
@@ -80,9 +197,12 @@ game_tick:
         ld a,COST_GAME
         call spr_charge
         call logic_map              ; the logic banks at 8000h and A000h
+        if INPUT_SCRIPT
+        call script_tick            ; test builds: teleports, god mode
+        endif
         ld a,(g_paused)
         or a
-        jr nz,gt_pause
+        jp nz,gt_pause
         call pl_fade                ; $F878
         call frame_keys             ; $F76C
         ld a,(g_paused)
@@ -91,26 +211,41 @@ game_tick:
 gt_go:  call bob_begin              ; no BOB drawn yet
 gtp_move:
         call pl_move                ; $AFF8
+        call pl_hits                ; $FA7C (hits.asm)
+        call feed_vdp               ; (the V9938 scroll engine's VDP commands: between the stages)
 gtp_act:
+        ld a,BANK_LC3
+        call bank_8000
+        call hz_update              ; $9150 (module 3)
         ld a,BANK_LC2
         call bank_8000
         call activate_objects       ; $9C06 (module 2)
+        call feed_vdp
+gtp_sp: ld a,BANK_LC3
+        call bank_8000
+        call sp_update              ; $8B32 (module 3: special.asm)
         ld a,BANK_LC1
         call bank_8000
+        call feed_vdp
 gtp_aim:
-        call pl_aim                 ; $ACEC
+        call pl_aim                 ; $ACEC: the aim,
+        call pl_fire                ;   the fire, the shots and effects (shots.asm)
         call pl_frame               ; $B94A
 gtp_eb: ld a,BC_EBULLET
         ld (bob_cat),a
         call eb_update              ; $F3CE
         call joy_read               ; $BDEC
+        call feed_vdp
 gtp_uo: ld a,BC_ENEMY
         ld (bob_cat),a
         call update_objects         ; $C3E4
+        call feed_vdp
 gtp_ex: ld a,BC_EXPL
         ld (bob_cat),a
         call expl_update            ; $F080
+        call pk_update              ; $F900 (hits.asm)
 gtp_en: call en_update              ; $89BE (the can itself: hud_energy)
+        call rnd_step               ; $BDCE (logic.asm)
 gtp_end:
         ld hl,(g_frame)
         inc hl
@@ -120,13 +255,21 @@ gtp_end:
         inc hl
         inc hl
         ld (AM + 0x0B02),hl         ; ($B02 += 3)
-        ret
+        ld hl,(tick_n)
+        inc hl
+        ld (tick_n),hl
+        ld a,BANK_LC3
+        call bank_8000
+        call frame_end              ; $8144-$82E8 (module 3: frame.asm)
+        ld (g_event),a
+        ld a,BANK_LC1
+        jp bank_8000
 
 gt_pause:
         call fk_keys
         ld a,(g_paused)
         or a
-        jr z,gt_go
+        jp z,gt_go
         ld hl,pause_n
         dec (hl)
         ret nz
@@ -232,16 +375,13 @@ key_scan:
         cp (hl)
         ret z
         ld (hl),a
-        ld a,0x19
+        or a                        ; (pressed or released: the flags of the cp told only that it
+        ld a,0x19                   ; changed, so a release gave 19h too and P never resumed)
         jr nz,ks_set
         ld a,0x99
 ks_set: ld (g_key),a
         ret
         endif
-
-; A = sound effect, C = request slot ($18014 with D0, D2): with the sound driver.
-snd_play:
-        ret
 
 ; ----- palette fades ($F878) -----
 
@@ -250,6 +390,20 @@ snd_play:
 ; palette itself (each component at most ((level + 1) / 2) & 1Eh of 15, the flash of $F826):
 ; with the palette effects.
 pl_fade:
+        ld hl,(ac_flash)            ; the palette flash ($F826): counted down, the level's
+        bit 7,h                     ; palette back at 0, then -1 (idle)
+        jr nz,plf_go
+        ld a,h
+        or l
+        jr nz,plf_dec
+        ld (ac_flpal),a             ; (PAL_LEVEL)
+        push hl
+        call pal_robo               ; RoboCop in the level's colours again
+        pop hl
+plf_dec:
+        dec hl
+        ld (ac_flash),hl
+plf_go:
         ld hl,p_fade
         ld a,(p_fadein)
         or a
@@ -258,15 +412,17 @@ pl_fade:
         cp 0x1F
         ret z
         inc (hl)
+        ld a,(hl)
         ld hl,FADE_STATE
         ld (p_pend),hl
         ld (p_state),hl
-        ret
+        jp pal_fade
 pf_out: ld a,(hl)
         or a
         ret z
         dec (hl)
-        ret
+        ld a,(hl)
+        jp pal_fade
 
 ; ----- player_move ($AFF8) -----
 
@@ -278,8 +434,9 @@ pl_move:
         ld (pm_d5),a                ; D5 = state & 7Eh
         ld a,0xFF
         ld (pm_d2),a                ; D2 = -1: no new state
+        ld hl,ac_jmask              ; (the immediate $B02B: 0 while the vehicle steers)
         ld a,(g_joy)
-        and 0x7F
+        and (hl)
         ld (pm_d0),a                ; D0 = joystick bits
         ld hl,(p_conf)              ; reversed controls ($1698)
         ld a,h
@@ -877,11 +1034,11 @@ pl_cellof:
         ld (p_col),a
         ret
 
-; The screen flash of the reversed controls ($F80E with the palette at $1010A for 4 frames):
-; with the palette effects. The effect of states 6/7 ($ACBC type 8): with the shots.
+; The flash of the reversed controls ($F80E with the palette at $1010A). (The effect of states
+; 6/7, $AFC4: shots.asm pl_punch.)
 pl_flash:
-pl_punch:
-        ret
+        ld a,PAL_REVERSE
+        jp pal_flash
 
 ; ----- update_player ($ACEC): the aim -----
 
@@ -907,8 +1064,22 @@ pl_aim:
 ; ----- draw_player ($B94A) -----
 
 ; The state's last animation step ($15E8), the frame record (counter / 2; past the state's
-; records its last one, where the Amiga would read on) and its hotspot + 8 ($15CC, $15CE).
+; records its last one, where the Amiga would read on) and its hotspot + 8 ($15CC, $15CE). The
+; hit spark ($16A0, set by $FA7C) runs down: while it runs, frame (counter & 0Eh) / 2 of it
+; ($B4DA) is drawn on him (spk_k, pl_show).
 pl_frame:
+        ld hl,(AM + 0x16A0)
+        ld a,h
+        or l
+        jr z,pf_spark
+        ld a,l
+        and 0x0E
+        rrca
+        inc a                       ; its frame + 1
+        dec hl
+        ld (AM + 0x16A0),hl
+pf_spark:
+        ld (spk_k),a
         ld a,(p_state)
         ld e,a
         ld d,0
@@ -959,7 +1130,7 @@ pf_rec: add a,c
         ret
 
 ; RoboCop's composition (record x aim, or a start-of-level arm pose) and its place on screen,
-; against the view as the scroll engine shows it (after do_update).
+; and the hit spark, against the view as the scroll engine shows it (after do_update).
 pl_show:
         ld a,(p_rec)
         ld c,a
@@ -991,7 +1162,7 @@ ps_pos: ld hl,(p_x)
         ld de,(cam_x)
         or a
         sbc hl,de
-        push hl
+        ld (ps_x),hl
         ld hl,(p_y)
         ld de,(p_hoty)
         add hl,de
@@ -1000,24 +1171,62 @@ ps_pos: ld hl,(p_x)
         ld de,(cam_y)
         or a
         sbc hl,de
+        ld (ps_y),hl
+        ex de,hl
+        ld hl,(ps_x)
+        xor a
+        call obj_pos
+        ld a,(spk_k)                ; the hit spark: cut into his buffer at x ($16A2) & -16,
+        or a                        ; y ($16A4) ($BB96)
+        ld a,SPARK_OBJ
+        jp z,obj_hide
+        ld a,(spk_k)
+        add a,SPR_SPARK - 1
+        ld e,a
+        ld d,0
+        ld a,SPARK_OBJ
+        call obj_bob
+        ld a,(AM + 0x16A2)
+        and 0xF0
+        ld e,a
+        ld d,0
+        ld hl,(ps_x)
+        add hl,de
+        push hl
+        ld a,(AM + 0x16A4)
+        ld e,a
+        ld hl,(ps_y)
+        add hl,de
         ex de,hl
         pop hl
-        xor a
+        ld a,SPARK_OBJ
         jp obj_pos
 
 ; ----- the view -----
 
 ; The MSX shows 256 x 163 of the game's 288 x 176 camera, so its range is a little larger: the
 ; view runs ahead of the camera in proportion and meets it at both ends of the map,
-; v = c + c * VIEW_K / 65536 (VIEW_KX, VIEW_KY from tools/mkrom.py), at most the scroll engine's
-; limits. dir_x follows the view (the V9938 engine builds its next page on that side).
+; v = c + c * VIEW_K / 65536 (VIEW_KX, VIEW_KY from tools/mkrom.py; taken per 16 pixels of c),
+; at most the scroll engine's limits. The game's camera follows RoboCop with a lag (1/16 of the
+; way a tick in x, 1/8 in y) that its wider view hides: the MSX's keeps him within AX_MIN..
+; AX_MAX of the screen (his place as pl_show puts him) and his feet within AY_MIN..AY_MAX of
+; the play area. dir_x follows the view (the V9938 engine builds its next page on that side).
+AX_MIN:     equ 48
+AX_MAX:     equ 160
+AY_MIN:     equ 76
+AY_MAX:     equ 150
 pl_view:
-        ld bc,(gcam_x)
-        ld de,VIEW_KX
-        call mul16
         ld hl,(gcam_x)
-        add hl,de
-        ld de,CAM_X_MAX
+        ld de,view_offx
+        call pv_add
+        ld de,(p_x)
+        ld bc,SPR_X_OFS + 8 - AX_MAX
+        ld a,AX_MAX - AX_MIN
+        call pv_keep
+        bit 7,h
+        jr z,pv_x0
+        ld hl,0
+pv_x0:  ld de,CAM_X_MAX
         or a
         sbc hl,de
         add hl,de
@@ -1033,12 +1242,17 @@ pv_x:   ld de,(v_x)
         jr nc,pv_xd
         inc a
 pv_xd:  ld (dir_x),a
-pv_y:   ld bc,(gcam_y)
-        ld de,VIEW_KY
-        call mul16
-        ld hl,(gcam_y)
-        add hl,de
-        ld de,CAM_Y_MAX
+pv_y:   ld hl,(gcam_y)
+        ld de,view_offy
+        call pv_add
+        ld de,(p_y)
+        ld bc,0 - AY_MAX
+        ld a,AY_MAX - AY_MIN
+        call pv_keep
+        bit 7,h
+        jr z,pv_y0
+        ld hl,0
+pv_y0:  ld de,CAM_Y_MAX
         or a
         sbc hl,de
         add hl,de
@@ -1056,18 +1270,58 @@ pv_y1:  ld de,(v_y)
 pv_yd:  ld (dir_y),a
         ret
 
-; BC * DE -> DE:HL (32 bits). Destroys A.
-mul16:  ld hl,0
-        ld a,16
-mu_lp:  add hl,hl
-        rl e
-        rl d
-        jr nc,mu_nc
+; HL = a view coordinate, DE = RoboCop's (p_x or p_y), BC = what puts him at the edge of his
+; range (his offset on screen minus its most), A = the range -> HL within DE + BC .. DE + BC + A
+; (signed).
+pv_keep:
+        push hl
+        ex de,hl
         add hl,bc
-        jr nc,mu_nc
-        inc de
-mu_nc:  dec a
-        jr nz,mu_lp
+        ex de,hl                    ; DE = the least view (him at the most)
+        pop hl
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        jp m,pk_de                  ; (less: that one)
+        push hl
+        ex de,hl
+        ld e,a
+        ld d,0
+        add hl,de
+        ex de,hl                    ; DE = the most (him at the least)
+        pop hl
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        ret m
+        ret z
+pk_de:  ex de,hl
+        ret
+
+; HL = a camera coordinate, DE = its offset table (tools/mkrom.py, rowtab.inc: c * VIEW_K /
+; 65536 per 16 pixels) -> HL = c + the entry for c / 16.
+pv_add: push hl
+        ld a,l
+        srl h
+        rra
+        srl h
+        rra
+        srl h
+        rra
+        srl h
+        rra
+        add a,e
+        ld e,a
+        jr nc,pva_n
+        inc d
+pva_n:  ld a,(de)
+        pop hl
+        add a,l
+        ld l,a
+        ret nc
+        inc h
         ret
 
 ; ----- read_joystick ($BDEC) -----
@@ -1167,33 +1421,138 @@ kb_row: ld c,a
         ret
 
         if INPUT_SCRIPT
-; -> A = the script's bits for game frame g_frame (every entry that covers it).
-script_bits:
-        ld ix,input_script
-        ld c,0
-sb_lp:  ld l,(ix+0)
-        ld h,(ix+1)
-        ld a,h
-        and l
+; The test aids of tools/amigaemu.py game (--tele, --god), at the same point of the frame: a
+; teleport for this game frame puts RoboCop at (x, y) and the camera at (x - 108h within
+; 0..8E0h, y - 70h from 0); GOD keeps the energy (100h) and the lives (2) full and the level's
+; end away ($16C4 = 100h).
+script_tick:
+        if EXTJOY
+        ret                         ; (the Tcl driver does it)
+        else
+        ld a,(act_a000)
+        push af
+        ld a,BANK_INPUT
+        call bank_a000
+        call stk_go
+        pop af
+        jp bank_a000
+stk_go: ld hl,input_tele
+stk_lp: ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld a,d
+        and e
         inc a
-        jr z,sb_end
-        ld de,(g_frame)
+        jr z,stk_god
+        push hl
+        ld hl,(tick_n)
+        or a
+        sbc hl,de
+        pop hl
+        jr z,stk_tp
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        jr stk_lp
+stk_tp: ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (p_x),de
+        push hl
+        ex de,hl
+        ld de,-0x108
+        add hl,de
+        bit 7,h
+        jr z,stk_x1
+        ld hl,0
+stk_x1: ld de,0x8E0
+        or a
+        sbc hl,de
+        add hl,de
+        jr c,stk_x2
+        ex de,hl
+stk_x2: ld (gcam_x),hl
+        pop hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (p_y),de
+        push hl
+        ex de,hl
+        ld de,-0x70
+        add hl,de
+        bit 7,h
+        jr z,stk_y1
+        ld hl,0
+stk_y1: ld (gcam_y),hl
+        pop hl
+        jr stk_lp
+stk_god:
+        if GOD
+        ld hl,0x100
+        ld (AM + 0x169A),hl
+        ld (AM + 0x16C4),hl
+        ld hl,2
+        ld (AG + 0x8034),hl
+        endif
+        ret
+        endif
+
+; -> A = the script's bits for game frame tick_n (the ticks since the power-on: a level started
+; again does not restart the script): its runs from the one the last call found (or from the
+; first, when tick_n went back).
+script_bits:
+        if EXTJOY
+        ld a,(ext_joy)
+        ret
+        else
+        ld a,(act_a000)
+        push af
+        ld a,BANK_INPUT
+        call bank_a000
+        ld hl,(tick_n)
+        ld de,(sc_start)
+        or a
+        sbc hl,de
+        jr nc,scb_go
+        ld hl,input_script          ; back to the first run
+        ld (sc_run),hl
+        ld hl,0
+        ld (sc_start),hl
+        ld hl,(tick_n)
+scb_go: ex de,hl                    ; DE = frames into the run
+        ld hl,(sc_run)
+scb_lp: ld c,(hl)
+        inc hl
+        ld b,(hl)
+        ld a,b
+        or c
+        jr z,scb_end                ; past the script: nothing
+        inc hl
         ex de,hl
         or a
-        sbc hl,de
-        jr c,sb_next
-        ld e,(ix+2)
-        ld d,(ix+3)
-        or a
-        sbc hl,de
-        jr nc,sb_next
+        sbc hl,bc
+        ex de,hl
+        jr c,scb_in
+        inc hl                      ; next run
+        push hl
+        ld hl,(sc_start)
+        add hl,bc
+        ld (sc_start),hl
+        pop hl
+        ld (sc_run),hl
+        jr scb_lp
+scb_in: ld c,(hl)
+        jr scb_x
+scb_end:
+        ld c,0
+scb_x:  pop af
+        call bank_a000
         ld a,c
-        or (ix+4)
-        ld c,a
-sb_next:
-        ld de,5
-        add ix,de
-        jr sb_lp
-sb_end: ld a,c
         ret
+        endif
         endif

@@ -49,10 +49,14 @@ $(BUILD)/ram/level1_full.bin:
 $(BUILD)/sprites/catalog.json:
 	$(MAKE) sprites
 
-msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json
+# the BOB frames the original draws in level 1 (execution bench, long: ~20 minutes)
+$(BUILD)/emu/cov_level1.json: $(BUILD)/ram/level1_full.bin
+	$(VPYTHON) -I tools/amigacov.py --scenario level1 $@
+
+msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)/emu/cov_level1.json
 	$(VPYTHON) -I tools/msxsprites.py $(X)/boot/main_8000.bin $(X)/files/PERMA_05.bin $(X)/files/DATAL1_10.bin \
-		--rows 51 --bobs $(BUILD)/sprites/catalog.json --ram $(BUILD)/ram/level1_full.bin --level level1 \
-		$(BUILD)/msx/robocop
+		--rows 51 --bobs $(BUILD)/sprites/catalog.json --drawn $(BUILD)/emu/cov_level1.json \
+		--ram $(BUILD)/ram/level1_full.bin --level level1 --remove msx/level1_frames.json $(BUILD)/msx/robocop
 	$(PYTHON) -I tools/msxconv.py level $(X)/files/DATAL1_10.bin --pal-file $(X)/boot/main_8000.bin \
 		--pal-addr 0xfff6 --rows 51 --joint $(BUILD)/msx/robocop -o $(BUILD)/msx/level1
 	$(PYTHON) -I tools/msxhud.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud --black 4

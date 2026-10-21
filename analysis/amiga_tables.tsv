@@ -62,3 +62,37 @@ ex_lim          f07a    2     w             c1      explosions: limit of the $D7
 eb_gfx          f4a4    23    l             c1      enemy bullets ($F3CE): graphics per type
 eb_par          f500    46    w             c1      enemy bullets: per type [BLTSIZE, explosion type on a wall (negative: goes through)]
 eb_anim         f55c    46    w             c1      enemy bullets: per type [animation step, animation limit] (odd frames)
+pf_ox           ae52    8     w             c1      update_player $ACEC: the shot's x offset (+ 7) per facing and aim, D7 = ((state & 1) * 4 + (aim & 6) / 2) * 2
+pf_oy           ae62    8     w             c1      update_player: the shot's y offset per facing and aim
+pf_sx           ae72    16    w             c1      update_player: x offset per state 0-15
+pf_sy           ae92    16    w             c1      update_player: y offset per state 0-15
+fx_dx           aee8    8     w             c1      shots ($AF08): x step per direction (word index: 0 up, 2 up right ... 0Eh up left)
+fx_dy           aef8    8     w             c1      shots: y step per direction
+fx_gfx          af76    8     w             c1      shots: graphic offset from $6BEA0 per direction (also the panel's icons, $896A)
+wpn_ammo        fd52    4     w             c1      set_weapon $FD30: ammo per weapon (BCD)
+wpn_icon        fd5a    4     w             c1      set_weapon: the panel's icon per weapon
+ebh_w           fa35    23    b             c1      $FA7C: enemy bullet's box width per type (negative: it never hits RoboCop)
+ebh_h           fa4c    23    b             c1      $FA7C: enemy bullet's box height per type (unsigned)
+ebh_dmg         fa63    23    b             c1      $FA7C: enemy bullet's damage per type (energy points)
+pk_snd          fc0b    11    b             c1      $FA7C: pickup's sound ($B2D) per type / 4
+pk_gfx          f964    11    l             c1      $F900: pickup's graphics per type / 4 (type 40's long is the code at $F98C)
+sp_l1           9018    112   x             l1      level 1 special objects' records (7 x 16 bytes): handler offset, x, y (long), path index, path (y words, -1 ends)
+spl_l1          8fc0    8     l             l1      level 1 special objects' list ($8B54): record addresses, -1 ends
+veh_fl          8de2    2     w             c3      vehicle $8B9E: exhaust graphic offset from $3E950 per (game frame & 2)
+t3_gfx          cbaa    20    w             l1      type 3 $CB6E: torso graphic offset from $4F1D6 per walker2's D2
+t3_size         cbd2    20    w             l1      type 3: torso BLTSIZE per walker2's D2
+t12_gfx         cf98    3     w             l1      type 12 $CEF8: gunner graphic offset from $56076 per D3 / 2 (RoboCop left, level, right)
+t12_dx          cf9e    3     w             l1      type 12: gunner x offset per D3 / 2
+t12_mx          cfa4    3     w             l1      type 12: muzzle flash x offset per D3 / 2
+t12_my          cfaa    3     w             l1      type 12: muzzle flash y offset per D3 / 2
+t27_dy          da7c    8     w             l1      type 27 $D9A4 walking: torso y offset per walker2's D2 & 0Eh
+t23_nbo         de36    4     w             l1      type 23 $DD04: the neighbour cell's offset (bytes; a row is 140h) per direction (up, right, down, left)
+t23_dx          de58    4     w             l1      type 23: x step per direction
+t23_dy          de60    4     w             l1      type 23: y step per direction
+hz_l1           9538    61    w             l1      level 1 hazards (header +4, $915E patched by level_init): x, y, window x, rows - 1 per beam; -1 ends
+lt0_top         93ca    4     w             l1      level_tick_0 $933A: the beam's top map word by (random & 6)
+lt0_body        93d2    32    w             l1      level_tick_0: the beam's map words by ((random + x + 2n) & 3Eh)
+t44_dx          eca4    4     w             l1      type 44 $EC22: the dropped pickup's x offset by (A3) & 6
+t32_map         de68    108   w             l1      type 32 $DF6E: 36 x [x, y, map word] the end sequence writes
+t32_ex          e09c    4     w             l1      type 32: explosion type (D5) by (A3) & 6
+fe_boom         81c2    48    w             c3      main_loop $8252: the death's explosions around RoboCop [dx, dy] per $16BC / 4 (y - 46h)

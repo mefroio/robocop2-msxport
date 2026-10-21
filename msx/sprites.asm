@@ -2,152 +2,186 @@
 ; explosions...), with the adaptive budget.
 ;
 ; Data from tools/msxsprites.py (FORMAT there): compositions (RoboCop: per frame record and
-; aim; BOBs: per frame), each a list of 16x16 sprites in SAT order (per column: A spans, then
-; the B spans that OR into them, CC = 1), the sprites on each line and the columns in order of
-; what dropping their OR layer costs. Index and compositions through the 8000h window, the
-; pattern and colour pools through A000h.
+; aim; BOBs: per frame), each a list of 16x16 sprites in SAT order (per band of 16 lines, per
+; box: its A sprite, then the B sprite that ORs into it, CC = 1) and its band table (per band:
+; its place, A and B sprites and what dropping its OR layer costs). Index and compositions
+; through the 8000h window, the pattern and colour pools through A000h.
 ;
-; Objects (obj_tab): object 0 is RoboCop, the others BOB groups (an enemy drawn from parts takes
-; one object per part). The game sets their compositions and screen positions; on every tick
-; (sprites_tick) the budget chooses the dropped OR layers and, when what must be shown changes,
-; a layout for the set that is not on screen is built; sprites_frame uploads it a slice per
-; frame and, once complete, the next list shows that set.
+; Objects (obj_tab): object 0 is RoboCop, SPARK_OBJ the hit spark drawn on him, the others BOB
+; parts (bob.asm keeps every BOB on the object its identity had: owner and part). The game sets
+; each object's composition, silhouette and place; the budget adds the OR layers it drops (or
+; leaves it out of the tick): that is the version the object wants. (The SAT's alternating
+; halves, mux_on, stay for a later use: the budget never sets them.)
 ;
-; Sets: two (colour table + SAT, R#5). The 64 slots of the pattern table are shared: a pattern
-; both sets use stays in one slot. A layout gives every object a run of SAT entries (object 0
-; first, so it is drawn in front; a dropped B sprite takes none) and one of the object's two
-; entry pages (ent_pages: per entry dy, dx, pattern slot, pattern and colour ids). An object
-; whose composition, dropped columns and early clock are the same in the layout on screen
-; keeps that page, and so its slots; otherwise its other page is filled from the composition
-; with free slots. The entry's colour table row is the sprite's colour row. The SAT of the set
-; on screen is written right after the VBLANK that puts the frame's registers on screen
-; (sprites_vblank).
+; One sprite set (colour table + SAT) and the 64 pattern slots, written only while no sprite is
+; on screen: the HUD (sprites off) and the vertical blank. The main loop plans each published
+; frame's changes as an upload queue; the split interrupt runs it a slice per frame
+; (spr_upload) and the VBLANK interrupt puts the frame on screen with its SAT once its queue
+; is done (isr.asm). Every object shows one version (disp) and prepares the version it wants
+; (pend: its patterns go into slots no other entry uses, or into the slot that still holds
+; them); once they are all queued, its colour rows go to its run of SAT entries and the new
+; version replaces the old one in that same frame, so an object never shows half of a change,
+; nor another object's frame. A released slot keeps its pattern (pat_held, pat_slot): frames
+; that come back cost nothing.
 ;
-; Budget (on the frame after the game's tick, only when an object changed what it looks at):
-; the VDP shows 8 sprites per line and 32 in all. When even the single-layer versions pass 32,
-; the objects that do not fit then (in object order after RoboCop) are left out of this tick.
-; Lines can only go over 8 where objects meet; each composition carries the most sprites it
-; puts on a line (full, one layer, and after each prefix of its rank list), so the sums at each
-; object's first line (where the sums grow) tell where they can. There, the BOBs drop their OR
-; layers (their B sprites go, their A sprites switch to the single-layer A1, which never leaves
-; holes) and RoboCop drops the fewest of his cheapest ones that let him fit beside them; when
-; even that cannot fit, the BOBs that meet alternate between frames (multiplexing; RoboCop is
-; always shown). Dropped columns stay dropped while the object keeps its composition (no flicker
-; of quality, no new layout every tick). Then, while the total is above 32, the cheapest OR
-; layers anywhere go.
+; SAT: entries 0-1 the hit spark (in front of RoboCop), RoboCop's run from entry 2, the BOBs'
+; runs from entry 31 down (RoboCop's changes of size never move them); an entry no object uses
+; is parked on line 200 (HUD: sprites off there). An object's sprites stay together: a B sprite
+; (CC) ORs into the A sprite before it on its line.
+;
+; Budget (on the frame after the game's tick, when an object changed its composition or its
+; lines): the VDP shows 8 sprites per line and 32 in all (here 30 besides the spark's two).
+; RoboCop and the characters (enemies, lifts, the vehicle) keep their look (the user's rule):
+; RoboCop's compositions use at most 5 sprites on a line and the BOBs' at most 3, so a character
+; always fits beside him; no object ever alternates between frames. When even the single-layer
+; versions pass the total, the least important BOBs are left out of the tick (bg_cut). Then
+; every line's sprites are counted (ln_cnt) and a line above 8 makes, in this order, the
+; explosions (and the spark) drop an OR layer or go, the shots, enemy bullets, pickups and small
+; parts drop one or go (ft_give): an OR layer is a band's (16 lines: its B sprites go, its A
+; sprites show one colour per line), the cheapest of its tier there. Then the total (ft_total,
+; the same order); only there, as the last resort (RoboCop, an enemy, a lift and the vehicle
+; together), a character drops an OR layer, and keeps it dropped until it is hidden (O_HOLD): its
+; look changes at most once. Fewer enemies at once (tools/mkrom.py ENEMY_CAP) keep it rare.
 ; The alternate registers are free for this code: the ISR does not use them.
 
 MAX_OBJ:    equ 16
+SPARK_OBJ:  equ MAX_OBJ - 1         ; the hit spark ($16A0, player.asm pl_show): SAT entries 0-1,
+                                    ; in front of RoboCop as on the Amiga (cut into his sprites)
 OBJ_SIZE:   equ 32
 O_FLAGS:    equ 0                   ; bit 7 shown, bit 6 alternating, bit 0 its phase
 O_BANK:     equ 1                   ; composition: bank (relative to SPR_BASE_BANK),
 O_COMP:     equ 2                   ;   2 bytes: address in the 8000h window
-O_DROP:     equ 4                   ; dropped columns (budget)
-O_EC:       equ 5                   ; 80h: its sprites use the early clock (O_BANK..O_EC as in a
-                                    ; layout entry)
+O_DROP:     equ 4                   ; bands whose OR layer is dropped (budget)
+O_EC:       equ 5                   ; 80h: its sprites use the early clock; bits 0-1: its silhouette
+                                    ; (BM_FLASH, BM_BLACK: one layer, one colour) (O_BANK..O_EC as in a
+                                    ; version record)
 O_X:        equ 6                   ; 2 bytes: screen x of the composition's top-left
 O_Y:        equ 8                   ; 2 bytes: screen y
 O_NSPR:     equ 10                  ; composition header (COMP_HDR bytes): sprites,
 O_NLINES:   equ 11                  ;   lines covered,
-O_NCOLS:    equ 12                  ;   columns,
+O_NBANDS:   equ 12                  ;   bands,
 O_MINDX:    equ 13                  ;   leftmost and rightmost sprite dx,
 O_MAXDX:    equ 14
 O_NA:       equ 15                  ;   sprites of its single-layer version,
 O_MFULL:    equ 16                  ;   most sprites on a line,
 O_MONE:     equ 17                  ;   the same on one layer
-O_KIND:     equ 18                  ; 0 RoboCop, 1 BOB (O_KIND, O_ID as in a layout entry)
+O_KIND:     equ 18                  ; 0 RoboCop, 1 BOB (O_KIND, O_ID as in a version record)
 O_ID:       equ 19                  ; 2 bytes: record * 4 + aim, or BOB frame
-O_RANK:     equ 21                  ; 2 bytes: its rank list (8000h window)
-O_LO:       equ 23                  ; budget: first visible line,
-O_HI:       equ 24                  ;   end (0: none),
-O_INV:      equ 25                  ;   1: meets another object,
-O_GONE:     equ 26                  ;   sprites its dropped columns remove (O_DROP and O_GONE
-                                    ;   stay from tick to tick while the composition does),
-O_OUT:      equ 27                  ;   1: left out this tick (the objects pass 32 even on one layer),
-O_MAXK:     equ 28                  ; 2 bytes: most sprites on a line per rank prefix dropped
-O_BMASK:    equ 30                  ; its columns that have B spans
-LAY_SIZE:   equ 16                  ; layout entry: present (80h), bank, comp (2), drop, ec,
-                                    ; first SAT entry, entries, kind, id (2), page, min dx, max dx,
-                                    ; FFh while its page is to be filled (lay_build), lines
+O_BANDT:    equ 21                  ; 2 bytes: its band table (8000h window)
+O_TIER:     equ 25                  ; budget: 3 RoboCop (never touched), 2 the spark and the
+                                    ;   explosions, 1 shots, enemy bullets, pickups, small parts,
+                                    ;   0 the characters (enemies, lifts, the vehicle),
+O_GONE:     equ 26                  ;   sprites its dropped bands remove,
+O_OUT:      equ 27                  ;   1: left out this tick,
+O_HOLD:     equ 28                  ;   a character's bands dropped for good (the total's last resort)
+O_BMASK:    equ 30                  ; its bands that have B sprites
+LAY_SIZE:   equ 16                  ; version record (disp: shown; pend: being prepared):
+V_ON:       equ 0                   ;   80h: present,
+V_BANK:     equ 1                   ;   bank, composition (2), dropped columns, early clock and
+V_COMP:     equ 2                   ;   silhouette (as O_BANK..O_EC),
+V_DROP:     equ 4                   ;   (bands)
+V_EC:       equ 5
+V_RUN:      equ 6                   ;   its first SAT entry (disp),
+V_N:        equ 7                   ;   entries,
+V_KIND:     equ 8                   ;   kind, id (2) (as O_KIND, O_ID),
+V_ID:       equ 9
+V_PAGE:     equ 11                  ;   which of the object's two entry pages holds its entries,
+V_MINDX:    equ 12                  ;   min dx, max dx,
+V_MAXDX:    equ 13
+                                    ;   (14: spare)
+V_LINES:    equ 15                  ;   lines
 EC_ON:      equ 32                  ; early clock on when the leftmost sprite's x falls below this,
-EC_OFF:     equ 64                  ;   off from this (ahead of time: a new layout takes frames)
+EC_OFF:     equ 64                  ;   off from this (ahead of time)
 ENT_SIZE:   equ 8                   ; entry: dy, dx, pattern number, slot, pattern id (2),
                                     ; colour id | 8000h early clock (2)
-ENT_PAGE:   equ ent_pages/256       ; page of object o, version v: ENT_PAGE + 2 o + v
+ENT_PAGE:   equ ent_pages/256       ; page of object o, version page v: ENT_PAGE + 2 o + v
 SPR_SLOTS:  equ 64                  ; 16x16 patterns in the pattern table (2 KiB at SPR_PAT)
-PAT_IDS:    equ (SPR_COL_BANK - SPR_PAT_BANK) * 256 ; pattern ids (pat_slot entries)
+PAT_HINTS:  equ 1024                ; pat_slot entries: a hint per pattern id & 3FFh (pat_held
+                                    ; tells whether the slot still holds that id)
+SLOT_LOAD:  equ 0x80                ; slot_ref bit: its pattern (pat_held) is still to be queued
 LINE_LIMIT: equ 8
 SAT_MAX:    equ 32
+BUD_MAX:    equ SAT_MAX - 2         ; the budget's total: entries 0-1 stay the spark's (the BOBs'
+                                    ; runs are packed when no hole fits: sat_pack)
+RC_HOLD:    equ 120                 ; VBLANKs RoboCop's largest recent sprite count holds (budget)
+RC_RUN:     equ 2                   ; RoboCop's first SAT entry
 PARK_LINE:  equ 200                 ; screen line of parked sprites (HUD: sprites off there)
-COMP_HDR:   equ 8                   ; composition: nspr, nlines, ncols, min dx, max dx, A spans,
+COMP_HDR:   equ 8                   ; composition: nspr, nlines, nbands, min dx, max dx, A sprites,
                                     ; most sprites on a line, the same on one layer
 REC_SIZE:   equ 12                  ; sprite record: dy, dx, park bit, A1 bit, 4 words
+BAND_SIZE:  equ 4                   ; band table entry: dy, A sprites, B sprites, gain
 UP_TOTAL:   equ 400                 ; work per frame (units of about 100 T-states) that the HUD,
-                                    ; the game logic, the sprite tick, the SAT and the upload share
-                                    ; (hud_cost + spr_cost; the upload takes what is left):
-UP_LOOK:    equ 2                   ;   looking at an entry,
-UP_PAT:     equ 9                   ;   writing a pattern,
-UP_COL:     equ 5                   ;   writing a colour row,
-UP_FILL:    equ 5                   ;   filling a page entry (up_fills),
-COST_BUDGET: equ 100                ;   the budget,
-COST_LAYB:  equ 140                 ;   a layout (lay_build),
-COST_PHASE: equ 50                  ;   sat_phase,
-COST_SATO:  equ 12                  ;   sat_build: an object,
-COST_SATE:  equ 2                   ;     an entry
+                                    ; the game logic and the sprite engine share (hud_cost +
+                                    ; spr_cost; kept for the HUD's own pacing):
+COST_BUDGET: equ 100                ;   the budget
 HUD_HEAVY:  equ 90                  ; HUD work (units) from which the layout of a tick waits
+; Upload queues: the frame's (pq_buf) holds entries [bytes | 80h with the early clock (its bit
+; 7 ORed into each byte), VRAM address as port 99h takes it (low, high | 40h; R#14 = 7: the
+; sprite tables are in 1C000h-1FFFFh), source bank, source address in the A000h window (2)],
+; 0 after the last; the background one (bq_buf, a ring of 32) [slot, its generation, then the
+; same five bytes] for patterns. The plan works them out; spr_upload only copies. Costs in
+; units of 16 T-states (measured: the copy and its overhead).
+Q_PAT:      equ 32                  ; a pattern
+Q_COL:      equ 16                  ; a colour row,
+Q_COLEC:    equ 16 | 0x80           ;   with the early clock
+QC_PAT:     equ 70                  ; what each costs (measured with openMSX: the copy, its set-up
+QC_COL:     equ 42                  ; and the queue's own loop)
+QC_COLEC:   equ 68
+UPW_60:     equ 620                 ; units from the split's uploads (line 166) to the vertical
+UPW_50:     equ 1600                ;   blank (line 212) at 60 Hz; at 50 Hz the frame's queue may
+                                    ;   run on into the long blank (its VBLANK work still ends
+                                    ;   before the next picture)
+PQ_PATS:    equ 6                   ; patterns the frame's queue takes at most (with up to 32
+                                    ; colour rows and the SAT's four parts: pq_buf, 256 bytes)
+BQ_LATE:    equ 400                 ; background units the VBLANK interrupt adds after its own work
 
+; At a level's start (engines_init): nothing shown, every slot and colour row unknown (spr_init,
+; cold.asm: in the front end's bank).
 sprites_init:
-        ld hl,obj_tab
-        ld bc,MAX_OBJ*OBJ_SIZE
-        xor a
-        call fill
-        ld hl,lay
-        ld bc,2*MAX_OBJ*LAY_SIZE
-        xor a
-        call fill                   ; both layouts empty
-        ld hl,lay_col
-        ld bc,2*SAT_MAX*2
-        ld a,0xFF
-        call fill                   ; colour rows unknown
-        ld hl,pat_held
-        ld bc,SPR_SLOTS*2
-        ld a,0xFF
-        call fill                   ; patterns unknown
-        ld hl,pat_slot
-        ld bc,PAT_IDS
-        ld a,0xFF
-        call fill                   ; and put nowhere
-        ld hl,pub_cur
-        ld bc,MAX_OBJ*8
-        xor a
-        call fill
-        ld a,1
-        ld (bu_dirty),a             ; (the budget runs on the first tick)
-
-        ld a,216
-        ld (sat_buf),a              ; nothing shown
-        xor a
-        ld (lay_n),a
-        ld (lay_n+1),a
-        ld (spr_shown),a
-        ld (up_state),a
-        ld (spr_vblank),a
-        ld (mux_on),a
-        ld (spr_n),a
-        ld (alloc_p),a
-        ld a,1
-        ld (sat_dirty),a
-        ret
+        ld a,(act_8000)
+        push af
+        ld hl,spr_init
+        call front_call
+        pop af
+        jp bank_8000
 
 ; During long work: the scroll engine's idle work (its next VDP command when the command engine
 ; is free), so that the VDP does not wait for the end of the frame. Keeps all registers but the
 ; A000h window (the upload maps it before each use).
 feed_vdp:
         push af
-        push bc
+        di                          ; (both engines' work starts with vdp_busy: while a command
+        ld a,2                      ; runs there is nothing to do, so that is looked at first)
+        out (VDP_CTRL),a
+        ld a,0x8F
+        out (VDP_CTRL),a
+        in a,(VDP_CTRL)             ; S#2
+        push af
+        xor a
+        out (VDP_CTRL),a
+        ld a,0x8F
+        out (VDP_CTRL),a            ; R#15 = 0
+        ei
+        pop af
+        rrca                        ; (CE)
+        jr nc,fv_go
+        pop af
+        ret
+fv_go:  push bc
         push de
         push hl
+        ld hl,(act_8000)            ; (act_8000, act_a000: the tile cache maps its banks; the
+        push hl                     ; game logic calls this from code in both windows)
         call idle_work
+        pop hl
+        ld a,(act_8000)
+        cp l
+        ld a,l
+        call nz,bank_8000
+        ld a,(act_a000)
+        cp h
+        ld a,h
+        call nz,bank_a000
         pop hl
         pop de
         pop bc
@@ -166,53 +200,30 @@ fill:   ld (hl),a
         ldir
         ret
 
-; Right after the VBLANK that put the last published list on screen (wait_frame): the SAT
-; built for that list goes into the set it shows, before the first display line.
+; Right after the VBLANK that put the last published frame on screen (wait_frame): a new frame
+; for the work counts.
 sprites_vblank:
         xor a
-        ld (spr_cost),a             ; (a new frame)
-        ld a,(spr_vblank)
-        or a
-        ret z
-        ld a,(spr_shown)
-        or a
-        ld hl,(SPR_COL_A + 0x200) & 0xFFFF
-        jr z,sv_set
-        ld hl,(SPR_COL_B + 0x200) & 0xFFFF
-sv_set: ld e,1
-        call vram_write
-        ld a,(spr_n)
-        add a,a
-        add a,a                     ; 4 bytes per entry
-        cp 4*SAT_MAX
-        jr z,sv_full
-        inc a                       ; and the 216 after the last one
-sv_full:
-        ld b,a
-        ld hl,sat_buf
-        ld c,VDP_DATA
-        otir
-        xor a
-        ld (spr_vblank),a           ; (cleared once the SAT is there: tools/msxframe.py reads it)
+        ld (spr_cost),a
         ret
 
 ; ----- objects -----
 
-; A = object -> IX = its entry. Keeps BC, DE.
+; A = object -> IX = its entry. Keeps BC, DE. (obj_tab is 256-byte aligned: 32 o is
+; o >> 3 in the high byte and (o & 7) << 5 in the low one.)
 obj_ix:
-        push de
+        rrca
+        rrca
+        rrca
         ld l,a
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,obj_tab
-        add hl,de
+        and 0x1F
+        add a,obj_tab / 256
+        ld h,a
+        ld a,l
+        and 0xE0
+        ld l,a
         push hl
         pop ix
-        pop de
         ret
 
 ; IX = object -> HL = its composition, its bank mapped at 8000h. Keeps BC, DE.
@@ -226,6 +237,8 @@ obj_comp:
 
 ; C = record, A = aim: RoboCop (object 0) takes that composition.
 obj_rc:
+        ld hl,os_mode
+        ld (hl),0
         ld ix,obj_tab
         ld l,c
         ld h,0
@@ -239,6 +252,8 @@ obj_rc:
 
 ; A = start-of-level arm pose - PL_ARM_FIRST: RoboCop takes that composition (SPR_RC_ARM + A).
 obj_rc_arm:
+        ld hl,os_mode
+        ld (hl),0
         ld ix,obj_tab
         ld l,a
         ld h,0
@@ -249,12 +264,15 @@ obj_rc_arm:
 
 ; A = object, DE = BOB frame: that object takes the frame's composition.
 obj_bob:
+        ld hl,os_mode
+        ld (hl),0
         call obj_ix
         ex de,hl
         ld a,1                      ; kind 1
 
-; IX = object, HL = id, A = kind: the object takes that composition (nothing to do when it
-; already shows it) and is shown.
+; IX = object, HL = id, A = kind, os_mode = its silhouette (0: none): the object takes that
+; composition (nothing to do when it already shows it so) and is shown. A silhouette shows the
+; single-layer patterns (every column's OR layer dropped) with one colour row (lb_fill).
 obj_set:
         bit 7,(ix+O_FLAGS)
         jr z,os_new
@@ -266,7 +284,14 @@ obj_set:
         jr nz,os_kind
         ld a,h
         cp (ix+O_ID+1)
-        ret z                       ; the same
+        jr nz,os_kind
+        ld a,(ix+O_EC)              ; the same composition: and the same silhouette?
+        and 3
+        ld c,a
+        ld a,(os_mode)
+        cp c
+        ret z
+        jp os_mode_set
 os_kind:
         ld a,e
 os_new: ld (ix+O_KIND),a
@@ -314,28 +339,48 @@ os_idx: add hl,de
         add hl,hl                   ; *12
         add hl,de                   ; rank list
         ld d,0
-        ld (ix+O_RANK),l
-        ld (ix+O_RANK+1),h
+        ld (ix+O_BANDT),l           ; its band table, after the records
+        ld (ix+O_BANDT+1),h
         ld a,1
         ld (bu_dirty),a             ; (the budget looks at the composition)
-        ld b,(ix+O_NCOLS)
+        ld b,(ix+O_NBANDS)
         ld c,0
-os_bm:  ld a,(hl)                   ; the columns with B spans
+        ld e,1
+os_bm:  inc hl                      ; the bands with B sprites
         inc hl
-        inc hl
-        ld e,(hl)
-        inc hl
-        inc e
-        dec e
+        ld a,(hl)
+        or a
         jr z,os_bn
-        or c
+        ld a,c
+        or e
         ld c,a
-        add hl,de
-os_bn:  djnz os_bm
+os_bn:  inc hl
+        inc hl
+        sla e
+        djnz os_bm
         ld (ix+O_BMASK),c
-        ld (ix+O_MAXK),l            ; the maxima after the rank list
-        ld (ix+O_MAXK+1),h
         set 7,(ix+O_FLAGS)
+os_mode_set:
+        ld a,(ix+O_EC)
+        and 0x80
+        ld c,a
+        ld a,(os_mode)
+        or c
+        ld (ix+O_EC),a
+        ld a,1
+        ld (bu_dirty),a             ; (the budget looks at the dropped columns)
+        ld a,(os_mode)
+        or a
+        jr z,osm_full
+        ld a,(ix+O_BMASK)           ; a silhouette: every OR layer dropped
+        ld (ix+O_DROP),a
+        ld a,(ix+O_NSPR)
+        sub (ix+O_NA)
+        ld (ix+O_GONE),a
+        ret
+osm_full:
+        ld (ix+O_DROP),0            ; all its OR layers again
+        ld (ix+O_GONE),0
         ret
 
 ; A = object: no longer shown.
@@ -344,15 +389,18 @@ obj_hide:
         bit 7,(ix+O_FLAGS)
         ret z
         ld (ix+O_FLAGS),0
+        ld (ix+O_HOLD),0            ; (its look is decided anew when it shows again)
         ld a,1
         ld (bu_dirty),a
         ret
 
-; A = object, HL = screen x, DE = screen y of its composition's top-left.
+; A = object, HL = screen x, DE = screen y of its composition's top-left (obj_pos_ix: IX =
+; the object).
 obj_pos:
         push hl
         call obj_ix
         pop hl
+obj_pos_ix:
         ld (ix+O_X),l
         ld (ix+O_X+1),h
         ld a,e
@@ -361,11 +409,12 @@ obj_pos:
         ld a,d
         cp (ix+O_Y+1)
         ret z
-op_y:   ld (ix+O_Y),e
+op_y:   ld (ix+O_Y),e               ; (the budget counts its lines again)
         ld (ix+O_Y+1),d
-        ld a,1                      ; (the budget looks at y)
+op_d:   ld a,1
         ld (bu_dirty),a
         ret
+
 
 ; ----- tick -----
 
@@ -375,49 +424,74 @@ sprites_moved:
         ld (sat_dirty),a
         ret
 
-; On the frame after the game's tick: the budget (unless nothing it looks at changed since it
-; last ran) and a new layout for the set that is not on screen when what must be shown changed.
+; The camera the tick's placement (pl_show, bob_flush) takes the objects' screen places against.
+cam_mark:
+        ld hl,(cam_x)
+        ld (sp_cam_x),hl
+        ld hl,(cam_y)
+        ld (sp_cam_y),hl
+        ret
+
+; A frame without a tick whose update moved the camera (the scroll engine catching up with the
+; view the game wants): every shown object moves on the screen by the camera's step, where the
+; tick's placement would have put it, and the SAT follows (else the picture shows the sprites
+; against the last tick's camera, off the background by that step).
+cam_follow:
+        ld hl,(sp_cam_x)
+        ld de,(cam_x)
+        or a
+        sbc hl,de
+        ld b,h
+        ld c,l                      ; BC = the step in x (old camera - new)
+        ld hl,(sp_cam_y)
+        ld de,(cam_y)
+        or a
+        sbc hl,de
+        ex de,hl                    ; DE = the step in y
+        ld a,b
+        or c
+        or d
+        or e
+        ret z                       ; (the camera did not move)
+        call cam_mark
+        ld ix,obj_tab
+        ld a,MAX_OBJ
+cf_lp:  push af
+        bit 7,(ix+O_FLAGS)
+        jr z,cf_next
+        push de
+        ld l,(ix+O_Y)
+        ld h,(ix+O_Y+1)
+        add hl,de
+        ex de,hl                    ; DE = its new y
+        ld l,(ix+O_X)
+        ld h,(ix+O_X+1)
+        add hl,bc                   ; HL = its new x
+        call obj_pos_ix
+        pop de
+cf_next:
+        push de
+        ld de,OBJ_SIZE
+        add ix,de
+        pop de
+        pop af
+        dec a
+        jr nz,cf_lp
+        call sprites_moved
+        jp sprites_tick
+
+; On the frame after the game's tick: the budget, unless nothing it looks at changed since it
+; last ran (then only the early clocks follow x).
 sprites_tick:
-        ld a,(mux_on)
-        push af
         ld a,(bu_dirty)
         or a
-        jr z,st_same
+        jp z,obj_ecs
         xor a
         ld (bu_dirty),a
         call budget
         call feed_vdp
         ld a,COST_BUDGET
-        call spr_charge
-        jr st_lay
-st_same:
-        call obj_ecs                ; (the early clocks follow x)
-st_lay: ld a,(hud_cost)              ; a frame the HUD took much of: the layout waits a tick
-        cp HUD_HEAVY                ; (once in a row)
-        jr c,st_lk
-        ld a,(st_wait)
-        or a
-        jr nz,st_lk
-        inc a
-        ld (st_wait),a
-        jr st_mx
-st_lk:  xor a
-        ld (st_wait),a
-        call lay_check
-        call feed_vdp
-st_mx:  pop af                      ; (alternating before)
-        ld b,a
-        ld a,(mux_on)
-        or a
-        ret z                       ; (when it stops, the next game frame builds the SAT again)
-        ld a,b
-        or a
-        ret nz                      ; still alternating: sat_phase goes on with sat_full
-        ld hl,sat_buf               ; it starts: the SAT built shows every object, sat_full
-        ld de,sat_full
-        ld bc,4*SAT_MAX + 1
-        ldir
-        ret
+        jp spr_charge
 
 ; The early clock of every shown object (obj_ec).
 obj_ecs:
@@ -432,29 +506,115 @@ oe_lp:  bit 7,(ix+O_FLAGS)
 
 ; ----- budget -----
 
-budget:
+; The BOB objects in their order of importance, for the budget and the plan (bu_ord, FFh after
+; the last): lifts and the vehicle (RoboCop stands on them), enemies, their bullets, pickups,
+; RoboCop's shots and effects, explosions (bob.asm categories; within one, object order).
+bu_order:
         xor a
-        ld (bu_over),a              ; (1: some line keeps more than 8)
+        ld (bo_dirty),a
+        ld hl,bo_pos                ; per rank: its count, then where its objects go
+        ld b,BO_RANKS
+        xor a
+boz:    ld (hl),a
+        inc hl
+        djnz boz
+        ld hl,obj_key + 4 + 3       ; (object 1's category + 1)
+        ld b,SPARK_OBJ - 1
+boc:    ld a,(hl)                   ; its rank
+        add a,bo_rank & 0xFF
+        ld e,a
+        adc a,bo_rank / 256
+        sub e
+        ld d,a
+        ld a,(de)
+        cp BO_RANKS
+        jr nc,boc_n                 ; (no identity)
+        add a,bo_pos & 0xFF
+        ld e,a
+        ld d,bo_pos / 256
+        ex de,hl
+        inc (hl)
+        ex de,hl
+boc_n:  inc l
+        inc l
+        inc l
+        inc l
+        djnz boc
+        ld hl,bo_pos                ; counts -> the first place of each rank
+        ld b,BO_RANKS
+        ld c,0
+bop:    ld a,(hl)
+        ld (hl),c
+        add a,c
+        ld c,a
+        inc hl
+        djnz bop
+        ld a,c                      ; (the end)
+        add a,bu_ord & 0xFF
+        ld l,a
+        ld h,bu_ord / 256
+        ld (hl),0xFF
+        ld hl,obj_key + 4 + 3
+        ld c,1                      ; object
+bow:    ld a,(hl)
+        add a,bo_rank & 0xFF
+        ld e,a
+        adc a,bo_rank / 256
+        sub e
+        ld d,a
+        ld a,(de)
+        cp BO_RANKS
+        jr nc,bow_n
+        add a,bo_pos & 0xFF
+        ld e,a
+        ld d,bo_pos / 256
+        ld a,(de)                   ; its place
+        inc a
+        ld (de),a
+        dec a
+        add a,bu_ord & 0xFF
+        ld e,a
+        ld d,bu_ord / 256
+        ld a,c
+        ld (de),a
+bow_n:  inc l
+        inc l
+        inc l
+        inc l
+        inc c
+        ld a,c
+        cp SPARK_OBJ
+        jr c,bow
+        ret
+BO_RANKS:   equ 6
+bo_rank:    db 0xFF                 ; per category + 1 (bob.asm BC_...): its rank (FFh: none)
+        db 2, 1, 3, 4, 0, 5         ; enemy bullets, enemies, pickups, effects, lifts and the
+                                    ; vehicle, explosions
+
+budget:
+        ld a,(bo_dirty)             ; (only when an identity changed: bob.asm bf_key, bf_hide)
+        or a
+        call nz,bu_order
+        xor a
         ld (mux_on),a
         ld (bu_tot),a
         ld (bu_one),a
         ld (bu_cut),a
         ld ix,obj_tab
         ld b,MAX_OBJ
-bg_r:   xor a
-        ld (ix+O_INV),a
-        ld (ix+O_LO),a
-        ld (ix+O_HI),a
+bg_r:   push bc
+        xor a
         ld (ix+O_OUT),a
         ld a,(ix+O_FLAGS)
         and 0x80
         ld (ix+O_FLAGS),a           ; (not alternating)
-        jr z,bg_rn
+        jr z,bg_rn                  ; (not shown)
+        call bg_tier
+        call bg_drops
         call obj_ec
-        call bg_range
-        ld hl,bu_tot                ; the totals: as the objects are (their dropped columns stay
-        ld a,(ix+O_NSPR)            ; while their compositions do), and with every column on
-        sub (ix+O_GONE)             ; one layer
+        ld hl,bu_tot                ; the totals: with what it drops, and on one layer
+        ld a,(ix+O_NSPR)
+        sub (ix+O_GONE)
         add a,(hl)
         ld (hl),a
         inc hl
@@ -463,128 +623,155 @@ bg_r:   xor a
         ld (hl),a
 bg_rn:  ld de,OBJ_SIZE
         add ix,de
+        pop bc
         djnz bg_r
-        ld ix,obj_tab               ; RoboCop counts on one layer with his largest version, so
-        bit 7,(ix+O_FLAGS)          ; that the objects left out do not change with his frames
-        jr z,bg_rc1
-        ld a,(bu_one)
-        sub (ix+O_NA)
-        add a,SPR_RC_ONE
-        ld (bu_one),a
-bg_rc1: ld a,(bu_one)
-        cp SAT_MAX + 1
-        call nc,bg_cut
-        call bg_depth
-        ld a,(bu_ninv)
-        or a
-        jp z,bg_total               ; no line can go above the limit
-        ld ix,obj_tab + OBJ_SIZE    ; the BOBs that meet others go on one layer
-        ld b,MAX_OBJ - 1
-bsi_lp: ld a,(ix+O_INV)
-        or a
-        call nz,bg_onelayer
-bsi_n:  ld de,OBJ_SIZE
-        add ix,de
-        djnz bsi_lp
-        call bg_need
-        ld ix,obj_tab               ; RoboCop: the fewest of his cheapest OR layers that let him fit
-        ld a,(ix+O_INV)
-        or a
-        call nz,bg_robo
-bg_mux: ld a,(bu_over)
-        or a
-        jr z,bg_total
-        ld ix,obj_tab               ; lines still above the limit: the BOBs that meet alternate
-        ld b,MAX_OBJ
-        ld c,1
-bx_lp:  ld a,(ix+O_INV)
-        or a
-        jr z,bx_nx
-        ld a,(ix+O_KIND)
-        or a
-        jr z,bx_nx                  ; RoboCop is always shown
-        ld a,(ix+O_FLAGS)
-        or 0x40
-        or c
-        ld (ix+O_FLAGS),a
-        ld a,c
-        xor 1
-        ld c,a
-        ld hl,mux_on
-        inc (hl)
-bx_nx:  ld de,OBJ_SIZE
-        add ix,de
-        djnz bx_lp
-bg_total:
-        ld a,(bu_tot)               ; above 32 sprites after the line phase: the BOBs' OR layers
-        cp SAT_MAX + 1              ; go (object order), then RoboCop's, cheapest first, until the
-        ret c                       ; total fits (the objects kept fit on one layer: bg_cut)
-        ld ix,obj_tab + OBJ_SIZE
-        ld d,MAX_OBJ - 1
-btb:    bit 7,(ix+O_FLAGS)
-        jr z,btb_n
-        ld a,(ix+O_OUT)
-        or a
-        jr nz,btb_n
-        call bg_onelayer
-        ld a,(bu_tot)
-        cp SAT_MAX + 1
-        ret c
-btb_n:  ld bc,OBJ_SIZE
-        add ix,bc
-        dec d
-        jr nz,btb
-        ld ix,obj_tab
-        bit 7,(ix+O_FLAGS)
-        ret z
-        ld a,(ix+O_BANK)
-        add a,SPR_BASE_BANK
-        call bank_8000
-        ld l,(ix+O_RANK)
-        ld h,(ix+O_RANK+1)
-        ld b,(ix+O_NCOLS)
-btr:    push bc
-        ld a,(hl)                   ; column bit
-        ld (tmp_k),a
-        inc hl
-        inc hl
-        ld a,(hl)                   ; B sprites
-        ld (tmp_n),a
-        inc hl
-        ld e,a
-        ld d,0
-        add hl,de
-        or a
-        jr z,btr_n
-        ld a,(tmp_k)
-        and (ix+O_DROP)
-        jr nz,btr_n
-        push hl
-        call bt_mark
-        pop hl
-        ld a,(bu_tot)
-        cp SAT_MAX + 1
-        jr c,btr_x
-btr_n:  pop bc
-        djnz btr
-        ret
-btr_x:  pop bc
-        ret
-
-; IX = BOB: every column on one layer (its B sprites go; bu_tot, O_GONE follow).
-bg_onelayer:
-        ld a,(ix+O_BMASK)
-        or (ix+O_DROP)
-        ld (ix+O_DROP),a
-        ld a,(bu_tot)
+        ld ix,obj_tab + SPARK_OBJ * OBJ_SIZE ; the spark has SAT entries 0-1 of its own: it counts
+        bit 7,(ix+O_FLAGS)          ; in no total (BUD_MAX: the others')
+        jr z,bg_sp
+        ld hl,bu_tot
+        ld a,(hl)
+        sub (ix+O_NSPR)
         add a,(ix+O_GONE)
-        ld c,(ix+O_NSPR)
-        sub c
-        add a,(ix+O_NA)
-        ld (bu_tot),a               ; - NSPR + GONE + NA
-        ld a,c
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        sub (ix+O_NA)
+        ld (hl),a
+bg_sp:  ld ix,obj_tab               ; RoboCop (whole: nothing of his is ever dropped) counts with
+        bit 7,(ix+O_FLAGS)          ; the largest of his recent versions (held RC_HOLD VBLANKs),
+        jr z,bg_rc1                 ; so that what the BOBs drop does not change with each of
+        ld a,(tick)                 ; his frames
+        ld hl,rc_hold_t
+        sub (hl)
+        cp RC_HOLD
+        ld a,(ix+O_NSPR)
+        ld hl,rc_hold
+        jr nc,bg_rhn                ; (held long enough: what he has now)
+        cp (hl)
+        jr c,bg_rhk                 ; (fewer than the one held)
+bg_rhn: ld (hl),a
+        ld a,(tick)
+        ld (rc_hold_t),a
+bg_rhk: ld a,(hl)
+        sub (ix+O_NSPR)
+        ld c,a                      ; (what the hold adds to what he shows)
+        ld hl,bu_tot
+        add a,(hl)
+        ld (hl),a
+        inc hl
+        ld a,(ix+O_NSPR)            ; on one layer too
+        sub (ix+O_NA)
+        add a,c
+        add a,(hl)
+        ld (hl),a
+bg_rc1: ld a,(bu_one)
+        cp BUD_MAX + 1
+        call nc,bg_cut
+        call feed_vdp
+        call ln_fill                ; every line's sprites
+        call ft_lines               ; the line phase
+        call feed_vdp
+        jp ft_total                 ; the total phase
+
+; IX = shown object -> O_TIER: 3 RoboCop (never touched), 2 the spark and the explosions (they
+; give way first), 1 shots, enemy bullets, pickups and the characters' small parts, 0 the
+; characters (enemies, lifts, the vehicle: never left out, their look fixed). Keeps BC.
+bg_tier:
+        push ix
+        pop hl
+        ld a,h
+        sub obj_tab / 256
+        rlca
+        rlca
+        rlca                        ; (8 objects a page)
+        ld e,a
+        ld a,l
+        rlca
+        rlca
+        rlca
+        and 7
+        or e                        ; the object
+        ld e,3
+        or a
+        jr z,bt_s                   ; (RoboCop)
+        dec e
+        cp SPARK_OBJ
+        jr z,bt_s
+        add a,a
+        add a,a
+        add a,(obj_key + 3) & 0xFF
+        ld l,a
+        ld h,obj_key / 256          ; (obj_key does not cross a 256-byte boundary)
+        ld a,(hl)                   ; its category + 1 (0: none)
+        add a,bo_rank & 0xFF
+        ld l,a
+        adc a,bo_rank / 256
+        sub l
+        ld h,a
+        ld a,(hl)                   ; its rank (FFh: none)
+        ld e,1
+        cp BO_RANKS
+        jr nc,bt_s                  ; (none: as a shot)
+        add a,bo_tier & 0xFF
+        ld l,a
+        adc a,bo_tier / 256
+        sub l
+        ld h,a
+        ld e,(hl)
+        ld a,e                      ; a character's small part (16 px: the vehicle's jets) gives
+        or a                        ; way as a shot
+        jr nz,bt_s
+        ld a,(ix+O_NSPR)
+        cp 3
+        jr nc,bt_s
+        inc e
+bt_s:   ld (ix+O_TIER),e
+        ret
+bo_tier:    db 0, 0, 1, 1, 1, 2     ; per rank: lifts and the vehicle, enemies, enemy bullets,
+                                    ; pickups, effects, explosions
+
+; IX = shown object -> O_DROP, O_GONE for this run: a silhouette drops every OR layer; else the
+; bands a character had to drop once (O_HOLD: the total phase's last resort) stay dropped until
+; it is hidden or changes owner: its look changes at most once. The phases drop what this run
+; needs on top (effects only). Keeps BC.
+bg_drops:
+        ld a,(ix+O_EC)
+        and 3
+        jr z,bd_held
+        ld a,(ix+O_BMASK)           ; a silhouette
+        ld (ix+O_DROP),a
+        ld a,(ix+O_NSPR)
         sub (ix+O_NA)
         ld (ix+O_GONE),a
+        ret
+bd_held:
+        ld a,(ix+O_HOLD)
+        and (ix+O_BMASK)
+bd_set: ld (ix+O_DROP),a
+        ld (ix+O_GONE),0
+        or a
+        ret z
+        push bc
+        call ft_map
+        ld l,(ix+O_BANDT)
+        ld h,(ix+O_BANDT+1)
+        ld b,(ix+O_NBANDS)
+        ld c,1
+        ld e,0                      ; the B sprites of the bands dropped
+bd_lp:  inc hl
+        inc hl
+        ld a,c
+        and (ix+O_DROP)
+        jr z,bd_n
+        ld a,(hl)
+        add a,e
+        ld e,a
+bd_n:   inc hl
+        inc hl
+        sla c
+        djnz bd_lp
+        ld (ix+O_GONE),e
+        pop bc
         ret
 
 ; IX = shown object: its early clock (O_EC = 80h), on when its leftmost sprite's x (without it)
@@ -614,422 +801,599 @@ obj_ec: ld a,(ix+O_MINDX)
         cp EC_OFF
         ret c
 oec_off:
-        ld (ix+O_EC),0
+        res 7,(ix+O_EC)
         ret
-oec_on: ld (ix+O_EC),0x80
-        ret
-
-; IX = shown object -> O_LO, O_HI: its lines on screen (O_HI = 0: none). Keeps BC.
-bg_range:
-        ld l,(ix+O_Y)
-        ld h,(ix+O_Y+1)
-        ld e,(ix+O_NLINES)
-        ld d,0
-        add hl,de                   ; end (signed)
-        bit 7,h
-        ret nz                      ; above the screen
-        ld a,h
-        or a
-        ld a,VIEW_LINES
-        jr nz,br_e
-        ld a,l
-        cp VIEW_LINES
-        jr c,br_e
-        ld a,VIEW_LINES
-br_e:   ld (ix+O_HI),a
-        ld l,(ix+O_Y)
-        ld h,(ix+O_Y+1)
-        bit 7,h
-        ld a,0
-        jr nz,br_s                  ; starts above: from line 0
-        ld a,h
-        or a
-        jr nz,br_none
-        ld a,l
-        cp VIEW_LINES
-        jr nc,br_none               ; starts below the play area
-br_s:   ld (ix+O_LO),a
-        cp (ix+O_HI)
-        ret c
-br_none:
-        ld (ix+O_HI),0
-        ld (ix+O_LO),0
+oec_on: set 7,(ix+O_EC)
         ret
 
-; Even with every column on one layer the objects pass 32 sprites: in object order after RoboCop
-; (counted with SPR_RC_ONE), those that do not fit then are left out this tick (O_OUT); bu_cut = 1.
+; IX = object -> NC when it is shown and not left out. Keeps BC, DE.
+ft_live:
+        bit 7,(ix+O_FLAGS)
+        scf
+        ret z
+        ld a,(ix+O_OUT)
+        cp 1
+        ccf
+        ret
+
+; IX = object: its composition's bank at 8000h. Keeps BC, DE, HL.
+ft_map: ld a,(ix+O_BANK)
+        add a,SPR_BASE_BANK
+        jp bank_8000
+
+; Even with every OR layer dropped the objects pass BUD_MAX sprites: after RoboCop (counted
+; with rc_hold), the BOBs in their order of importance (bu_ord): those that do not fit then
+; are left out this tick (O_OUT); bu_cut = 1.
 bg_cut: ld a,1
         ld (bu_cut),a
-        ld ix,obj_tab + OBJ_SIZE
-        ld b,MAX_OBJ - 1
-        ld c,SPR_RC_ONE             ; one-layer sprites of the objects kept (RoboCop always)
-cut_lp: bit 7,(ix+O_FLAGS)
-        jr z,cut_n
+        ld a,(rc_hold)
+        ld c,a                      ; one-layer sprites of the objects kept (RoboCop always,
+        ld hl,bu_ord                ; whole; the spark is never left out here: entries 0-1),
+cut_lp: ld a,(hl)                   ; the BOBs in their order of importance
+        cp 0xFF
+        ret z
+        push hl
+        call obj_ix
+        call cut_obj
+        pop hl
+        inc hl
+        jr cut_lp
+
+; IX = object, C = the one-layer sprites kept so far (bg_cut): kept when it fits, else left out.
+; Keeps B.
+cut_obj:
+        bit 7,(ix+O_FLAGS)
+        ret z
         ld a,c
         add a,(ix+O_NA)
-        cp SAT_MAX + 1
+        cp BUD_MAX + 1
         jr nc,cut_out
         ld c,a
-        jr cut_n
+        ret
 cut_out:
         ld (ix+O_OUT),1
-        ld (ix+O_HI),0              ; (meets nothing)
-        ld (ix+O_LO),0
         ld a,(bu_tot)
         sub (ix+O_NSPR)
         add a,(ix+O_GONE)
         ld (bu_tot),a
-cut_n:  ld de,OBJ_SIZE
-        add ix,de
-        djnz cut_lp
         ret
 
-BANDS:      equ (VIEW_LINES + 7) / 8 ; the line phase works on bands of 8 lines
+; ----- the line and total phases (RoboCop is never touched, no object alternates) -----
 
-; IX = object -> NZ when it takes part in the line phase (shown, not left out, lines on screen).
-; Keeps BC, DE, HL.
-bg_part:
+; Every line's sprites (ln_cnt + line, for the lines of the play area): every object shown and
+; not left out, band by band (A sprites, and B sprites unless its band dropped them).
+ln_fill:
+        ld hl,ln_cnt
+        ld b,VIEW_LINES
+        xor a
+lf_z:   ld (hl),a
+        inc l
+        djnz lf_z
+        call ln_rc
+        ld ix,obj_tab + OBJ_SIZE    ; (the BOBs)
+        ld b,MAX_OBJ - 1
+lf_lp:  push bc
+        call ft_live
+        ld c,0
+        call nc,ln_obj
+        ld de,OBJ_SIZE
+        add ix,de
+        pop bc
+        djnz lf_lp
+        ret
+
+; RoboCop's lines (on an empty ln_cnt): per line the most of the versions he wants, shows and
+; prepares, whole (his new frame goes on screen a picture or two after the budget planned for
+; it: counted so, the BOBs never take the line his old frame still needs).
+ln_rc:  ld ix,obj_tab
         bit 7,(ix+O_FLAGS)
         ret z
-        ld a,(ix+O_OUT)
-        or a
-        jr nz,bp_no
-        ld a,(ix+O_HI)
-        or a
-        ret
-bp_no:  xor a
-        ret
-
-; IX = object with lines on screen -> HL = bu_band entry of its first band, C = its bands.
-; Keeps DE.
-bg_bands:
-        ld a,(ix+O_HI)
-        dec a
-        rrca
-        rrca
-        rrca
-        and 0x1F
-        ld c,a                      ; last band
-        ld a,(ix+O_LO)
-        rrca
-        rrca
-        rrca
-        and 0x1F                    ; first band
-        ld b,a
-        add a,bu_band & 0xFF
-        ld l,a
-        ld h,bu_band/256
-        ld a,c
-        sub b
-        inc a
-        ld c,a
-        ret
-
-; Where lines can go above the limit, on bands of 8 lines (the cost grows with the objects, not
-; their pairs): the most sprites each object can put on a line (O_MFULL) is added over the bands
-; it covers; an object on a band above 8 meets others there (O_INV; bu_ninv of them).
-bg_depth:
-        xor a
-        ld (bu_ninv),a
-        ld hl,bu_band
-        ld b,BANDS
-bdz:    ld (hl),a
-        inc l
-        djnz bdz
-        ld ix,obj_tab
-        ld d,MAX_OBJ
-bda:    call bg_part
-        jr z,bda_n
-        call bg_bands
-        ld e,(ix+O_MFULL)
-bda_l:  ld a,(hl)
-        add a,e
-        ld (hl),a
-        inc l
-        dec c
-        jr nz,bda_l
-bda_n:  ld bc,OBJ_SIZE
-        add ix,bc
-        dec d
-        jr nz,bda
-        ld ix,obj_tab
-        ld d,MAX_OBJ
-bdm:    call bg_part
-        jr z,bdm_n
-        call bg_bands
-bdm_l:  ld a,(hl)
-        cp LINE_LIMIT + 1
-        jr nc,bdm_inv
-        inc l
-        dec c
-        jr nz,bdm_l
-        jr bdm_n
-bdm_inv:
-        ld (ix+O_INV),1
-        ld hl,bu_ninv
-        inc (hl)
-bdm_n:  ld bc,OBJ_SIZE
-        add ix,bc
-        dec d
-        jr nz,bdm
-        ret
-
-; With the BOBs that meet others on one layer: per band the most sprites the BOBs there can put
-; on a line (O_MONE when on one layer, else O_MFULL) and the largest of them. Above 8: they
-; alternate (bu_over = 1). On RoboCop's bands that hold BOBs, 8 less that sum is the most he may
-; put on a line (bu_need) and 8 less the largest one (bu_needm: one BOB a frame when they
-; alternate); both FFh when he meets none.
-bg_need:
-        xor a
-        ld (bu_over),a
-        ld hl,bu_band
-        ld b,BANDS
-bnz:    ld (hl),a
-        inc l
-        djnz bnz
-        ld hl,bu_bmax
-        ld b,BANDS
-bnz2:   ld (hl),a
-        inc l
-        djnz bnz2
-        ld ix,obj_tab + OBJ_SIZE
-        ld d,MAX_OBJ - 1
-bnb:    call bg_part
-        jr z,bnb_n
-        call bg_bands
-        ld e,(ix+O_MFULL)
-        ld a,(ix+O_INV)
-        or a
-        jr z,bnb_l
-        ld e,(ix+O_MONE)
-bnb_l:  ld a,(hl)
-        add a,e
-        ld (hl),a
-        cp LINE_LIMIT + 1
-        jr c,bnb_f
-        ld a,1
-        ld (bu_over),a              ; the BOBs alone pass 8 here
-bnb_f:  ld a,l
-        add a,bu_bmax - bu_band
-        ld l,a
-        ld a,(hl)
-        cp e
-        jr nc,bnb_m
-        ld (hl),e
-bnb_m:  ld a,l
-        sub bu_bmax - bu_band - 1
-        ld l,a
-        dec c
-        jr nz,bnb_l
-bnb_n:  ld bc,OBJ_SIZE
-        add ix,bc
-        dec d
-        jr nz,bnb
-        ld a,0xFF
-        ld (bu_need),a
-        ld (bu_needm),a
-        ld ix,obj_tab
-        call bg_part
-        ret z
-        call bg_bands
-bnr_l:  ld a,(hl)                   ; the BOBs' sum on one of RoboCop's bands
-        or a
-        jr z,bnr_n
-        ld e,a
-        ld a,LINE_LIMIT
-        sub e
-        jr nc,bnr_a
-        xor a
-bnr_a:  ld e,a
-        ld a,(bu_need)
-        cp e
-        jr c,bnr_b
-        ld a,e
-        ld (bu_need),a
-bnr_b:  ld a,l
-        add a,bu_bmax - bu_band
-        ld l,a
-        ld e,(hl)                   ; the largest BOB there
-        sub bu_bmax - bu_band
-        ld l,a
-        ld a,LINE_LIMIT
-        sub e
-        jr nc,bnr_c
-        xor a
-bnr_c:  ld e,a
-        ld a,(bu_needm)
-        cp e
-        jr c,bnr_n
-        ld a,e
-        ld (bu_needm),a
-bnr_n:  inc l
-        dec c
-        jr nz,bnr_l
-        ret
-
-; IX = RoboCop, who meets others: the fewest of his rank entries, in order, whose OR layers
-; must go for him to fit on the lines he shares (bg_need; when even his one-layer version does
-; not, the BOBs alternate and he fits beside one of them a frame). With objects left out
-; (bg_cut), all of them: a steady layout matters more then.
-bg_robo:
-        ld a,(bu_need)
-        cp (ix+O_MONE)
-        jr nc,br_fits
-        ld a,1
-        ld (bu_over),a              ; they alternate
-        ld a,(bu_needm)
-br_fits:
-        ld c,a                      ; the most he may put on a line
-        ld a,(bu_cut)
-        or a
-        jr z,br_c
-        ld c,0
-br_c:
+        ld l,(ix+O_COMP)
+        ld h,(ix+O_COMP+1)
         ld a,(ix+O_BANK)
+        ld e,0
+        call ln_ver                 ; the one he wants
+        ld iy,disp
+        call ln_rcv                 ; the one shown
+        ld iy,pend
+ln_rcv: ld a,(iy+V_ON)
+        or a
+        ret z
+        push iy                     ; its place: the hotspot of its record against the one the
+        call sb_rcdy                ; game asked for (sat_build does the same: sb_rchot)
+        pop iy
+        ld e,a
+        ld l,(iy+V_COMP)
+        ld h,(iy+V_COMP+1)
+        ld a,(iy+V_BANK)
+
+; A = bank, HL = a composition of RoboCop's, E = its y against O_Y (signed): every line its bands
+; cover gets at least their sprites.
+ln_ver: push de
         add a,SPR_BASE_BANK
         call bank_8000
-        ld l,(ix+O_MAXK)
-        ld h,(ix+O_MAXK+1)
-        ld b,0                      ; entries to drop
-        ld a,(ix+O_NCOLS)
-        ld e,a
-brk_lp: ld a,(hl)                   ; most per line with the first B dropped
-        cp c
-        jr c,brk_k
-        jr z,brk_k
+        ld b,(hl)                   ; nspr
         inc hl
-        inc b
+        inc hl
+        ld c,(hl)                   ; nbands
         ld a,b
-        cp e
-        jr c,brk_lp
-brk_k:  inc b
-        dec b
-        ret z                       ; none
-        ld l,(ix+O_RANK)
-        ld h,(ix+O_RANK+1)
-brk_d:  push bc
-        ld a,(hl)                   ; column bit
-        ld (tmp_k),a
+        add a,a
+        add a,b                     ; * 3
+        ld e,a
+        ld d,0
+        ex de,hl
+        add hl,hl
+        add hl,hl                   ; * 12
+        ld a,COMP_HDR - 2
+        add a,l
+        ld l,a
+        jr nc,lv_a
+        inc h
+lv_a:   add hl,de                   ; its band table
+        pop de
+        ld b,c
+lv_lp:  push bc
+        push hl
+        ld a,(hl)                   ; dy
+        add a,e                     ; (+ the version's offset: small)
+        push de
+        ld e,a
+        inc hl
+        ld a,(hl)
+        inc hl
+        add a,(hl)                  ; A + B sprites
+        ld c,a
+        call ln_first
+        call ln_span
+        jr z,lv_n
+        ld h,ln_cnt / 256
+lv_l:   ld a,(hl)
+        cp c
+        jr nc,lv_k
+        ld (hl),c
+lv_k:   inc l
+        djnz lv_l
+lv_n:   pop de
+        pop hl
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        pop bc
+        djnz lv_lp
+        ret
+
+; IX = object, C = 0 to add its sprites to their lines, 1 to take them away.
+ln_obj: ld a,c
+        ld (ln_neg),a
+        call ft_map
+        ld l,(ix+O_BANDT)
+        ld h,(ix+O_BANDT+1)
+        ld b,(ix+O_NBANDS)
+        ld c,1                      ; its bit
+lo_lp:  push bc
+        ld e,(hl)                   ; dy
+        inc hl
+        ld a,c
+        and (ix+O_DROP)
+        ld a,(hl)                   ; A sprites
+        inc hl
+        jr nz,lo_d
+        add a,(hl)                  ; + B sprites
+lo_d:   inc hl
+        inc hl
+        push hl
+        call ln_add
+        pop hl
+        pop bc
+        sla c
+        djnz lo_lp
+        ret
+
+; IX = object, E = a band's dy, A = sprites: they go to (ln_neg 0) or leave the band's lines.
+ln_add: ld c,a
+        ld a,(ln_neg)
+        or a
+        jr z,la_p
+        xor a
+        sub c
+        ld c,a
+la_p:   call ln_first
+        call ln_span
+        ret z
+        ld h,ln_cnt / 256
+la_lp:  ld a,(hl)
+        add a,c
+        ld (hl),a
+        inc l
+        djnz la_lp
+        ret
+
+; IX = object, E = a band's dy -> HL = the band's first line (signed). Keeps BC.
+ln_first:
+        ld a,e
+        ld l,(ix+O_Y)
+        ld h,(ix+O_Y+1)
+        rla
+        sbc a,a
+        ld d,a
+        add hl,de
+        ret
+
+; HL = a band's first line (signed) -> L = its first line in the play area, B = its lines there
+; (Z: none). Keeps C, DE.
+ln_span:
+        ld b,16
+        ld a,h
+        or a
+        jr z,ls_in
+        inc a
+        jr nz,ls_no                 ; (from 256 on, or below -256)
+        ld a,l
+        add a,b
+        jr nc,ls_no                 ; (-17 or less)
+        ld l,0
+        ld b,a
+        or a                        ; (Z: -16)
+        ret
+ls_in:  ld a,l
+        cp VIEW_LINES
+        jr nc,ls_no
+        add a,b
+        sub VIEW_LINES
+        jr c,ls_ok                  ; (it ends inside)
+        neg
+        add a,b
+        ld b,a
+ls_ok:  or 1                        ; (NZ)
+        ret
+ls_no:  xor a
+        ret
+
+; The line phase: from the top, a line with more than 8 sprites makes something give way
+; (ft_give) until it has 8, or until nothing that may can (the VDP then hides its last
+; sprites: never RoboCop's, whose run comes first in the SAT).
+ft_lines:
+        ld l,0
+fl_lp:  ld a,l
+        cp VIEW_LINES
+        ret nc
+        ld h,ln_cnt / 256
+        ld a,(hl)
+        cp LINE_LIMIT + 1
+        jr c,fl_nx
+        ld a,l
+        ld (ft_line),a
+        call ft_give
+        ld a,(ft_line)
+        ld l,a
+        jr nc,fl_lp                 ; (the same line again)
+fl_nx:  inc l
+        jr fl_lp
+
+; The total phase: while the objects (but the spark) pass BUD_MAX sprites, something gives way
+; as on a line (ft_line FFh: anywhere).
+ft_total:
+        ld a,0xFF
+        ld (ft_line),a
+ftt_lp: ld a,(bu_tot)
+        cp BUD_MAX + 1
+        ret c
+        call ft_give
+        jr nc,ftt_lp
+        ret
+
+; Something gives way on line ft_line (FFh: in the total), the first that can of: an OR layer of
+; the explosions (and the spark), one of them left out, an OR layer of the shots, enemy bullets,
+; pickups and small parts, one of them left out; in the total only, as the last resort, an OR
+; layer of a character (dropped for good: its look changes at most once; their compositions fit
+; beside RoboCop on any line, so a line never needs it). The OR layer dropped is the cheapest of
+; the tier there (its band's gain: what its colours are worth). C when nothing can.
+ft_give:
+        ld a,2
+        call ft_drop_t
+        ret nc
+        ld a,2
+        call ft_leave_t
+        ret nc
+        ld a,1
+        call ft_drop_t
+        ret nc
+        ld a,1
+        call ft_leave_t
+        ret nc
+        ld a,(ft_line)
+        inc a
+        scf
+        ret nz                      ; (a line: the VDP hides its last sprites, never RoboCop's)
+        jp ft_drop_t                ; (A = 0: the characters)
+
+; A = tier: the cheapest OR layer of a band of an object of that tier on line ft_line (FFh:
+; anywhere, the spark excluded) is dropped. C when there is none.
+ft_drop_t:
+        ld (ft_tier),a
+        ld a,0xFF
+        ld (ft_best),a
+        ld hl,0
+        ld (ft_bix),hl
+        ld ix,obj_tab
+        ld b,MAX_OBJ
+fdt_lp: push bc
+        call ft_live
+        jr c,fdt_n
+        ld a,(ft_tier)
+        cp (ix+O_TIER)
+        call z,ft_cand
+fdt_n:  ld de,OBJ_SIZE
+        add ix,de
+        pop bc
+        djnz fdt_lp
+        ld hl,(ft_bix)
+        ld a,h
+        or l
+        scf
+        ret z
+        push hl
+        pop ix
+
+; IX = object, ft_bbit = one of its bands: that band's OR layer goes (its B sprites leave its
+; lines, O_GONE and the total, not for the spark); a character's stays held. NC.
+ft_dropb:
+        call ft_map
+        ld l,(ix+O_BANDT)
+        ld h,(ix+O_BANDT+1)
+        ld a,(ft_bbit)
+        ld c,a
+        ld b,1
+fdb_f:  ld a,b
+        cp c
+        jr z,fdb_g
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        sla b
+        jr fdb_f
+fdb_g:  ld a,c
+        or (ix+O_DROP)
+        ld (ix+O_DROP),a
+        ld e,(hl)                   ; dy
         inc hl
         inc hl
         ld a,(hl)                   ; B sprites
-        ld (tmp_n),a
-        inc hl
-        ld e,a
-        ld d,0
-        add hl,de
-        or a
-        jr z,brk_n
-        ld a,(tmp_k)
-        and (ix+O_DROP)
-        jr nz,brk_n                 ; dropped already
-        push hl
-        call bt_mark
-        pop hl
-brk_n:  pop bc
-        djnz brk_d
-        ret
-
-; IX = object: the column tmp_k drops its OR layer (tmp_n B sprites fewer). Keeps C, DE.
-bt_mark:
-        ld a,(tmp_k)
-        or (ix+O_DROP)
-        ld (ix+O_DROP),a
-        ld a,(tmp_n)
-        ld b,a
+        ld c,a
         add a,(ix+O_GONE)
         ld (ix+O_GONE),a
+        call ft_spark
+        jr z,fdb_l                  ; (the spark: in no total)
         ld a,(bu_tot)
-        sub b
+        sub c
         ld (bu_tot),a
-        ret
-
-; ----- layouts -----
-
-; A = set -> HL = its first layout entry. Keeps BC, DE.
-lay_base:
-        add a,lay/256               ; one page per set (MAX_OBJ * LAY_SIZE = 256)
-        ld h,a
-        ld l,0
-        ret
-
-; A = object, HL = first layout entry of a set -> HL = the object's entry. Keeps BC, DE.
-lay_obj:
-        add a,a
-        add a,a
-        add a,a
-        add a,a                     ; *16
-        add a,l
-        ld l,a
-        ret
-
-; What the objects want shown against the layout on screen and the one being uploaded: a new
-; layout for the set that is not on screen when neither is right.
-lay_check:
-        ld a,(up_state)
+fdb_l:  ld a,1
+        ld (ln_neg),a
+        ld a,c
+        call ln_add
+        ld a,(ix+O_TIER)
         or a
-        jr z,lk_idle
-        cp 2
-        ret nc                      ; an upload past its pages finishes first, even when what the
-                                    ; objects want changed meanwhile: its layout goes on screen
-                                    ; (RoboCop where his own hotspot puts it) and the next one
-                                    ; starts then (restarting it at every new frame of animation
-                                    ; left some frames never shown when uploads take longer)
-        ld a,(spr_shown)
-        xor 1
-        call lay_same
-        ret z                       ; the upload under way is still the right one
-lk_idle:
-        ld a,(spr_shown)
-        call lay_same
-        jr nz,lk_build
-        xor a
-        ld (up_state),a             ; the set on screen is right
-        ret
-lk_build:
-        call lay_build
-lk_built:
-        ld a,COST_LAYB
-        call spr_charge
-        ld a,1
-        ld (up_state),a
-        xor a
-        ld (up_idx),a
-        ld (up_rec),a
-        ld (up_ent),a
+        ret nz                      ; (NC)
+        ld a,(ft_bbit)
+        or (ix+O_HOLD)
+        ld (ix+O_HOLD),a
+        or a                        ; (NC)
         ret
 
-; A = units of work done this frame by the sprite engine or the game logic (for the upload's
-; share; saturates at 255).
-spr_charge:
+; IX = object -> Z when it is the spark. Keeps BC, DE.
+ft_spark:
+        push ix
+        pop hl
+        ld a,l
+        cp (obj_tab + SPARK_OBJ * OBJ_SIZE) & 0xFF
+        ret nz
+        ld a,h
+        cp (obj_tab + SPARK_OBJ * OBJ_SIZE) / 256
+        ret
+
+; IX = a live object of tier ft_tier: its cheapest band on line ft_line (FFh: anywhere, but the
+; spark's) whose OR layer is still there, if cheaper than ft_best: ft_best, ft_bix, ft_bbit.
+ft_cand:
+        ld a,(ft_line)
+        inc a
+        jr nz,fc_go
+        call ft_spark
+        ret z
+fc_go:  call ft_map
+        ld l,(ix+O_BANDT)
+        ld h,(ix+O_BANDT+1)
+        ld b,(ix+O_NBANDS)
+        ld c,1
+fc_lp:  ld a,c
+        and (ix+O_DROP)
+        jr nz,fc_n                  ; (dropped already)
+        inc hl
+        inc hl
+        ld a,(hl)                   ; B sprites
+        dec hl
+        dec hl
+        or a
+        jr z,fc_n
+        call ft_covers
+        jr c,fc_n
+        inc hl
+        inc hl
+        inc hl
+        ld a,(hl)                   ; its gain
+        dec hl
+        dec hl
+        dec hl
         push hl
-        ld hl,spr_cost
-        add a,(hl)
-        jr nc,sc_s
-        ld a,255
-sc_s:   ld (hl),a
+        ld hl,ft_best
+        cp (hl)
+        jr nc,fc_np
+        ld (hl),a
+        ld (ft_bix),ix
+        ld a,c
+        ld (ft_bbit),a
+fc_np:  pop hl
+fc_n:   inc hl
+        inc hl
+        inc hl
+        inc hl
+        sla c
+        djnz fc_lp
+        ret
+
+; IX = object, HL = one of its band entries -> NC when the band's 16 lines hold line ft_line
+; (FFh: any line). Keeps BC, HL.
+ft_covers:
+        ld a,(ft_line)
+        cp 0xFF
+        ret z                       ; (NC)
+        push hl
+        push bc
+        ld c,a
+        ld e,(hl)
+        call ln_first
+        ld e,c
+        ld d,0
+        ex de,hl
+        or a
+        sbc hl,de                   ; line - its first line
+        ld a,h
+        or a
+        scf
+        jr nz,fcv_x
+        ld a,l
+        cp 16
+        ccf
+fcv_x:  pop bc
         pop hl
         ret
 
-; A = set: Z if its layout holds every object as it wants to be shown.
-lay_same:
-        call lay_base
-        ld ix,obj_tab
-        ld c,MAX_OBJ
-ls_lp:  call obj_want
-        cp (hl)
-        ret nz
+; IX = object -> NC when one of its bands holds line ft_line (FFh: always, but for the spark).
+ft_anyb:
+        ld a,(ft_line)
+        inc a
+        jr nz,fa_go
+        call ft_spark
+        scf
+        ret z
         or a
-        jr z,ls_nx
-        call lb_same
+        ret
+fa_go:  call ft_map
+        ld l,(ix+O_BANDT)
+        ld h,(ix+O_BANDT+1)
+        ld b,(ix+O_NBANDS)
+fa_lp:  call ft_covers
+        ret nc
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        djnz fa_lp
+        scf
+        ret
+
+; A = tier: the least important live object of that tier on line ft_line (FFh: anywhere, but the
+; spark) is left out of the tick (the spark first, on a line). C when there is none.
+ft_leave_t:
+        ld (ft_tier),a
+        cp 2
+        jr nz,flt_o
+        ld ix,obj_tab + SPARK_OBJ * OBJ_SIZE
+        call ft_live
+        jr c,flt_o
+        call ft_anyb
+        jr nc,ft_out
+flt_o:  ld hl,bu_ord
+flt_e:  ld a,(hl)
+        inc hl
+        cp 0xFF
+        jr nz,flt_e
+        dec hl
+flt_lp: ld a,l
+        cp bu_ord & 0xFF
+        scf
+        ret z                       ; (none: bu_ord does not cross a 256-byte boundary)
+        dec hl
+        ld a,(hl)
+        push hl
+        call obj_ix
+        call flt_ok
+        pop hl
+        jr c,flt_lp
+
+; IX = object: left out of the tick: its sprites leave its lines and the total. NC.
+ft_out: ld (ix+O_OUT),1
+        ld c,1
+        call ln_obj
+        call ft_spark
+        jr z,fo_x
+        ld a,(bu_tot)
+        sub (ix+O_NSPR)
+        add a,(ix+O_GONE)
+        ld (bu_tot),a
+fo_x:   or a                        ; (NC)
+        ret
+
+; IX = object -> NC when it is live, of tier ft_tier and on line ft_line (ft_anyb).
+flt_ok: call ft_live
+        ret c
+        ld a,(ft_tier)
+        cp (ix+O_TIER)
+        scf
         ret nz
-ls_nx:  ld de,LAY_SIZE
-        add hl,de
-        ld de,OBJ_SIZE
-        add ix,de
-        dec c
-        jr nz,ls_lp
-        ret                         ; (Z)
+        jr ft_anyb
+
+; ----- versions -----
+
+; A = object -> IY = its disp record (pend_iy: its pend record), HL = the same. Keeps BC, DE.
+ver_iy: add a,a
+        add a,a
+        add a,a
+        add a,a                     ; * LAY_SIZE
+        ld l,a
+        ld h,disp/256
+        push hl
+        pop iy
+        ret
+pend_iy:
+        ld a,(pl_obj)
+        call ver_iy
+        inc h                       ; (pend = disp + 256)
+        push hl
+        pop iy
+        ret
+disp_iy:
+        ld a,(pl_obj)
+        jr ver_iy
+
+; IY = a version record of object pl_obj -> H = its entry page. Keeps BC, DE, L.
+ver_page:
+        ld a,(pl_obj)
+        add a,a
+        add a,(iy+V_PAGE)
+        add a,ENT_PAGE
+        ld h,a
+        ret
+
+; IX = object, IY = a version record: Z when it is the version the object wants (composition,
+; dropped columns, early clock, silhouette).
+ver_same:
+        ld a,(ix+O_BANK)
+        cp (iy+V_BANK)
+        ret nz
+        ld a,(ix+O_COMP)
+        cp (iy+V_COMP)
+        ret nz
+        ld a,(ix+O_COMP+1)
+        cp (iy+V_COMP+1)
+        ret nz
+        ld a,(ix+O_DROP)
+        cp (iy+V_DROP)
+        ret nz
+        ld a,(ix+O_EC)
+        cp (iy+V_EC)
+        ret
 
 ; IX = object -> A = 80h when it is to be shown (and not left out this tick), else 0.
 obj_want:
@@ -1041,290 +1405,492 @@ obj_want:
         and 0x80
         ret
 
-; Layout of the set that is not on screen for what the objects want: their entries in object
-; order (an object that would pass 32 entries is left out) and each object's entry page. A page
-; stays when the layout on screen, or the one being uploaded, shows the object the same way;
-; the others are marked (IY+14 = FFh) and filled from the compositions by the upload (up_fills),
-; once the slots of those that stay are known. Slots: busy[] = 1 used on screen, 2 taken for a
-; new pattern, 3 kept with the pattern it holds.
-lay_build:
-        ld hl,busy
-        ld bc,SPR_SLOTS
-        xor a
-        call fill
-        ld a,(spr_shown)
-        call lay_base
-        ld (lb_sp),hl
-        ld c,1
-        call lay_mark               ; the slots of the layout on screen
-        xor a
-        ld (lb_n),a
-        ld (lb_i),a
-        ld ix,obj_tab
-        ld a,(spr_shown)
-        xor 1
-        call lay_base
+; A = object: it has a new owner (bob.asm bf_key): what it showed and prepared was another
+; BOB's, so both go (it shows nothing until its own version is ready).
+spr_forget:
+        ld (pl_obj),a
+        push ix
+        push af
+        call obj_ix
+        ld (ix+O_HOLD),0            ; (another BOB's look: decided anew)
+        pop af
+        pop ix                      ; (bf_key's record)
+        call disp_iy
+        call disp_unref
+        call pend_iy
+        jp pend_unref
+
+; A = units of work done this frame by the sprite engine or the game logic (the HUD's pacing;
+; saturates at 255).
+spr_charge:
         push hl
-        pop iy                      ; IY = the object's entry in the new layout
-lb_obj: call obj_want
-        or a
-        jr z,lb_absent
-        ld hl,(lb_sp)               ; its entry on screen
-        ld a,(hl)
-        or a
-        jr z,lb_chg
-        call lb_same
-        jr nz,lb_chg
-        push iy                     ; shown the same way there: that entry, at the next SAT entries
-        pop de
-        ld bc,LAY_SIZE
-        ldir
-        ld (iy+14),0
-        ld a,(iy+7)
-        call lb_fit
-        jr nc,lb_next
-        jr lb_absent
-lb_chg: call lb_keep                ; A = page kept, FFh: to fill (up_fills)
-        ld (iy+14),a
-        ld a,(ix+O_NSPR)
-        sub (ix+O_GONE)
-        call lb_fit
-        jr c,lb_absent              ; would not fit
-        push ix                     ; bank, comp, drop, early clock
+        ld hl,spr_cost
+        add a,(hl)
+        jr nc,sc_s
+        ld a,255
+sc_s:   ld (hl),a
         pop hl
+        ret
+
+; ----- slots -----
+
+; HL = a pattern id in a record -> A = a slot for it, one more entry using it (NC): the slot that
+; holds it (shared, or kept from before: no upload) or, when none does, a free one that will
+; (its upload still to queue: slot_ok = 0, slot_gen counts on); pl_unl counts the slots not
+; loaded yet (pend_load). C when no slot is free. Keeps BC, DE, HL (works in the alternate
+; registers).
+slot_for:
+        ld a,(hl)
         inc hl
-        push iy
-        pop de
-        inc de
-        ld bc,5
-        ldir
-        ld de,O_KIND - (O_EC + 1)
-        add hl,de
-        push iy
-        pop de
+        exx
+        ld c,a
+        exx
+        ld a,(hl)
+        dec hl
+        exx
+        ld b,a                      ; BC = pattern id
+        and (PAT_HINTS - 1) / 256
+        add a,pat_slot / 256
+        ld h,a
+        ld l,c
+        ld e,(hl)                   ; the slot it was put in last (FFh: never)
         ld a,e
-        add a,8
-        ld e,a
-        ld bc,3
-        ldir                        ; kind, id
-        ld a,(ix+O_MINDX)
-        ld (iy+12),a
-        ld a,(ix+O_MAXDX)
-        ld (iy+13),a
-        ld a,(ix+O_NLINES)
-        ld (iy+15),a
-        jr lb_next
-lb_absent:
-        ld (iy+0),0
-lb_next:
-        ld hl,(lb_sp)
-        ld de,LAY_SIZE
-        add hl,de
-        ld (lb_sp),hl
-        add iy,de
-        ld de,OBJ_SIZE
-        add ix,de
-        ld hl,lb_i
+        cp SPR_SLOTS
+        jr nc,sl_new
+        add a,a
+        add a,pat_held & 0xFF
+        ld l,a
+        ld h,pat_held / 256
+        ld a,(hl)
+        cp c
+        jr nz,sl_new
+        inc l
+        ld a,(hl)
+        cp b
+        jr nz,sl_new
+        ld l,e                      ; it holds it (or its upload is on its way): one more entry
+        ld h,slot_ref / 256
         inc (hl)
-        ld a,(hl)
-        cp MAX_OBJ
-        jp c,lb_obj
-        ld a,(spr_shown)
-        xor 1
+        ld h,SLOT_PG
+        ld a,(hl)                   ; (slot_ok)
+        or a
+        jr nz,sl_ld
+        ld hl,pl_unl
+        inc (hl)
+sl_ld:  ld a,e
+        exx
+        or a                        ; (NC)
+        ret
+sl_new: call alloc_slot
+        jr c,sl_none
         ld e,a
-        ld d,0
-        ld hl,lay_n
-        add hl,de
-        ld a,(lb_n)
-        ld (hl),a
-        ret
-
-; HL = a layout's first entry, C = busy code: the slots of its objects' entries get it.
-lay_mark:
-        ld a,c
-        ld (tmp_k),a
-        push hl
-        pop iy
-        ld e,0                      ; object
-lm_lp:  ld a,(iy+0)
-        or a
-        jr z,lm_n
-        ld d,(iy+7)
-        ld a,e
-        add a,a
-        add a,(iy+11)
-        add a,ENT_PAGE
-        ld h,a
-        ld l,3                      ; slot of its first entry
-        ld b,busy/256
-        ld a,(tmp_k)
-lm_e:   ld c,(hl)
-        ld (bc),a
-        ld c,a
-        ld a,l
-        add a,ENT_SIZE
         ld l,a
-        ld a,c
-        dec d
-        jr nz,lm_e
-lm_n:   ld bc,LAY_SIZE
-        add iy,bc
-        inc e
-        ld a,e
-        cp MAX_OBJ
-        jr c,lm_lp
-        ret
-
-; A = entries of the object's new layout entry IY: C when they would pass 32 entries; else
-; they follow the entries so far (IY+6, IY+7, lb_n), IY+0 = 80h.
-lb_fit: ld c,a
-        ld a,(lb_n)
-        ld b,a
-        add a,c
-        cp SAT_MAX + 1
-        ccf
-        ret c
-        ld (lb_n),a
-        ld (iy+6),b
-        ld (iy+7),c
-        ld (iy+0),0x80
-        ret
-
-; IX = object that the layout on screen does not show as it wants, IY = its entry in the new
-; layout (still the old one there), HL = its entry on screen -> A = the page of the upload under
-; way when that shows it so already (filled; its slots marked), else FFh with IY+11 = the page
-; to fill (the one the layout on screen does not use).
-lb_keep:
-        ld b,0                      ; (not on screen: page 0)
-        ld a,(hl)
-        or a
-        jr z,lk_up
-        ld de,11
-        add hl,de
-        ld a,(hl)
-        xor 1
-        ld b,a                      ; the other page
-lk_up:  ld a,(up_state)
-        or a
-        jr z,lk_fill
-        ld a,(iy+0)
-        or a
-        jr z,lk_fill
-        ld a,(iy+14)
-        inc a
-        jr z,lk_fill                ; its page is not filled
-        push iy
-        pop hl
-        call lb_same
-        jr nz,lk_fill
-        call lb_markpage            ; that page stays, with its slots
-        ld a,(iy+11)
-        ret
-lk_fill:
-        ld (iy+11),b
-        ld a,0xFF
-        ret
-
-; HL = a layout entry, IX = object: Z when the entry shows the object as it wants (composition,
-; dropped columns, early clock). Keeps BC, DE, HL.
-lb_same:
-        push hl
-        inc hl
-        ld a,(ix+O_BANK)
-        cp (hl)
-        jr nz,lsm_x
-        inc hl
-        ld a,(ix+O_COMP)
-        cp (hl)
-        jr nz,lsm_x
-        inc hl
-        ld a,(ix+O_COMP+1)
-        cp (hl)
-        jr nz,lsm_x
-        inc hl
-        ld a,(ix+O_DROP)
-        cp (hl)
-        jr nz,lsm_x
-        inc hl
-        ld a,(ix+O_EC)
-        cp (hl)
-lsm_x:  pop hl
-        ret
-
-; IY = a layout entry of object lb_i (page IY+11): its slots busy (2).
-lb_markpage:
-        ld b,(iy+7)
-        ld a,(lb_i)
-        add a,a
-        add a,(iy+11)
-        add a,ENT_PAGE
-        ld h,a
-        ld l,3
-        ld d,busy/256
-        ld a,2
-lmp_lp: ld e,(hl)
-        ld (de),a
-        ld e,a
-        ld a,l
-        add a,ENT_SIZE
+        ld h,slot_ref / 256
+        ld (hl),1
+        ld h,SLOT_PG
+        or SO_GEN
         ld l,a
+        inc (hl)                    ; a new generation first (spr_upload: an older background
+        ld l,e                      ; upload of this slot then no longer marks it loaded),
+        ld (hl),0                   ; then not loaded (slot_ok),
         ld a,e
-        djnz lmp_lp
+        or SO_Q
+        ld l,a
+        ld (hl),0                   ; and in no queue
+        ld a,e
+        add a,a
+        add a,pat_held & 0xFF
+        ld l,a
+        ld h,pat_held / 256
+        ld (hl),c
+        inc l
+        ld (hl),b                   ; what it will hold
+        ld a,b
+        and (PAT_HINTS - 1) / 256
+        add a,pat_slot / 256
+        ld h,a
+        ld l,c
+        ld (hl),e                   ; and where that pattern is
+        ld hl,pl_unl
+        inc (hl)
+        ld a,e
+        exx
+        or a                        ; (NC)
+        ret
+sl_none:
+        exx
+        scf
         ret
 
-; IY = new layout entry of object lb_i: its page (IY+11) filled from the composition it holds
-; (with its dropped columns and early clock), a slot for every entry (slot_for); from record
-; up_rec and entry up_ent on, UP_FILL units a record. C when the units or the frame ran out
-; (up_rec, up_ent = where to go on), NC when the page is complete.
-lb_fill:
-        ld a,(iy+5)
-        ld (lb_ec),a
-        ld a,(iy+1)
-        add a,SPR_BASE_BANK
-        call bank_8000
-        ld l,(iy+2)
-        ld h,(iy+3)
-        ld a,(up_rec)
-        ld c,a
-        ld a,(hl)
-        sub c
-        ld b,a                      ; records left
-        ld a,c
-        add a,a
-        add a,c
-        add a,a
-        add a,a                     ; 12 * up_rec
+; -> A = a slot no entry uses (taken in turn: the oldest content goes first); C when none.
+; Keeps BC, DE, HL.
+alloc_slot:
+        push hl
         push bc
-        ld c,a
-        ld b,0
-        add hl,bc
-        ld c,COMP_HDR
-        add hl,bc                   ; HL = its next record
+        ld a,(alloc_p)
+        ld l,a
+        ld h,slot_ref / 256
+        ld b,SPR_SLOTS
+al_lp:  ld a,l
+        and SPR_SLOTS - 1
+        ld l,a
+        ld a,(hl)
+        or a
+        jr z,al_got
+        inc l
+        djnz al_lp
         pop bc
-        ld a,(iy+11)
+        pop hl
+        scf
+        ret
+al_got: ld a,l
+        inc a
+        ld (alloc_p),a
+        ld a,l
+        pop bc
+        pop hl
+        or a
+        ret
+
+; A = slot: one entry fewer uses it now (a version still being prepared: nothing showed it).
+slot_unref:
+        ld l,a
+        ld h,slot_ref / 256
+        dec (hl)
+        ret
+
+; At the start of a plan (the frame it released slots in is on screen): those slots go.
+slots_free:
+        ld a,(fl_n)
+        sub SO_FL - 1
+        ret z
+        ld b,a
+        ld h,SLOT_PG
+        ld l,SO_FL
+        ld d,slot_ref / 256
+sf_lp:  ld e,(hl)
         ex de,hl
-        ld hl,lb_i
-        add a,(hl)
-        add a,(hl)
-        add a,ENT_PAGE
+        dec (hl)
         ex de,hl
-        ld d,a
-        ld a,(up_ent)
-        add a,a
-        add a,a
-        add a,a
-        ld e,a                      ; DE = its next entry
-        ld c,(iy+4)                 ; its dropped columns
+        inc l
+        djnz sf_lp
+        ld a,SO_FL - 1
+        ld (fl_n),a
+        ret
+
+; IY = the disp record of object pl_obj: no longer shown once the planned frame is on screen:
+; its slots released then, its SAT entries free now (the planned frame parks or reuses them).
+disp_unref:
+        ld a,(iy+V_ON)
+        or a
+        ret z
+        ld (iy+V_ON),0
+        ld a,1
+        ld (sat_dirty),a            ; (its entries parked)
+        ld b,(iy+V_N)
         inc b
         dec b
-        ret z                       ; (NC)
-lf_lp:  call up_late
-        jr c,lf_stop
-        ld a,(up_units)
-        sub UP_FILL
-        jr c,lf_stop
-        ld (up_units),a
+        ret z
+        call ver_page
+        ld l,3                      ; slot of entry 0
+        ld a,(fl_n)                 ; (the frame on screen still shows them: they go once the
+                                    ; planned one is, slots_free: at most 32 a plan)
+        ld e,a
+        ld d,SLOT_PG
+du_lp:  ld a,(hl)
+        inc e
+        ld (de),a
+        ld a,l
+        add a,ENT_SIZE
+        ld l,a
+        djnz du_lp
+        ld a,e
+        ld (fl_n),a
+        ld a,(iy+V_RUN)             ; its run: free
+        add a,ent_own & 0xFF
+        ld l,a
+        ld h,ent_own / 256
+        ld b,(iy+V_N)
+        ld a,0xFF
+du_e:   ld (hl),a
+        inc l
+        djnz du_e
+        ret
+
+; IY = the pend record of object pl_obj: dropped (its slots released at once: nothing shows
+; them; one never loaded keeps nothing).
+pend_unref:
+        ld a,(iy+V_ON)
+        or a
+        ret z
+        ld (iy+V_ON),0
+        ld b,(iy+V_N)
+        inc b
+        dec b
+        ret z
+        call ver_page
+        ld l,3
+pu_lp:  ld a,(hl)
         push hl
+        ld l,a
+        ld h,slot_ref / 256
+        dec (hl)
+        jr nz,pu_n
+        ld h,SLOT_PG                ; free now: if its pattern never got there, it holds nothing
+        ld a,(hl)                   ; (slot_ok)
+        or a
+        jr nz,pu_n
+        ld a,l
+        add a,a
+        add a,pat_held & 0xFF
+        ld l,a
+        ld h,pat_held / 256
+        ld (hl),0xFF
+        inc l
+        ld (hl),0xFF
+pu_n:   pop hl
+        ld a,l
+        add a,ENT_SIZE
+        ld l,a
+        djnz pu_lp
+        ret
+
+; ----- plan -----
+
+; Once per published frame (sprites_frame): every object's versions toward what it wants, in
+; order RoboCop, the spark, the BOBs. The frame's queue (pq: the patterns and colour rows its
+; new versions need, all written in one blank time, at most pq_left units) and the background
+; queue (bq: patterns of versions still being prepared) are filled; the objects whose new
+; versions are complete then show them in this frame.
+spr_plan:
+        xor a
+        ld (pl_pack),a              ; (no packing yet in this plan)
+        call slots_free
+        ld hl,PQ_PATS * QC_PAT      ; (the frame's queue also takes up to 32 rows and the SAT)
+        ld (pq_left),hl
+        ld hl,pq_buf
+        ld (pq_wr),hl
+        ld ix,obj_tab               ; RoboCop's zone: the most entries his versions shown, under
+        ld a,(ix+O_NSPR)            ; way and wanted take; no BOB run goes there (he would have
+        sub (ix+O_GONE)             ; to push it away)
+        ld c,a
+        ld a,(disp + V_N)
+        cp c
+        jr c,pz_1
+        ld c,a
+pz_1:   ld a,(pend + V_ON)
+        or a
+        jr z,pz_2
+        ld a,(pend + V_N)
+        cp c
+        jr c,pz_2
+        ld c,a
+pz_2:   ld a,c
+        add a,(ent_own + RC_RUN) & 0xFF
+        ld (pl_rcz),a
+        ld hl,pl_wa                 ; one look at every object: one not shown drops its
+        ld (pl_pa),hl               ; versions, one shown as it wants is left alone, the others
+        ld hl,pl_wb                 ; go into the work lists: first those showing nothing yet
+        ld (pl_pb),hl               ; (a BOB that just came is invisible until its first
+                                    ; version), then the rest; in each by importance
+        ld ix,obj_tab
+        ld iy,disp
+        xor a
+pc_lp:  ld (pl_obj),a
+        ld c,0                      ; (pl_st: 0 no work, 1 the first list, 2 the second)
+        ld a,(ix+O_OUT)
+        or a
+        jr nz,pc_not
+        bit 7,(ix+O_FLAGS)
+        jr z,pc_not
+        inc c
+        ld a,(iy+V_ON)
+        or a
+        jr z,pc_st                  ; (shows nothing yet)
+        call ver_same
+        ld c,2
+        jr nz,pc_st
+        ld c,0                      ; shown as it wants: a version prepared meanwhile goes
+        jr pc_pd
+pc_not: ld a,(iy+V_ON)
+        or a
+        call nz,disp_unref
+        ld c,0
+pc_pd:  push iy
+        pop hl
+        inc h                       ; (its pend record)
+        ld a,(hl)
+        or a
+        jr z,pc_st
+        push bc
+        ld de,256
+        add iy,de
+        call pend_unref
+        ld de,-256
+        add iy,de
+        pop bc
+pc_st:  ld a,(pl_obj)
+        add a,pl_st & 0xFF
+        ld l,a
+        ld h,pl_st / 256
+        ld (hl),c
+        ld de,OBJ_SIZE
+        add ix,de
+        ld de,LAY_SIZE
+        add iy,de
+        ld a,(pl_obj)
+        inc a
+        cp MAX_OBJ
+        jr c,pc_lp
+        xor a                       ; the work lists by importance: RoboCop, the spark, the BOBs
+        call pl_put                 ; in the budget's order, then any other
+        ld a,SPARK_OBJ
+        call pl_put
+        ld hl,bu_ord
+pc_o:   ld a,(hl)
+        cp 0xFF
+        jr z,pc_r
+        push hl
+        call pl_put
+        pop hl
+        inc hl
+        jr pc_o
+pc_r:   ld hl,pl_st + 1             ; (pl_st does not cross a 256-byte boundary)
+        ld b,SPARK_OBJ - 1
+pc_rl:  ld a,(hl)
+        or a
+        jr z,pc_rn
+        push bc
+        push hl
+        ld a,l
+        sub pl_st & 0xFF
+        call pl_put
+        pop hl
+        pop bc
+pc_rn:  inc l
+        djnz pc_rl
+        ld hl,(pl_pa)
+        ld (hl),0xFF                ; (the lists' ends)
+        ld hl,(pl_pb)
+        ld (hl),0xFF
+        ld hl,pl_wa
+        call pl_list
+        ld hl,pl_wb
+        call pl_list
+        ret
+
+; A = object: into its work list when the look at it put it in one (pl_st; then no more).
+pl_put: ld c,a
+        add a,pl_st & 0xFF
+        ld l,a
+        ld h,pl_st / 256
+        ld a,(hl)
+        ld (hl),0
+        dec a
+        ld hl,pl_pa
+        jr z,pp_l
+        dec a
+        ret nz                      ; (none)
+        ld hl,pl_pb
+pp_l:   ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld a,c
+        ld (de),a
+        inc de
+        ld (hl),d
+        dec hl
+        ld (hl),e
+        ret
+
+; HL = a work list (objects, FFh at its end): each one's version brought on.
+pl_list:
+        ld a,(hl)
+        cp 0xFF
+        ret z
+        inc hl
+        push hl
+        call pl_work
+        call feed_vdp               ; (the scroll engine's next VDP command: its pages are
+        pop hl                      ; built only from the main loop's idle points)
+        jr pl_list
+
+; A = object that wants another version than it shows: the one it prepares goes on (once shown,
+; the next one it wants is prepared: dropping a version under way each time an animation moved
+; on showed nothing new at all), or the one it wants is prepared now.
+pl_work:
+        ld (pl_obj),a
+        call obj_ix
+        call pend_iy
+        ld a,(iy+V_ON)
+        or a
+        jr nz,pw_load
+        call pend_build
+        ret c                       ; (no slots)
+        ld a,(pl_unl)               ; (counted while it was built)
+        ld c,a
+        call pld_n
+        jp z,pend_commit
+        ret                         ; (its patterns on their way)
+pw_load:
+        call pend_load
+        jp z,pend_commit
+        ret
+
+; IX = object, IY = its pend record (empty): the version it wants, prepared: its entries (from
+; its composition, with its dropped columns, early clock and silhouette) on the entry page its
+; disp does not use, a slot for every pattern. C when the slots ran out (nothing kept).
+pend_build:
+        push iy
+        call disp_iy
+        ld a,(iy+V_ON)
+        or a
+        jr z,pb_p0
+        ld a,(iy+V_PAGE)
+        xor 1
+pb_p0:  pop iy
+        ld (iy+V_PAGE),a
+        ld a,(ix+O_BANK)
+        ld (iy+V_BANK),a
+        ld a,(ix+O_COMP)
+        ld (iy+V_COMP),a
+        ld a,(ix+O_COMP+1)
+        ld (iy+V_COMP+1),a
+        ld a,(ix+O_DROP)
+        ld (iy+V_DROP),a
+        ld a,(ix+O_EC)
+        ld (iy+V_EC),a
+        and 0x80
+        ld (lb_ec),a
+        ld a,(ix+O_EC)
+        and 3
+        ld (lb_mode),a
+        ld a,(ix+O_KIND)
+        ld (iy+V_KIND),a
+        ld a,(ix+O_ID)
+        ld (iy+V_ID),a
+        ld a,(ix+O_ID+1)
+        ld (iy+V_ID+1),a
+        ld a,(ix+O_MINDX)
+        ld (iy+V_MINDX),a
+        ld a,(ix+O_MAXDX)
+        ld (iy+V_MAXDX),a
+        ld a,(ix+O_NLINES)
+        ld (iy+V_LINES),a
+        xor a
+        ld (iy+V_N),a
+        ld (pl_unl),a
+        call obj_comp               ; HL = its composition (bank mapped at 8000h)
+        ld b,(hl)                   ; records
+        ld de,COMP_HDR
+        add hl,de
+        push hl
+        call ver_page
+        ld d,h
+        ld e,0                      ; DE = its first entry
+        pop hl
+        ld c,(iy+V_DROP)
+pb_lp:  push hl
         ld a,(hl)
         ld (de),a                   ; dy (the entry counts only if the sprite is kept)
         inc hl
@@ -1334,18 +1900,19 @@ lf_lp:  call up_late
         inc hl
         ld a,(hl)                   ; park bit
         and c
-        jr nz,lf_skip               ; B sprite of a dropped column: no entry
+        jr nz,pb_skip               ; B sprite of a dropped column: no entry
         inc hl
         ld a,(hl)                   ; A1 bit
         inc hl
         and c
-        jr z,lf_ids
+        jr z,pb_ids
         ld a,l                      ; A sprite of a dropped column: its A1 ids
         add a,4
         ld l,a
-        jr nc,lf_ids
+        jr nc,pb_ids
         inc h
-lf_ids: call slot_for
+pb_ids: call slot_for
+        jr c,pb_none
         inc e
         inc e
         ld (de),a                   ; slot
@@ -1363,6 +1930,9 @@ lf_ids: call slot_for
         ld (de),a                   ; pattern id
         inc hl
         inc e
+        ld a,(lb_mode)
+        or a
+        jr nz,pb_sil
         ld a,(hl)
         ld (de),a
         inc hl
@@ -1370,617 +1940,810 @@ lf_ids: call slot_for
         ld a,(lb_ec)
         or (hl)
         ld (de),a                   ; colour id | 8000h (early clock)
-        inc e
-        inc e                       ; (the next entry: dec e below)
-lf_skip:
+pb_cd:  inc e
+        pop hl
+        jr pb_nx
+pb_skip:
         dec e
         pop hl
-        ld a,l
+pb_nx:  ld a,l
         add a,REC_SIZE
         ld l,a
-        jr nc,lf_n
+        jr nc,pb_n
         inc h
-lf_n:   djnz lf_lp
-        or a                        ; complete (NC)
-        ret
-lf_stop:
-        ld a,e
+pb_n:   djnz pb_lp
+        ld a,e                      ; its entries: 8 bytes each from 0
         rrca
         rrca
         rrca
         and 0x1F
-        ld (up_ent),a
-        ld l,(iy+2)
-        ld h,(iy+3)
-        ld a,(hl)
-        sub b
-        ld (up_rec),a
+        ld (iy+V_N),a
+        ld (iy+V_ON),0x80
+        or a                        ; (NC)
+        ret
+pb_sil: dec a                       ; a silhouette: its colour row
+        jr nz,pb_blk
+        ld a,SPR_SIL_FLASH & 0xFF
+        ld (de),a
+        inc e
+        ld a,(lb_ec)
+        or SPR_SIL_FLASH / 256
+        jr pb_s1
+pb_blk: ld a,SPR_SIL_BLACK & 0xFF
+        ld (de),a
+        inc e
+        ld a,(lb_ec)
+        or SPR_SIL_BLACK / 256
+pb_s1:  ld (de),a
+        jr pb_cd
+pb_none:
+        pop hl                      ; no slot: what it took goes (E: past the last whole entry's
+        ld a,e                      ; first byte)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (iy+V_N),a
+        ld (iy+V_ON),0x80
+        call pend_unref
         scf
         ret
 
-; HL = pattern id in a record -> A = a slot for it, now busy: the slot it was last put in when
-; that one still holds it and no other pattern claimed it in this layout (on screen or free),
-; else a free one. Keeps BC, DE, HL.
-slot_for:
-        push bc
-        push de
-        push hl
-        ld c,(hl)
-        inc hl
-        ld b,(hl)
-        ld hl,pat_slot
-        add hl,bc
-        ld e,(hl)                   ; where it was put last (FFh: never)
-        ld a,e
-        cp SPR_SLOTS
-        jr nc,sl_new
-        ld d,busy/256
-        ld a,(de)
-        cp 2
-        jr z,sl_new                 ; claimed for another pattern
-        ld a,e
-        add a,a
-        add a,pat_held & 0xFF
+; IY = the pend record of object pl_obj: its patterns not yet in their slots go into a queue:
+; the frame's (pq) while its units allow, else the background one (bq: they are there by a
+; later frame). NZ when some are still on their way (in bq or a previous frame's bq).
+pend_load:
+        ld b,(iy+V_N)
+        inc b
+        dec b
+        ret z
+        call ver_page
+        ld l,3                      ; slot of entry 0
+        ld c,0                      ; its patterns not in their slots yet
+pld_c:  ld e,(hl)
+        ld d,SLOT_PG
+        ld a,(de)                   ; (slot_ok)
+        or a
+        jr nz,pld_cn
+        inc c
+pld_cn: ld a,l
+        add a,ENT_SIZE
         ld l,a
-        ld h,pat_held/256
+        djnz pld_c
+pld_n:  ld a,c                      ; (C = its patterns not in their slots yet: pend_build
+        or a                        ; counts them as it builds the version)
+        ret z                       ; all there (Z)
+        ld e,QC_PAT                 ; will it be shown in this frame? (its patterns): then they
+        call mul8                   ; take the frame's queue, else the background one (the
+        ex de,hl                    ; frame's units go to those that can be shown)
+        ld hl,(pq_left)
+        or a
+        sbc hl,de
+        ld a,0
+        jr c,pld_q
+        inc a
+pld_q:  ld (pl_pq),a
+        xor a
+        ld (pl_wait),a
+        ld b,(iy+V_N)
+        call ver_page
+        ld l,3
+pl_ld:  push bc
+        push hl
+        ld e,(hl)                   ; slot
+        ld d,SLOT_PG
+        ld a,(de)                   ; (slot_ok)
+        or a
+        jr nz,pl_ok                 ; loaded (or queued in this frame)
+        inc l
+        ld c,(hl)
+        inc l
+        ld b,(hl)                   ; BC = pattern id
+        ld a,(pl_pq)
+        or a
+        jr z,pl_bq
+        call pq_pat                 ; into this frame's queue (C: no units left)
+        jr nc,pl_ok
+pl_bq:  ld a,e
+        or SO_Q
+        ld l,a
+        ld h,SLOT_PG
+        ld a,(hl)
+        or a
+        call z,bq_pat               ; else the background's, unless it is there (C: full)
+pl_bg:  ld a,1
+        ld (pl_wait),a
+pl_ok:  pop hl
+        ld a,l
+        add a,ENT_SIZE
+        ld l,a
+        pop bc
+        djnz pl_ld
+        ld a,(pl_wait)
+        or a
+        ret
+
+; A, E -> HL = A * E. Keeps BC.
+mul8:   ld hl,0
+        ld d,h                      ; DE = E, shifted left as A is shifted right
+mul8_l: or a
+        ret z
+        srl a
+        jr nc,mul8_n
+        add hl,de
+mul8_n: sla e
+        rl d
+        jr mul8_l
+
+; E = slot, BC = pattern id: into the frame's queue (QC_PAT units; C when they ran out): the
+; slot counts as loaded for the plan (slot_ok 1 now, the queue runs before the frame is shown).
+pq_pat: ld hl,(pq_left)
+        ld a,l
+        sub QC_PAT
+        ld l,a
+        ld a,h
+        sbc a,0
+        ret c
+        ld h,a
+        ld (pq_left),hl
+        ld hl,(pq_wr)
+        ld (hl),Q_PAT
+        inc hl
+        call q_patw
+        ld (pq_wr),hl
+        ld d,SLOT_PG
+        ld a,1
+        ld (de),a                   ; (slot_ok)
+        or a
+        ret
+
+; E = slot, BC = pattern id: into the background queue with the slot's generation (C: full).
+; slot_q marks it queued (the interrupt loads it in a later frame and sets slot_ok).
+bq_pat: ld a,(bq_tail)
+        ld l,a
+        add a,8
+        ld h,a
+        ld a,(bq_head)
+        cp h
+        scf
+        ret z                       ; (full)
+        ld a,h
+        push af                     ; (the next tail)
+        ld h,bq_buf / 256
+        ld (hl),e                   ; slot
+        inc l
+        ld a,e
+        or SO_GEN
+        push de
+        ld e,a
+        ld d,SLOT_PG
+        ld a,(de)
+        pop de
+        ld (hl),a                   ; its generation
+        inc l
+        call q_patw                 ; (within the entry: no carry into H)
+        pop af
+        ld (bq_tail),a              ; (the interrupt sees it once complete)
+        ld a,e
+        or SO_Q
+        ld l,a
+        ld h,SLOT_PG
+        ld (hl),1                   ; (slot_q)
+        or a
+        ret
+
+; E = slot, BC = pattern id, HL = an entry's five bytes: VRAM address of the slot (low, high |
+; 40h), the pattern's bank and address in the A000h window; HL after them. Keeps BC, DE.
+q_patw: ld a,e
+        rrca
+        rrca
+        rrca
+        push af
+        and 0xE0
+        ld (hl),a                   ; SPR_PAT + 32 * slot: low,
+        inc hl
+        pop af
+        and 0x07
+        add a,((SPR_PAT >> 8) & 0x3F) | 0x40
+        ld (hl),a                   ;   high (write)
+        inc hl
+        ld a,b
+        add a,SPR_BASE_BANK + SPR_PAT_BANK
+        ld (hl),a                   ; the pool's bank: id / 256,
+        inc hl
+        ld a,c
+        rrca
+        rrca
+        rrca
+        push af
+        and 0xE0
+        ld (hl),a                   ; A000h + 32 * (id & FFh)
+        inc hl
+        pop af
+        and 0x1F
+        add a,0xA0
+        ld (hl),a
+        inc hl
+        ret
+
+; ----- commit -----
+
+; IX = object, IY = its pend record, complete: it replaces the version shown when it gets a run
+; of SAT entries (RoboCop's from entry RC_RUN, the spark's at 0, a BOB's the highest that fits;
+; entries free or its own): the old version released and the new one shown from this frame (its
+; colour rows go into the set that frame shows: rows_sync).
+pend_commit:
+        ld a,(pl_obj)
+        or a
+        jr nz,pcm_o
+        ld a,RC_RUN                 ; RoboCop: his run from RC_RUN, whatever is there
+        ld (pc_start),a
+        call pr_clear               ; (a BOB in his way goes: it comes back above him)
+        jr pcm_c
+pcm_o:  call pc_run
+        ret c                       ; (no run free now)
+        ld (pc_start),a
+pcm_c:  push iy
+        call disp_iy
+        call disp_unref             ; the version shown goes (its run is free now)
+        pop iy
+        ld a,(pc_start)
+        ld (iy+V_RUN),a
+        add a,ent_own & 0xFF
+        ld l,a
+        ld h,ent_own / 256
+        ld b,(iy+V_N)
+        ld a,(pl_obj)
+pc_own: ld (hl),a
+        inc l
+        djnz pc_own
+        push iy                     ; pend -> disp (its colour rows: rows_sync)
+        pop hl
+        ld e,l
+        dec h
+        ld d,h
+        inc h
+        ld bc,LAY_SIZE
+        ldir
+        ld (iy+V_ON),0              ; (pend empty; its slots are the shown version's now)
+        ld a,1
+        ld (sat_dirty),a
+        ret
+
+; IY = a complete pend record of object pl_obj -> A = the first SAT entry of its run (C: none
+; free now). A version as large as the one shown takes that one's run (its own entries, above
+; RoboCop's zone): no search, and the holes stay as they are.
+pc_run: ld a,(pl_obj)
+        cp SPARK_OBJ
+        ld a,0
+        ret z                       ; (entries 0-1)
+        ld e,(iy+V_N)               ; the new version's entries
+        push iy
+        call disp_iy
+        ld a,(iy+V_ON)
+        or a
+        jr z,pr_srch                ; (nothing shown)
+        ld a,(iy+V_N)
+        cp e
+        jr nz,pr_srch               ; (another size: the best hole for it)
+        ld a,(iy+V_RUN)
+        ld d,a
+        add a,ent_own & 0xFF
+        ld hl,pl_rcz
+        cp (hl)
+        jr c,pr_srch                ; (RoboCop's zone reaches it)
+        pop iy
+        ld a,d
+        or a                        ; (NC)
+        ret
+pr_srch:
+        pop iy
+pr_find:
+        ld a,0xFF                   ; a BOB: the smallest hole that fits (holes: runs of entries
+        ld (pr_bsz),a               ; free or its own above RoboCop's zone; of two the same, the
+        ld hl,ent_own + SAT_MAX - 1 ; higher), so that the holes left stay large
+        ld c,0                      ; size of the hole being walked
+pr_lp:  ld a,(pl_rcz)
+        dec a
+        cp l
+        jr nc,pr_end                ; (below the zone's end: the last hole ends)
+        ld a,(hl)
+        inc a
+        jr z,pr_fr
+        dec a
+        ld e,a
+        ld a,(pl_obj)
+        cp e
+        jr z,pr_fr
+        call pr_hole                ; another object's: the hole above it ends
+        ld c,0
+        dec l
+        jr pr_lp
+pr_fr:  inc c
+        dec l
+        jr pr_lp
+pr_end: call pr_hole
+        ld a,(pr_bsz)
+        inc a
+        jr z,pr_none                ; (none fits)
+        ld a,(pr_bst)
+        or a
+        ret
+
+; C = size of a hole whose lowest entry is L + 1 (ent_own's low byte): when the object (IY+V_N
+; entries) fits and it is smaller than the best so far, it is the best (pr_bst: its run's first
+; entry, at the hole's top). Keeps BC, HL.
+pr_hole:
+        ld a,c
+        cp (iy+V_N)
+        ret c                       ; (too small)
+        ld a,(pr_bsz)
+        cp c
+        ret c
+        ret z                       ; (not smaller: the higher one stays)
+        ld a,c
+        ld (pr_bsz),a
+        ld a,l                      ; the run at the hole's top: L + 1 + C - n
+        add a,c
+        sub (iy+V_N)
+        inc a
+        sub ent_own & 0xFF
+        ld (pr_bst),a
+        ret
+pr_none:
+        ld a,(pl_pack)              ; no hole takes it: when the entries free above RoboCop's
+        or a                        ; zone (with its own) do, the BOBs' runs are packed (once a
+        jr nz,pr_no                 ; plan) and the search is tried again
+        call pr_free
+        cp (iy+V_N)
+        jr c,pr_no
+        call sat_pack
+        jp pr_find
+pr_no:  scf
+        ret
+
+; -> A = the SAT entries above RoboCop's zone that are free or object pl_obj's.
+pr_free:
+        ld a,(pl_obj)
+        ld d,a
+        ld c,0
+        ld hl,ent_own + SAT_MAX - 1
+prf_lp: ld a,(pl_rcz)
+        dec a
+        cp l
+        jr nc,prf_x                 ; (below the zone's end)
+        ld a,(hl)
+        inc a
+        jr z,prf_f
+        dec a
+        cp d
+        jr nz,prf_n
+prf_f:  inc c
+prf_n:  dec l
+        jr prf_lp
+prf_x:  ld a,c
+        ret
+
+; The BOBs' runs packed against entry 31, in their order, the run of object pl_obj last (lowest:
+; beside the hole), so that the entries free above RoboCop's zone become one hole next to it. A
+; run that moves only has another place in the SAT being built (the set on screen is never
+; written): rows_sync gives that set the colour rows there, sat_build the entries. Nothing moves
+; while a BOB's run still reaches into RoboCop's zone (his next version clears it). Keeps IY.
+sat_pack:
+        push iy
+        ld a,1
+        ld (pl_pack),a
+        ld de,sp_list               ; the objects of the runs from the top (sp_list within a page)
+        ld hl,ent_own + SAT_MAX - 1
+        ld c,0xFF                   ; (the owner seen last)
+spk_lp: ld a,(pl_rcz)
+        dec a
+        cp l
+        jr nc,spk_e
         ld a,(hl)
         cp c
-        jr nz,sl_new
-        inc l
-        ld a,(hl)
+        jr z,spk_n                  ; (the same run)
+        ld c,a
+        inc a
+        jr z,spk_n                  ; (free)
+        dec a
+        jr z,spk_n                  ; (RoboCop's: not a BOB run)
+        cp SPARK_OBJ
+        jr z,spk_n
+        ld b,a
+        ld a,(pl_obj)
         cp b
-        jr nz,sl_new
-        ld a,(de)                   ; it holds it: shared
+        jr z,spk_n                  ; (pl_obj's goes last)
+        ld a,b
+        call spk_put
+        jr c,spk_x
+spk_n:  dec l
+        jr spk_lp
+spk_e:  ld a,(pl_obj)               ; then pl_obj's, when it shows a version
+        call ver_iy
+        ld a,(iy+V_ON)
         or a
-        jr nz,sl_got
-        ld a,3
+        jr z,spk_w
+        ld a,(pl_obj)
+        call spk_put
+        jr c,spk_x
+spk_w:  ld a,0xFF
         ld (de),a
-sl_got: ld a,e
-        pop hl
-        pop de
-        pop bc
-        ret
-sl_new: call alloc_slot
-        pop hl
-        pop de
-        pop bc
-        ret
-
-; -> A = a free pattern slot, now taken (busy 2). Keeps BC, DE, HL.
-alloc_slot:
-        push hl
-        push bc
-        ld a,(alloc_p)
+        ld a,1
+        ld (sat_dirty),a
+        ld de,sp_list               ; their entries freed
+spk_c:  ld a,(de)
+        inc e
+        cp 0xFF
+        jr z,spk_p
+        call ver_iy
+        ld a,(iy+V_RUN)
+        add a,ent_own & 0xFF
         ld l,a
-        ld h,busy/256
-        ld b,SPR_SLOTS
-al_lp:  ld a,l
-        and SPR_SLOTS - 1
-        ld l,a
-        ld a,(hl)
-        or a
-        jr z,al_got
+        ld h,ent_own / 256
+        ld b,(iy+V_N)
+spk_cf: ld (hl),0xFF
         inc l
-        djnz al_lp
-        ld l,0                      ; (cannot happen: at most 32 + 32 slots in use)
-al_got: ld (hl),2
-        ld a,l
-        inc a
-        ld (alloc_p),a
-        ld a,l
-        pop bc
-        pop hl
+        djnz spk_cf
+        jr spk_c
+spk_p:  ld de,sp_list               ; and placed from entry 31 down
+        ld c,SAT_MAX
+spk_r:  ld a,(de)
+        inc e
+        cp 0xFF
+        jr z,spk_x
+        ld b,a
+        call ver_iy
+        ld a,c
+        sub (iy+V_N)
+        ld c,a
+        ld (iy+V_RUN),a
+        add a,ent_own & 0xFF
+        ld l,a
+        ld h,ent_own / 256
+        ld a,b
+        ld b,(iy+V_N)
+spk_rf: ld (hl),a
+        inc l
+        djnz spk_rf
+        jr spk_r
+spk_x:  pop iy
         ret
 
-; ----- upload -----
-
-; Once per frame: the SAT x correction of the camera, the set uploaded on screen (on the game's
-; frame), the SAT when something moved or the set changed, the frame's phase when objects
-; alternate, then an upload slice; R#5 for the list.
-sprites_frame:
-        ld a,(hud_msk)              ; non-zero: V9958 engine (R#26/R#27 do not move sprites)
-        or a
-        ld a,0
-        jr nz,sf_xadj
-        ld a,(cam_x)
-        and 15
-        sub 8                       ; V9938: R#18 moves sprites by 8 - f
-sf_xadj:
-        ld (spr_xadj),a
-        ld a,(up_state)
-        cp 4
-        jr nz,sf_sat
-        ld a,(g_tick)               ; (on the game's frame: the SAT is built then anyway)
-        or a
-        jr z,sf_sat
-        xor a                       ; the upload completed: that set goes on screen
-        ld (up_state),a
-        ld a,(spr_shown)
-        xor 1
-        ld (spr_shown),a
-        ld a,1
-        ld (sat_dirty),a
-sf_sat: ld a,(sat_dirty)
-        or a
-        jr z,sf_mux
-        xor a
-        ld (sat_dirty),a
-        call sat_build
-        call feed_vdp
-        jr sf_ph
-sf_mux: ld a,(mux_on)
-        or a
-        jr z,sf_up
-sf_ph:  ld a,(mux_on)
-        or a
-        call nz,sat_phase
-        ld a,1
-        ld (spr_vblank),a
-sf_up:  call up_step
-        ld a,(spr_shown)
-        or a
-        ld a,R5_SET_A
-        jr z,sf_r5
-        ld a,R5_SET_B
-sf_r5:  ld (spr_set),a
-        ret
-
-; The upload of the new layout into the set that is not on screen, up to this frame's units
-; (what the HUD did this frame comes off them) and never once the beam is past the HUD split
-; (the rest of the frame stays free); once complete, that set goes on screen the next frame.
-up_step:
-        ld a,(up_state)
-        or a
-        ret z
-        cp 4
-        ret z
-        ld hl,UP_TOTAL              ; what the frame's work so far left
-        ld a,(hud_cost)
-        ld e,a
-        ld d,0
-        or a
-        sbc hl,de
-        ld a,(spr_cost)
-        ld e,a
-        sbc hl,de
-        ld a,0
-        jr c,us_u                   ; (nothing)
-        ld a,h
-        or a
-        ld a,255
-        jr nz,us_u
-        ld a,l
-us_u:   ld (up_units),a
-        ld a,0xFF
-        ld (up_next),a
-        ld a,(up_state)
-        cp 2
-        jr z,us_pat
-        cp 3
-        jr z,us_col
-        call up_fills
-        ret c
-        xor a
-        ld (up_idx),a
-us_pat: ld a,2
-        ld (up_state),a
-        call up_pats
-        ret c
-        ld a,3
-        ld (up_state),a
-        xor a
-        ld (up_idx),a
-        ld a,0xFF
-        ld (up_next),a
-us_col: call up_cols
-        ret c
-        ld a,4                      ; complete: that set goes on screen next frame
-        ld (up_state),a
-        ret
-
-; The pages the new layout still needs filled (lay_build), record by record while the frame
-; allows (lb_fill). C on return when this frame is over for them (up_idx, up_rec, up_ent = where
-; to go on).
-up_fills:
-        ld a,(spr_shown)
-        xor 1
-        call lay_base
-        ld a,(up_idx)
-        call lay_obj
+; A = object (its run above RoboCop's zone): the next sp_list entry (DE); C when its run reaches
+; into the zone (then nothing is packed). Keeps BC, HL.
+spk_put:
         push hl
-        pop iy
-ufl_lp: ld a,(up_idx)
-        cp MAX_OBJ
-        jp nc,up_end
-        ld a,(iy+0)
-        or a
-        jr z,ufl_n
-        ld a,(iy+14)
-        inc a
-        jr nz,ufl_n                 ; its page is there
-        ld a,(up_idx)
-        ld (lb_i),a
-        call lb_fill
-        ret c                       ; (on next frame)
-        ld (iy+14),0
-        xor a
-        ld (up_rec),a
-        ld (up_ent),a
-ufl_n:  ld de,LAY_SIZE
-        add iy,de
-        ld hl,up_idx
-        inc (hl)
-        jr ufl_lp
-
-up_end: xor a                       ; pass complete (NC)
-        ret
-
-; C when the upload must stop for this frame: the beam is past the HUD split, or a VBLANK came
-; already (the frame is late).
-up_late:
-        ld a,(split_armed)
-        sub 1
-        ret c
-        ld a,(tick)
-        push hl
-        ld hl,last_tick
+        ld (de),a
+        inc e
+        call ver_iy
+        ld a,(iy+V_RUN)
+        add a,ent_own & 0xFF
+        ld hl,pl_rcz
         cp (hl)
         pop hl
-        ret z
-        scf
         ret
 
-; -> HL = page entry of SAT entry up_idx of the new layout, B = entries of its object from there
-; on (NZ); Z: past the last entry.
-up_find:
-        ld a,(spr_shown)
-        xor 1
-        call lay_base
+; IY = RoboCop's pend record: the BOBs whose runs are on his new run's entries are shown no more
+; (their next versions get runs above his zone).
+pr_clear:
+        ld b,(iy+V_N)
+        ld hl,ent_own + RC_RUN
+prc_lp: ld a,(hl)
+        inc a
+        jr z,prc_n                  ; (free)
+        dec a
+        jr z,prc_n                  ; (his)
+        push bc
         push hl
+        push iy
+        ld (pl_obj),a
+        call disp_iy
+        call disp_unref
+        xor a
+        ld (pl_obj),a
         pop iy
-        ld c,0
-uf_lp:  ld a,(iy+0)
+        pop hl
+        pop bc
+prc_n:  inc l
+        djnz prc_lp
+        ret
+
+; The sprite set the next list shows (spr_set, after sprites_frame switched it): the colour row of
+; every entry a version shown takes, from that version's colour ids; those its colour table does
+; not hold yet (rs_held: that set's col_held) go into the frame's queue. (The two sets: the one on
+; screen is never written; the other is made complete for the list that switches to it.)
+rows_sync:
+        ld iy,disp
+        xor a
+        ld (pl_obj),a
+rsy_lp: ld a,(iy+V_ON)
         or a
-        jr z,uf_n
-        ld a,(up_idx)
-        sub (iy+6)
-        jr c,uf_n
-        cp (iy+7)
-        jr c,uf_got
-uf_n:   ld de,LAY_SIZE
+        jr z,rsy_n
+        ld a,(iy+V_RUN)
+        ld (pc_start),a
+        call pc_rows
+rsy_n:  ld de,LAY_SIZE
         add iy,de
+        ld a,(pl_obj)
+        inc a
+        ld (pl_obj),a
+        cp MAX_OBJ
+        jr c,rsy_lp
+        ret
+
+; IY = a version shown by object pl_obj, pc_start = its run: its colour rows the set does not hold,
+; queued (pq: Q_COL / Q_COLEC, the VRAM address of the entry's row in the set's colour table,
+; the row's bank and address in the A000h window); rs_held follows. (The queue's pointer in the
+; alternate HL.)
+pc_rows:
+        call ver_page
+        ld l,6
+        ld a,(pc_start)
+        ld c,a                      ; SAT entry
+        add a,a
+        ld de,(rs_held)
+        add a,e
+        ld e,a                      ; (each col_held within a 256-byte page)
+        ld b,(iy+V_N)
+        exx
+        ld hl,(pq_wr)
+        exx
+pcr_lp: ld a,(de)
+        cp (hl)
+        jr nz,pcr_w
+        inc e
+        inc l
+        ld a,(de)
+        cp (hl)
+        jr nz,pcr_w1
+        inc e                       ; the same row: nothing
+        ld a,l
+        add a,ENT_SIZE - 1
+        ld l,a
         inc c
-        ld a,c
-        cp MAX_OBJ
-        jr c,uf_lp
-        xor a
-        ret
-uf_got: ld b,a
-        add a,a
-        add a,a
-        add a,a                     ; * ENT_SIZE
-        ld l,a
-        ld a,c
-        add a,a
-        add a,(iy+11)
-        add a,ENT_PAGE
-        ld h,a
-        ld a,(iy+7)
-        sub b
-        ld b,a                      ; (NZ)
-        ret
-
-; Patterns pass: every entry whose slot does not hold the pattern it wants. C on return when
-; this frame's units ran out (up_idx = where to go on).
-up_pats:
-        call up_find
-        jr z,up_end
-upp_lp: call up_late
-        ret c
-        ld a,(up_units)
-        sub UP_LOOK
-        ret c
-        ld (up_units),a
-        push hl
-        inc l
-        inc l
-        inc l
-        ld a,(hl)                   ; its slot
-        ld (tmp_k),a
-        inc l
-        ld e,(hl)
-        inc l
-        ld d,(hl)                   ; the pattern it wants
-        add a,a
-        add a,pat_held & 0xFF
-        ld l,a
-        ld h,pat_held/256
-        ld a,(hl)
-        cp e
-        jr nz,upp_put
-        inc l
-        ld a,(hl)
-        cp d
-        jr z,upp_next
+        djnz pcr_lp
+        jr pcr_x
+pcr_w1: dec e
         dec l
-upp_put:
-        ld a,(up_units)
-        sub UP_PAT
-        jr c,up_out
-        ld (up_units),a
-        ld (hl),e
+pcr_w:  ld a,(hl)                   ; the row it wants (bit 15: the early clock): held,
+        ld (de),a
+        inc e
         inc l
-        ld (hl),d
-        ld hl,pat_slot
-        add hl,de
-        ld a,(tmp_k)
-        ld (hl),a                   ; where that pattern is now
-        push bc
-        call pat_put
-        pop bc
-upp_next:
-        pop hl
-        ld a,l
-        add a,ENT_SIZE
-        ld l,a
-        ld a,(up_idx)
-        inc a
-        ld (up_idx),a
-        djnz upp_lp
-        jr up_pats
-up_out: pop hl                      ; units out (C)
-        scf
-        ret
-
-; Colour rows pass: every entry of the new set whose row is not the one it wants.
-up_cols:
-        call up_find
-        jp z,up_end
-upc_lp: call up_late
-        ret c
-        ld a,(up_units)
-        sub UP_LOOK
-        ret c
-        ld (up_units),a
-        push hl
-        ld a,l
-        add a,6
-        ld l,a
-        ld e,(hl)
-        inc l
-        ld d,(hl)                   ; the row it wants (| 8000h: early clock)
-        ld a,(spr_shown)
-        xor 1
-        rrca
-        rrca                        ; set * 64
-        ld l,a
-        ld a,(up_idx)
-        add a,a
-        add a,l
-        add a,lay_col & 0xFF
-        ld l,a
-        ld h,lay_col/256
+        exx
+        ld e,a
+        exx
         ld a,(hl)
-        cp e
-        jr nz,upc_put
-        inc l
-        ld a,(hl)
-        cp d
-        jr z,upc_next
-        dec l
-upc_put:
-        ld a,(up_units)
-        sub UP_COL
-        jr c,up_out
-        ld (up_units),a
-        ld (hl),e
-        inc l
-        ld (hl),d
-        push bc
-        ld b,d
-        ld c,e
-        call col_put
-        pop bc
-upc_next:
-        pop hl
-        ld a,l
-        add a,ENT_SIZE
-        ld l,a
-        ld a,(up_idx)
-        inc a
-        ld (up_idx),a
-        djnz upc_lp
-        jr up_cols
-
-; tmp_k = slot, DE = pattern id: the pattern into that slot of the pattern table (the VRAM
-; pointer is kept when the previous write ended at this slot).
-pat_put:
-        ld a,(up_next)
-        ld hl,tmp_k
-        cp (hl)
-        jr z,pp_data
-        push de
-        ld l,(hl)
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl                   ; slot * 32
-        ld de,SPR_PAT & 0xFFFF
-        add hl,de
-        ld e,1
-        call vram_write
-        pop de
-pp_data:
-        ld a,(tmp_k)
-        inc a
-        ld (up_next),a
-        ld a,d
-        add a,SPR_BASE_BANK + SPR_PAT_BANK
-        call bank_a000
-        ld l,e
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,0xA000
-        add hl,de
-        ld bc,32*256 + VDP_DATA
-        otir
-        ret
-
-; BC = colour id | 8000h (early clock) -> row up_idx of the new set's colour table.
-col_put:
-        ld a,(up_next)
-        ld hl,up_idx
-        cp (hl)
-        jr z,cp_data
-        push bc
-        ld l,(hl)
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl                   ; entry * 16
-        ld a,(spr_shown)
-        or a
-        ld de,SPR_COL_B & 0xFFFF
-        jr z,cp_addr
-        ld de,SPR_COL_A & 0xFFFF
-cp_addr:
-        add hl,de
-        ld e,1
-        call vram_write
-        pop bc
-cp_data:
-        ld a,(up_idx)
-        inc a
-        ld (up_next),a
-        ld a,b
-        and 0x7E
-        rrca                        ; id / 512
-        add a,SPR_BASE_BANK + SPR_COL_BANK
-        call bank_a000
-        ld a,b
-        and 1
-        ld h,a
-        ld l,c
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl                   ; (id & 511) * 16
-        ld de,0xA000
-        add hl,de
-        bit 7,b
-        jr nz,cp_ec
-        ld bc,16*256 + VDP_DATA
-        otir
-        ret
-cp_ec:  ld b,16
-cp_lp:  ld a,(hl)
-        or 0x80
-        out (VDP_DATA),a
+        ld (de),a
+        inc e
+        exx
+        ld d,a                      ; DE' = the row's id
+        ld (hl),Q_COL
+        rla
+        jr nc,pcr_t
+        ld (hl),Q_COLEC
+pcr_t:  inc hl
+        exx
+        ld a,c
+        exx
+        rlca
+        rlca
+        rlca
+        rlca
+        ld c,a
+        and 0xF0
+        ld (hl),a                   ; the set's colour table + 16 * entry: low,
         inc hl
-        djnz cp_lp
+        ld a,c
+        and 0x0F
+        ld b,a
+        ld a,(rs_colhi)
+        add a,b
+        ld (hl),a                   ;   high (write)
+        inc hl
+        ld a,d
+        and 0x7E
+        rrca
+        add a,SPR_BASE_BANK + SPR_COL_BANK
+        ld (hl),a                   ; the pool's bank: (id & 7FFFh) / 512,
+        inc hl
+        ld a,e
+        rlca
+        rlca
+        rlca
+        rlca
+        ld b,a
+        and 0xF0
+        ld (hl),a                   ; A000h + 16 * (id & 1FFh)
+        inc hl
+        ld a,b
+        and 0x0F
+        bit 0,d
+        jr z,pcr_h
+        or 0x10
+pcr_h:  add a,0xA0
+        ld (hl),a
+        inc hl
+        exx
+        ld a,l
+        add a,ENT_SIZE - 1
+        ld l,a
+        inc c
+        djnz pcr_lp
+pcr_x:  exx
+        ld (pq_wr),hl
+        exx
         ret
 
 ; ----- SAT -----
 
-; The SAT for the layout on screen: each present object at its current position, its entries in
-; order (from its page), parked where x falls outside 0..255; 216 after the last entry; into
-; sat_buf, or into sat_full when objects alternate (sat_phase then makes sat_buf for each
-; frame). pub_cur records what it shows.
-sat_build:
+; Every entry of the SAT being built (sat_nb) parked.
+sat_park:
         ld a,(cam_y)
         add a,PARK_LINE - 1
         cp 216
-        jr nz,sb_pk
+        jr nz,sk_y
         dec a
-sb_pk:  ld (sb_parky),a
-        ld hl,pub_cur
-        ld (sb_pub),hl
-        xor a
-        ld (sb_idx),a
-        ld (sb_obj),a
-        ld ix,obj_tab
-        ld a,(spr_shown)
-        call lay_base
-        push hl
-        pop iy                      ; IY = the object's layout entry
-        ld a,0x80
-        ld (sb_vis),a
-        ld de,sat_buf
-        ld a,(mux_on)
-        or a
-        jr z,sb_olp
-        ld de,sat_full
-sb_olp: ld a,(iy+0)
-        or a
-        jr nz,sb_pres
-        ld hl,(sb_pub)
-        ld (hl),0                   ; not shown
-        jr sb_onext
-sb_pres:
-        call sb_object
-        ld a,(sb_idx)
-        add a,(iy+7)
-        ld (sb_idx),a
-sb_onext:
-        ld hl,(sb_pub)
-        ld bc,8
-        add hl,bc
-        ld (sb_pub),hl
-        ld bc,OBJ_SIZE
-        add ix,bc
-        ld bc,LAY_SIZE
-        add iy,bc
-        ld hl,sb_obj
-        inc (hl)
-        ld a,(hl)
-        cp MAX_OBJ
-        jr c,sb_olp
-        ld a,(sb_idx)
-        ld (spr_n),a
-        add a,a                     ; (COST_SATE)
-        add a,4*COST_SATO
-        call spr_charge
-        ld a,(spr_n)
-        cp SAT_MAX
-        ret nc
-        ld a,216
-        ld (de),a
+sk_y:   ld (sb_parky),a
+        ld hl,(sat_nb)
+        ld b,SAT_MAX
+sk_lp:  ld (hl),a                   ; (y only: x and pattern do not matter there)
+        inc l
+        inc l
+        inc l
+        inc l
+        djnz sk_lp
         ret
 
-; IX = object, IY = its layout entry, DE = its first sat_buf entry: writes its entries (DE
-; after them) and its pub_cur record. RoboCop's position is the composition's top-left for the
-; composition the game asked for, but the layout on screen may still show an older one (its
-; upload takes frames): that one goes where its own hotspot puts it (sb_rchot), so a new frame of
-; animation or a turn does not shift the old one by the hotspots' difference.
+; The SAT of the versions shown (disp, as the plan left them) at the objects' places, for the
+; frame being published, into the pair of buffers the frame on screen does not use (sat_nb;
+; isr.asm writes the pair's first, or with objects alternating its first on even frames and
+; its second, + 80h, on odd ones): every entry parked, then each shown object's entries at its
+; run; alternating objects of phase 0 are parked in the second, those of phase 1 in the first.
+; pub_cur records what it shows (test builds, EXTJOY: tools/objcmp.py, msxframe.py).
+sat_build:
+        ld hl,(sat_cur)
+        ld a,h
+        xor (sat_pair0 ^ sat_pair1) / 256
+        ld h,a
+        ld l,0
+        ld (sat_nb),hl
+        call sat_park
+        ld ix,obj_tab
+        ld iy,disp
+        if EXTJOY
+        ld hl,pub_cur
+        ld (sb_pub),hl              ; its pub_cur record (test builds)
+        endif
+        xor a
+sb_olp: ld (sb_obj),a
+        ld a,(iy+V_ON)
+        or a
+        jr nz,sb_pres
+        if EXTJOY
+        call sb_want                ; not shown (what it wants, if anything)
+        endif
+        jr sb_onext
+sb_pres:
+        ld a,(iy+V_RUN)
+        add a,a
+        add a,a
+        ld e,a
+        ld a,(sat_nb+1)
+        ld d,a                      ; DE = its first SAT entry
+        call sb_object
+sb_onext:
+        if EXTJOY
+        ld hl,(sb_pub)
+        ld de,8
+        add hl,de
+        ld (sb_pub),hl
+        endif
+        ld de,OBJ_SIZE
+        add ix,de
+        ld de,LAY_SIZE
+        add iy,de
+        ld a,(sb_obj)
+        inc a
+        cp MAX_OBJ
+        jr c,sb_olp
+        ld a,(mux_on)
+        or a
+        ret z
+        ld hl,(sat_nb)              ; objects alternate: the second SAT
+        ld d,h
+        ld e,0x80
+        ld bc,SAT_MAX*4
+        ldir
+        ld hl,mux_e0                ; and the entries whose y differs in the two (the interrupt
+        ld a,(sat_nb+1)             ; writes only those on the frames between two lists:
+        cp sat_pair0 / 256          ; sat_mux_out)
+        jr z,sb_me
+        ld hl,mux_e1
+sb_me:  ld (hl),0
+        ld (sb_mux),hl
+        xor a
+sb_mlp: ld (sb_obj),a
+        call obj_ix
+        bit 6,(ix+O_FLAGS)
+        jr z,sb_mn
+        ld a,(sb_obj)
+        call ver_iy
+        ld a,(iy+V_ON)
+        or a
+        jr z,sb_mn
+        ld a,(iy+V_RUN)
+        add a,a
+        add a,a
+        bit 0,(ix+O_FLAGS)
+        jr nz,sb_m1
+        or 0x80                     ; phase 0: parked in the second
+sb_m1:  ld l,a
+        ld a,(sat_nb+1)
+        ld h,a
+        ld b,(iy+V_N)
+        ld de,(sb_mux)              ; (the list: count, then 4 * entry each; within a 256-byte
+        ld a,(de)                   ; page)
+        ld c,a
+        add a,b
+        ld (de),a
+        ld a,e
+        add a,c
+        ld e,a
+sb_mp:  inc de
+        ld a,l
+        and 0x7F
+        ld (de),a
+        ld a,(sb_parky)
+        ld (hl),a
+        inc l
+        inc l
+        inc l
+        inc l
+        djnz sb_mp
+sb_mn:  ld a,(sb_obj)
+        inc a
+        cp MAX_OBJ
+        jr c,sb_mlp
+        ret
+
+; IX = object, IY = its disp record, DE = its first SAT entry: writes its entries and its
+; pub_cur record. RoboCop's position is the composition's top-left for the composition the
+; game asked for, but the version shown may still be an older one (the new one is on its way):
+; that one goes where its own hotspot puts it (sb_rchot), so a new frame of animation or a turn
+; does not shift the old one by the hotspots' difference. An object wholly off the play area
+; keeps its entries parked.
 sb_object:
+        ld (sb_de0),de
         ld l,(ix+O_X)
         ld h,(ix+O_X+1)
         ld (sb_ox),hl
         ld l,(ix+O_Y)
         ld h,(ix+O_Y+1)
         ld (sb_oy),hl
-        ld a,(iy+8)                 ; kind: 0 RoboCop
+        ld a,(iy+V_KIND)            ; kind: 0 RoboCop
         or a
         call z,sb_rchot
+        if EXTJOY
+        ld a,(iy+V_EC)
+        and 3
+        add a,a
         ld hl,(sb_pub)
-        ld a,(sb_vis)
-        or (iy+8)
-        ld (hl),a                   ; flags: bit 7 shown, bit 0 BOB
-        inc hl
-        ld a,(iy+9)                 ; what the layout holds (an upload may be under way)
+        or (iy+V_KIND)
+        ld (hl),a
+        ld a,(ix+O_FLAGS)
+        and 0x40                    ; (alternating)
+        or 0x80
+        or (hl)
+        ld (hl),a                   ; flags: bit 7 shown, bit 6 alternating, bits 1-2 silhouette,
+        inc hl                      ; bit 0 BOB
+        ld a,(iy+V_ID)              ; what is shown (a new version may be on its way)
         ld (hl),a
         inc hl
-        ld a,(iy+10)
+        ld a,(iy+V_ID+1)
         ld (hl),a
         inc hl
-        ld a,(iy+4)
+        ld a,(iy+V_DROP)
         ld (hl),a                   ; dropped columns
         inc hl
         ld a,(sb_ox)
@@ -1988,17 +2751,17 @@ sb_object:
         inc hl
         ld a,(sb_ox+1)
         ld (hl),a                   ; (y after the 216 check)
-        ld (sb_de0),de
+        endif
         ld a,(sb_obj)
         add a,a
-        add a,(iy+11)
+        add a,(iy+V_PAGE)
         add a,ENT_PAGE
         ld (sb_page),a
         ld hl,(sb_oy)               ; wholly above or below the play area: parked (its SAT y
                                     ; would wrap around into it)
         bit 7,h
         jr z,sbo_yb
-        ld e,(iy+15)
+        ld e,(iy+V_LINES)
         ld d,0
         add hl,de                   ; its end
         bit 7,h
@@ -2020,17 +2783,16 @@ sbo_on: ld hl,(sb_ox)               ; SAT x of dx = 0
         sbc a,a
         ld d,a
         add hl,de
-        ld a,(iy+5)
-        or a
+        bit 7,(iy+V_EC)
         jr z,sbo_xb
         ld de,32                    ; early clock: the VDP shows it 32 px further left
         add hl,de
 sbo_xb: ld (sb_xbase),hl
-        ld a,(iy+12)                ; min dx
+        ld a,(iy+V_MINDX)
         call xpos
         ld a,h
         push af
-        ld a,(iy+13)                ; max dx
+        ld a,(iy+V_MAXDX)
         call xpos
         pop af
         or h
@@ -2047,7 +2809,7 @@ sbo_go: ld de,(sb_de0)
         ld a,(sb_page)
         ld h,a
         ld l,0
-        ld b,(iy+7)
+        ld b,(iy+V_N)
         ld a,(sb_y0)
         ld c,a
         ld a,(sb_dy)
@@ -2110,6 +2872,7 @@ sbs_x:  ld (de),a
         ld l,a
         djnz sbs_lp
 sbo_end:
+        if EXTJOY
         ld hl,(sb_pub)              ; the y it is shown at
         ld de,6
         add hl,de
@@ -2126,22 +2889,28 @@ sbo_end:
         ld (hl),e
         inc hl
         ld (hl),d
-        ld hl,(sb_de0)              ; DE after its entries
-        ld a,(iy+7)
-        add a,a
-        add a,a
-        add a,l
-        ld l,a
-        ex de,hl
+        endif
         ret
 
-; RoboCop (IY = his layout entry): sb_ox / sb_oy moved by the hotspot of the record the layout
-; shows minus the one the game asked for (p_hotx, p_hoty: pl_frame). Keeps DE (sb_object's
-; sat_buf pointer).
-sb_rchot:
+; IY = a version record of RoboCop's -> A = the hotspot y of its record minus the one the game
+; asked for (p_hoty: pl_frame), signed. Keeps BC, DE.
+sb_rcdy:
+        push bc
         push de
-        ld l,(iy+9)
-        ld h,(iy+10)                ; the id shown: record * 4 + aim, or an arm pose
+        call srh_hot
+        inc hl
+        ld a,(p_hoty)
+        ld c,a
+        ld a,(hl)
+        sub c
+        pop de
+        pop bc
+        ret
+
+; IY = a version record of RoboCop's -> HL = the pl_hot entry (x, y) of its record. Uses AF, DE.
+srh_hot:
+        ld l,(iy+V_ID)
+        ld h,(iy+V_ID+1)            ; the id shown: record * 4 + aim, or an arm pose
         push hl
         ld de,(0 - SPR_RC_ARM) & 0xFFFF
         add hl,de
@@ -2159,6 +2928,13 @@ srh_rec:
         ld hl,pl_hot
         add hl,de
         add hl,de
+        ret
+
+; RoboCop (IY = his disp record): sb_ox / sb_oy moved by the hotspot of the record shown minus
+; the one the game asked for (p_hotx, p_hoty: pl_frame). Keeps DE.
+sb_rchot:
+        push de
+        call srh_hot
         ld a,(p_hotx)
         ld c,a
         ld a,(hl)
@@ -2201,9 +2977,9 @@ sbh_set:
         ld (sb_dy),a
         jp sbo_go
 
-; IX = object, IY = its layout entry, (sb_de0) = its first SAT entry: an object wholly off the
-; play area has its entries parked (DE after them); its pub_cur record keeps its y.
+; An object wholly off the play area: its entries stay parked; its pub_cur record keeps its y.
 sb_parkall:
+        if EXTJOY
         ld hl,(sb_pub)
         ld de,6
         add hl,de
@@ -2212,89 +2988,47 @@ sb_parkall:
         inc hl
         ld a,(ix+O_Y+1)
         ld (hl),a
-        ld de,(sb_de0)
-        ld a,(sb_page)
-        ld h,a
-        ld l,2                      ; pattern number of its first entry
-        ld b,(iy+7)
-spk_lp: ld a,(sb_parky)
-        ld (de),a
-        inc e
-        xor a
-        ld (de),a
-        inc e
-        ld a,(hl)
-        ld (de),a
-        inc e
-        inc e
-        ld a,l
-        add a,ENT_SIZE
-        ld l,a
-        djnz spk_lp
+        endif
         ret
 
-; Objects alternate: sat_buf = sat_full with the entries of those off this frame parked, and
-; their pub_cur records not shown.
-sat_phase:
-        ld a,COST_PHASE
-        call spr_charge
-        ld a,(spr_n)
-        add a,a
-        add a,a
-        inc a                       ; (and the 216)
-        ld c,a
-        ld b,0
-        ld hl,sat_full
-        ld de,sat_buf
-        ldir
-        ld ix,obj_tab
-        ld a,(spr_shown)
-        call lay_base
-        push hl
-        pop iy
-        ld hl,pub_cur
-        ld b,MAX_OBJ
-sph_o:  ld a,(iy+0)
+        if EXTJOY
+; IX = an object no version of which is shown: its pub_cur record holds what it wants, flags bit
+; 5 (and bit 4 when the budget left it out this tick, bit 0 a BOB), or 0 when it wants nothing
+; (test builds: tools/objcmp.py tells why a BOB is missing).
+sb_want:
+        ld hl,(sb_pub)
+        ld (hl),0
+        bit 7,(ix+O_FLAGS)
+        ret z
+        ld a,(ix+O_OUT)
         or a
-        jr z,sph_n
-        bit 6,(ix+O_FLAGS)
-        jr z,sph_n
-        ld a,(frame)
-        xor (ix+O_FLAGS)
-        rrca                        ; carry: not its phase this frame
-        ld a,(hl)
-        res 7,a
-        jr c,sph_off
-        set 7,a
+        ld a,0x20
+        jr z,sw_f
+        ld a,0x30
+sw_f:   or (ix+O_KIND)
         ld (hl),a
-        jr sph_n
-sph_off:
+        inc hl
+        ld a,(ix+O_ID)
         ld (hl),a
-        push hl
-        push bc
-        ld a,(iy+6)
-        add a,a
-        add a,a
-        ld l,a
-        ld h,sat_buf/256
-        ld b,(iy+7)
-        ld a,(sb_parky)
-sph_p:  ld (hl),a
-        inc l
-        inc l
-        inc l
-        inc l
-        djnz sph_p
-        pop bc
-        pop hl
-sph_n:  ld de,8
-        add hl,de
-        ld de,OBJ_SIZE
-        add ix,de
-        ld de,LAY_SIZE
-        add iy,de
-        djnz sph_o
+        inc hl
+        ld a,(ix+O_ID+1)
+        ld (hl),a
+        inc hl
+        ld (hl),0
+        inc hl
+        ld a,(ix+O_X)
+        ld (hl),a
+        inc hl
+        ld a,(ix+O_X+1)
+        ld (hl),a
+        inc hl
+        ld a,(ix+O_Y)
+        ld (hl),a
+        inc hl
+        ld a,(ix+O_Y+1)
+        ld (hl),a
         ret
+        endif
 
 ; A = dx (signed) -> HL = sb_xbase + dx.
 xpos:   ld e,a
@@ -2304,6 +3038,339 @@ xpos:   ld e,a
         ld hl,(sb_xbase)
         add hl,de
         ret
+
+; ----- frame -----
+
+; Once per published frame: the SAT x correction of the camera, the plan (versions, queues),
+; then the SAT when something moved or a version changed (the VBLANK interrupt writes it when
+; it puts the frame's list on screen).
+sprites_frame:
+        ld a,(hud_msk)              ; non-zero: V9958 engine (R#26/R#27 do not move sprites)
+        or a
+        ld a,0
+        jr nz,sf_xadj
+        ld a,(cam_x)
+        and 15
+        sub 8                       ; V9938: R#18 moves sprites by 8 - f
+sf_xadj:
+        ld (spr_xadj),a
+        call spr_plan
+        call feed_vdp
+        ld a,(sat_dirty)
+        or a
+        jr z,sf_end
+        xor a
+        ld (sat_dirty),a
+        ld a,(spr_set)              ; the list goes to the other sprite set (the one on screen is
+        xor R5_SET_A ^ R5_SET_B     ; the last list's: wait_frame waited for it)
+        ld (spr_set),a
+        ld hl,col_held
+        ld b,((SPR_COL_A >> 8) & 0x3F) | 0x40
+        cp R5_SET_A
+        jr z,sf_set
+        ld hl,col_held_b
+        ld b,((SPR_COL_B >> 8) & 0x3F) | 0x40
+sf_set: ld (rs_held),hl
+        ld a,b
+        ld (rs_colhi),a
+        call rows_sync              ; its colour rows
+        call feed_vdp
+        call sat_build
+        call feed_vdp
+        call q_sat                  ; and its SAT
+        ld a,(mux_on)
+        ld (sat_mux_n),a
+        ld a,1
+        ld (spr_vblank),a           ; (the list switches sets: tools/msxframe.py reads it)
+sf_end: ld hl,(pq_wr)
+        ld (hl),0                   ; (the frame's queue ends)
+        ret
+
+; The SAT just built (sat_nb, its first half) into the SAT of the set spr_set names: four
+; entries of the frame's queue (32 bytes each, from RAM).
+q_sat:  ld hl,(pq_wr)
+        ld a,(spr_set)
+        cp R5_SET_A
+        ld c,(((SPR_COL_A + 0x200) >> 8) & 0x3F) | 0x40
+        jr z,qs_a
+        ld c,(((SPR_COL_B + 0x200) >> 8) & 0x3F) | 0x40
+qs_a:   ld de,(sat_nb)
+        ld b,4
+qs_lp:  ld (hl),Q_PAT
+        inc hl
+        ld (hl),e                   ; (the SAT starts at a 256-byte boundary: low byte 32 k)
+        inc hl
+        ld (hl),c
+        inc hl
+        ld a,(act_a000)
+        ld (hl),a                   ; (a source in RAM: the bank does not matter)
+        inc hl
+        ld (hl),e
+        inc hl
+        ld (hl),d
+        inc hl
+        ld a,e
+        add a,32
+        ld e,a
+        djnz qs_lp
+        ld (pq_wr),hl
+        ret
+
+; ----- the interrupts' side (isr.asm) -----
+
+; From the split interrupt, or from the VBLANK one when no split came: the published list's queue
+; (pq: its patterns into free slots, its colour rows and SAT into the sprite set not on screen),
+; from where the last frame left it, when no VRAM stream of the main program is under way (its
+; address would move); once it is done the list is ready (the VBLANK puts it on screen, its R#5
+; with it); then the background queue (bq) as far as the frame's units go. From the split both
+; stop when the vertical blank begins (the VBLANK interrupt waits for this one: written late,
+; its registers and palette came in the next picture's first lines). Interrupts disabled; uses
+; AF, B, HL (DE kept; C = VDP_CTRL on return, as the interrupt's code expects it).
+spr_upload:
+        ld a,(vram_busy)
+        or a
+        ret nz
+        push de
+        ld hl,(up_window)
+        ld (su_left),hl
+        ld a,1
+        ld (su_vrchk),a
+su_go:  ld a,7
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a            ; R#14 = 7: the sprite tables
+        ld a,(pk_state)
+        cp 1
+        jr nz,su_bg
+        ld hl,(pq_rd)               ; (it goes on where the last frame left it)
+su_pq:  call su_vr
+        jr nz,su_pqs
+        ld a,(su_left+1)
+        rla
+        jr c,su_pqs                 ; (this frame's units are out)
+        ld a,(hl)
+        or a
+        jr z,su_pqd
+        inc hl
+        call su_copy
+        jr su_pq
+su_pqs: ld (pq_rd),hl
+        jr su_bx
+su_pqd: ld (pq_buf),a               ; (done: empty)
+        ld hl,pq_buf
+        ld (pq_rd),hl
+        ld a,2
+        ld (pk_state),a             ; the list goes on screen at the next VBLANK
+su_bg:  ld a,(bq_head)
+su_bl:  ld l,a
+        ld a,(bq_tail)
+        cp l
+        jr z,su_bx                  ; (empty)
+        call su_vr
+        jr nz,su_bx
+        ld de,(su_left)
+        bit 7,d
+        jr nz,su_bx                 ; (this frame's units are out)
+        ld a,d
+        or a
+        jr nz,su_bok
+        ld a,e
+        cp QC_PAT
+        jr c,su_bx
+su_bok: ld h,bq_buf / 256
+        ld e,(hl)                   ; slot
+        inc l
+        ld d,(hl)                   ; its generation when it was queued
+        inc l                       ; (HL: the entry's five bytes)
+        push hl
+        ld a,e
+        or SO_GEN
+        ld l,a
+        ld h,SLOT_PG
+        ld a,(hl)                   ; the slot's generation now
+        pop hl
+        cp d
+        jr nz,su_old                ; (taken for another pattern since, which it may show
+        push de                     ; already: not copied)
+        ld a,Q_PAT
+        call su_copy                ; (HL after the five bytes)
+        pop de
+        ld a,e
+        ld e,l
+        ld l,a
+        ld h,SLOT_PG
+        ld (hl),1                   ; slot_ok
+        ld a,e
+        inc a                       ; (past the entry's unused last byte)
+        jr su_nx
+su_old: ld a,l
+        add a,6                     ; (past the five bytes and the unused one)
+su_nx:  ld (bq_head),a
+        jr su_bl
+su_bx:  ld a,(act_a000)
+        ld (BANK_A000),a            ; the main program's bank there again
+        pop de
+        ld c,VDP_CTRL               ; (isr.asm goes on with port 99h in C)
+        ret
+
+; From the VBLANK interrupt once the frame's registers and palette are in: more of the published
+; list's queue and of the background one, BQ_LATE units (they go into the sprite set not on
+; screen and into slots no entry shown uses: harmless whenever they land), unless the main
+; program streams to VRAM.
+spr_late:
+        ld a,(vram_busy)
+        or a
+        ret nz
+        push de
+        ld hl,BQ_LATE
+        ld (su_left),hl
+        xor a
+        ld (su_vrchk),a
+        jp su_go
+
+; -> NZ when the split interrupt's uploads must stop: the vertical blank begun (S#2 VR; the
+; VBLANK interrupt waits for this one). Z from the VBLANK interrupt (su_vrchk 0). Keeps DE, HL.
+su_vr:  ld a,(su_vrchk)
+        or a
+        ret z
+        ld a,2
+        out (VDP_CTRL),a
+        ld a,0x8F
+        out (VDP_CTRL),a
+        in a,(VDP_CTRL)
+        ld b,a
+        xor a
+        out (VDP_CTRL),a
+        ld a,0x8F
+        out (VDP_CTRL),a            ; R#15 = 0
+        bit 6,b
+        ret
+
+; A = bytes (| 80h: bit 7 ORed into each), HL = [VRAM low, high | 40h, bank, source low, high]
+; (R#14 = 7): the copy; HL after the entry; its cost off su_left. Uses AF, BC, DE, HL.
+su_copy:
+        ld c,a
+        ld a,(hl)
+        out (VDP_CTRL),a
+        inc hl
+        ld a,(hl)
+        out (VDP_CTRL),a
+        inc hl
+        ld a,(hl)
+        ld (BANK_A000),a
+        inc hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        push hl
+        ld hl,(su_left)
+        ld a,c
+        cp Q_PAT
+        ld a,QC_PAT
+        jr z,sc_u
+        ld a,QC_COL
+        bit 7,c
+        jr z,sc_u
+        ld a,QC_COLEC
+sc_u:   neg
+        add a,l
+        ld l,a
+        jr c,sc_u2
+        dec h
+sc_u2:  ld (su_left),hl
+        ex de,hl
+        ld a,c
+        and 0x7F
+        ld b,a
+        bit 7,c
+        ld c,VDP_DATA
+        jr nz,sc_ec
+        otir
+        pop hl
+        ret
+sc_ec:  ld a,(hl)                   ; (the early clock)
+        or 0x80
+        out (c),a
+        inc hl
+        djnz sc_ec
+        pop hl
+        ret
+
+; A new list on screen (VBLANK): when it switched sprite sets (a SAT built for it, prepared in
+; the set its R#5 shows), that pair of SAT buffers is the one on screen from now on (sat_cur:
+; the objects alternating take turns in it) and the set (spr_dsp) the one the y's go into.
+iv_sat: ld a,(spr_vblank)
+        or a
+        jr z,iv_same                ; (no SAT of its own: the set on screen goes on)
+        xor a
+        ld (spr_vblank),a
+        ld hl,(sat_nb)
+        ld (sat_cur),hl
+        ld a,(spr_set)
+        ld (spr_dsp),a
+        ld a,(sat_mux_n)
+        ld (pk_mux),a
+; Every frame while objects alternate: the y of their entries from this frame's half (the rest of
+; the two halves is the same; VRAM holds the other one, or this one), unless the main program
+; streams to VRAM (vram_done writes them then). (Interrupt code: keeps DE, which the interrupt
+; does not save.)
+iv_same:
+        ld a,(pk_mux)
+        or a
+        ret z
+iv_satw:
+        ld a,(tick)
+        ld (sat_ph),a               ; (the frame they are for)
+        ld a,(vram_busy)
+        or a
+        jr z,sat_mux_out
+        ld a,1
+        ld (sat_due),a
+        ret
+sat_mux_out:
+        push de
+        ld a,7
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a            ; R#14 = 7 (1C000h-1FFFFh)
+        ld a,(sat_cur+1)
+        ld h,a                      ; the pair on screen
+        ld c,0
+        ld a,(sat_ph)
+        rrca
+        jr nc,smo_h
+        ld c,0x80                   ; (this frame's half)
+smo_h:  ld de,mux_e0
+        ld a,h
+        cp sat_pair0 / 256
+        jr z,smo_l
+        ld de,mux_e1
+smo_l:  ld a,(spr_dsp)              ; the SAT of the set on screen (its high address byte: set B's
+        and 8                       ; R#5 has bit 3, its SAT is 400h on)
+        rrca
+        or (((SPR_COL_A + 0x200) >> 8) & 0x3F) | 0x40
+        ld (smo_hi),a
+        ld a,(de)
+        or a
+        jr z,smo_x
+        ld b,a
+smo_lp: inc de
+        ld a,(de)                   ; 4 * entry
+        out (VDP_CTRL),a            ; (the SATs start at 256-byte boundaries)
+        or c
+        ld l,a
+        ld a,(smo_hi)
+        out (VDP_CTRL),a
+        ld a,(hl)
+        out (VDP_DATA),a            ; its y
+        djnz smo_lp
+smo_x:  xor a
+        ld (sat_due),a
+        pop de
+        ret
+
+        if DEMO_ACTORS              ; (builds with the demo actors only)
 
 ; ----- demo of the game's objects (DEMO_ACTORS > 0: until the enemies are ported) -----
 
@@ -2315,12 +3382,10 @@ DA_SIZE:    equ 16                  ; demo actor: kind (0 screen, 1 world), fram
 ; Screen actors bounce across the play area; world actors scroll with the map and come back
 ; ahead of the camera when they leave the screen.
 spr_demo_init:
-        if DEMO_ACTORS
         ld hl,demo_actors
         ld de,demo_tab
         ld bc,DEMO_ACTORS*DA_SIZE
         ldir
-        endif
         xor a
         ld (demo_timer),a
         ret
@@ -2499,3 +3564,4 @@ demo_actors:
         dw 60, 760
         db 0, 0
         ds 6, 0                     ; explosion (16x16), its 8 frames in turn
+        endif

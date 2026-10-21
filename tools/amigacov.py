@@ -18,6 +18,7 @@ energy and the lives full and never lets the level end, so a long run survives).
 god mode change the game's state: they are for coverage only, never for the reference traces.
 
 usage: amigacov.py --ram build/ram/level1_full.bin --gframes 2000 --run "..." [--run ...] OUT.json
+       amigacov.py --scenario level1 OUT.json   (the level's BOB frames for make msx, ~20 minutes)
        amigacov.py --report OUT.json [--rea build/rea/lin.json] [--seeds]
 """
 from __future__ import annotations
@@ -136,7 +137,32 @@ def merge_ranges(blocks) -> list[list[int]]:
     return out
 
 
+def scenario_level1(frames: int) -> list[str]:
+    """The level-1 coverage runs (with god mode): (1) a 150-frame loop of walking right, up, left
+    and down, firing every other 2 frames, teleported every 150 frames over a grid of the map
+    (x 150-2550 step 150, rows y 790, 700, 600 ... 100); (2) right for 2000 frames, up for 200,
+    left for 2000, firing likewise."""
+    def alt(k: str, a: int, b: int) -> list[str]:
+        return [f"{f}:2:{k}{'f' if (f - a) % 4 == 0 else ''}" for f in range(a, b, 2) if f < frames]
+
+    items = ["70:30:r"] + alt("d", 100, 140)
+    for t in range(80, frames, 150):
+        items += alt("r", max(t, 140), t + 92) + alt("u", t + 90, t + 102) + alt("l", t + 100, t + 140) \
+            + alt("d", t + 140, t + 152)
+    grid = [(x, y) for y in (790, 700, 600, 500, 400, 300, 200, 100) for x in range(150, 2551, 150)]
+    tele = [f"{140 + 150 * i}:{x}:{y}" for i, (x, y) in enumerate(grid)]
+    run2 = ["70:30:r"] + alt("d", 100, 140) + alt("r", 140, 2140) + alt("u", 2140, 2340) + alt("l", 2340, 4340)
+    return [",".join(items) + ";tele=" + ",".join(tele) + ";god", ",".join(run2) + ";god"]
+
+
+SCENARIOS = {"level1": (20540, scenario_level1)}
+
+
 def collect(a) -> int:
+    if a.scenario:
+        frames, make = SCENARIOS[a.scenario]
+        a.gframes = frames
+        a.run = make(frames) + (a.run or [])
     cov = {"blocks": {}, "code_writes": {}, "ram_writes": {}, "runs": [], "bobs": {}}
     for spec in a.run or [""]:
         play(a.ram, a.gframes, parse_run(spec), cov)
@@ -188,6 +214,7 @@ def main() -> int:
     ap.add_argument("--ram", type=Path, default=ROOT / "build" / "ram" / "level1_full.bin")
     ap.add_argument("--gframes", type=int, default=1000)
     ap.add_argument("--run", action="append", help="SCRIPT[;tele=F:X:Y,...][;god]")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS), help="the runs (and frames) of a named coverage scenario")
     ap.add_argument("--report", type=Path, help="prints a coverage file")
     ap.add_argument("--rea", type=Path, help="instruction addresses Ghidra decoded (JSON object keyed by address)")
     ap.add_argument("--seeds", action="store_true", help="with --report: seed lines for the gaps")

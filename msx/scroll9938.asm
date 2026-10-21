@@ -18,6 +18,20 @@
 ; tile_to_page: A = row, E = column, D = page (0/1), C = first column of the page.
 ; Ignores whatever falls outside the page or the map.
 tile_to_page:
+        call ttp_prep
+        ret nc
+        call vdp_wait
+        ld hl,cmdbuf
+        call vdp_cmd
+ttp_count:
+        ld hl,(tiles_drawn)
+        inc hl
+        ld (tiles_drawn),hl
+        ret
+
+; The same arguments -> C with cmdbuf set for the tile's copy, NC when the cell falls outside the
+; page or the map. Keeps DE.
+ttp_prep:
         cp MAP_ROWS
         ret nc
         ld b,a
@@ -53,12 +67,7 @@ tile_to_page:
         ld hl,16
         ld (cmdbuf+8),hl
         ld (cmdbuf+10),hl
-        call vdp_wait
-        ld hl,cmdbuf
-        call vdp_cmd
-        ld hl,(tiles_drawn)
-        inc hl
-        ld (tiles_drawn),hl
+        scf
         ret
 
 s38_init:
@@ -110,8 +119,17 @@ s38i_col:
         jr nz,s38i_row
         jp s38_publish
 
-; Once per frame: flips, camera holds, build target, row queue, one command, registers.
+; Once per frame: flips, camera holds, build target, row queue, one command, registers. It works
+; toward the view the game wants (v_x, v_y; cam_x, cam_y are what it shows: the camera held at
+; a page's or row's edge), also on frames without a tick (the cadence holds the ticks while the
+; view shown lags far behind).
 s38_update:
+        ld hl,(v_x)
+        ld (cam_x),hl
+        ld hl,(v_y)
+        ld (cam_y),hl
+        xor a
+        ld (cam_held),a
         ld a,(s38_flip_wait)
         or a
         jr z,s38u_cells
@@ -154,13 +172,19 @@ s38u_step:
         ld (s38_back_c0),a
         ld a,1
         ld (s38_flip_wait),a
+        ld a,(pub_seq)
+        inc a
+        ld (s38_flip_seq),a         ; (the list this frame publishes shows the flip)
         xor a                       ; a pending row restarts on the new displayed page:
         ld (s38_rq_col),a           ; its copy was made before the row, and the columns the
-        ld (s38_rq_pass),a          ; row already drew there went to the other page
+        ld (s38_rq_pass),a          ; row already drew there went to the other page; so does a
+        ld (rd_phase),a             ; changed cell drawn on the old page only (no back page now)
         ld a,e
         cp b
         jr z,s38u_target            ; (else the camera waits at that page's edge)
 s38u_hold:
+        ld a,1
+        ld (cam_held),a             ; (fewer ticks before the next frame: player.asm cadence)
         ld hl,(stall)
         inc hl
         ld (stall),hl
@@ -180,46 +204,7 @@ s38u_hset:
 s38u_target:
         ld a,(s38_flip_wait)
         or a
-        jr nz,s38u_vert             ; the old page is still on screen
-        ld a,(s38_vis_c0)           ; the next page: on the camera's side, or on the camera's
-        ld e,a                      ; page the side the view moves to (dir_x)
-        cp b
-        jr c,s38u_tr
-        jr nz,s38u_tl
-        ld a,(dir_x)
-        or a
-        jr nz,s38u_tl
-s38u_tr:
-        ld a,e
-        cp CAM_X_MAX/16
-        jr nc,s38u_vert             ; already at the right edge: nothing to build
-        inc a
-        jr s38u_tset
-s38u_tl:
-        ld a,e
-        or a
-        jr z,s38u_vert              ; already at the left edge
-        dec a
-s38u_tset:
-        ld e,a
-        ld a,(s38_back_c0)
-        cp e
-        jr z,s38u_vert
-        ld a,e                      ; new build target
-        ld (s38_back_c0),a
-        ld a,(s38_vis_c0)
-        cp e
-        ld a,0                      ; built for the right (0) or the left (1)
-        jr c,s38u_bd
-        inc a
-s38u_bd:
-        ld (s38_back_dir),a
-        xor a
-        ld (s38_phase),a
-        ld (s38_i),a
-        ld a,(prev_cy)
-        dec a
-        ld (s38_r0),a
+        call z,s38_target           ; (not while the old page is still on screen)
 s38u_vert:
         ld a,(prev_cy)
         cp c
@@ -265,11 +250,63 @@ s38u_vset:
 s38u_work:
         jp s38_work
 
+; B = the camera's column: the next page to build, on the camera's side, or on the camera's page
+; the side the view moves to (dir_x); none at the map's edges, nor again the one being built.
+; Keeps C.
+s38_target:
+        ld a,(s38_vis_c0)
+        ld e,a
+        cp b
+        jr c,s38t_r
+        jr nz,s38t_l
+        ld a,(dir_x)
+        or a
+        jr nz,s38t_l
+s38t_r: ld a,e
+        cp CAM_X_MAX/16
+        ret nc                      ; already at the right edge: nothing to build
+        inc a
+        jr s38t_set
+s38t_l: ld a,e
+        or a
+        ret z                       ; already at the left edge
+        dec a
+s38t_set:
+        ld e,a
+        ld a,(s38_back_c0)
+        cp e
+        ret z
+        ld a,e                      ; new build target
+        ld (s38_back_c0),a
+        ld a,(s38_vis_c0)
+        cp e
+        ld a,0                      ; built for the right (0) or the left (1)
+        jr c,s38t_bd
+        inc a
+s38t_bd:
+        ld (s38_back_dir),a
+        xor a
+        ld (s38_phase),a
+        ld (s38_i),a
+        ld a,(prev_cy)
+        dec a
+        ld (s38_r0),a
+        ret
+
 ; Issues at most one VDP command, only if the VDP is idle.
 ; Priority: pending row, a cell the game changed, new column of the back page, shifted copy.
+; Once a flip is on screen the next page's build starts here, not only at the next frame's
+; update (one flip a frame: the camera then waits less at the pages' edges).
 s38_work:
         call vdp_busy
         ret nz
+        ld a,(split_armed)
+        or a
+        jr nz,s38w_rq
+        call s38_rburst             ; (between the split and the VBLANK: the changed cells first)
+        call vdp_busy
+        ret nz
+s38w_rq:
         ld a,(s38_rq)
         cp 0xFF
         jp nz,s38_row_step
@@ -277,8 +314,17 @@ s38_work:
         ret nz
         ld a,(s38_flip_wait)
         or a
-        ret nz
-        ld a,(s38_back_c0)
+        jr z,s38w_b
+        ld a,(app_seq)
+        ld b,a
+        ld a,(s38_flip_seq)
+        cp b
+        ret nz                      ; (the list with the flip is not on screen yet)
+        xor a
+        ld (s38_flip_wait),a
+        call cam_cells
+        call s38_target
+s38w_b: ld a,(s38_back_c0)
         cp 0xFF
         ret z
         ld a,(s38_phase)
@@ -300,9 +346,27 @@ s38w_copy:
         ret nc                      ; back page ready
         jp s38_copy_chunk
 
+; Between the HUD split and the VBLANK: up to RD_BURST changed cells in a row (s38_redraw's
+; steps, each waiting for the one before).
+s38_rburst:
+        ld b,RD_BURST*2
+s38b_lp:
+        ld a,(split_armed)
+        or a
+        ret nz                      ; (the VBLANK came)
+        push bc
+        call vdp_wait
+        call s38_redraw
+        pop bc
+        ret z
+        djnz s38b_lp
+        ret
+
 ; One step of the oldest cell the game changed (tiles.asm rd_queue), when it is in the kept
-; rows: the displayed page, then the page being built (each draws only the columns it holds).
-; NZ when it took this call.
+; rows: the displayed page (between the HUD split and the VBLANK through vdp_cmd_q, at other
+; times at once), then the page being built (each draws only the columns it holds; a flip in
+; between starts the cell again on the new displayed page: s38_update). NZ when it took this
+; call.
 s38_redraw:
         call rd_peek
         ret z
@@ -316,7 +380,31 @@ s38_redraw:
         ld a,(rd_phase)
         or a
         jr nz,s38r_back
-        inc a
+        ld a,(split_armed)
+        or a
+        jr nz,s38r_late
+        ld a,(s38_vis_c0)
+        ld c,a
+        ld a,(s38_vis_page)
+        ld b,d
+        ld d,a
+        ld a,b
+        call ttp_prep
+        jr nc,s38r_vis              ; (not in the displayed page's columns)
+        ld hl,cmdbuf
+        call vdp_cmd_q
+        jr nz,s38r_wait             ; (the time passed: again later)
+        call ttp_count
+s38r_vis:
+        ld a,1
+        ld (rd_phase),a
+        or a
+        ret
+s38r_wait:
+        xor a                       ; (not now: Z, the other work goes on)
+        ret
+s38r_late:
+        ld a,1                      ; (at other times at once: a change never waits)
         ld (rd_phase),a
         ld a,(s38_vis_c0)
         ld c,a

@@ -216,45 +216,25 @@ gt_rom: ld a,d
 ; Amiga's linear map does) -> A = the cell's attributes (rows 51-52: the bits of the words after
 ; the map, ATR2; 0 further out). Keeps BC, DE, HL
 ; (and the 8000h window's bank).
-atr_rc: push hl
-        push de
-        ld a,e
+atr_rc: ld a,e
         cp MAP_COLS
-        jr c,ar_col
-        inc d                       ; 160: the next row's first cell
-        ld e,0
-        inc a
-        jr nz,ar_col
-        dec d                       ; -1 (FFh): the previous row's last cell
-        dec d
-        ld e,MAP_COLS - 1
-ar_col: ld a,d
+        jr nc,ar_wrap
+        ld a,d
         cp MAP_ROWS
-        jr nc,ar_after
+        jr nc,ar_after0
+        push hl
         ld l,a
         ld h,MP_ROW/256
         ld a,(hl)
-ar_pl:  cp 0xFF
-        jr z,ar_rom
+        inc a
+        jr nz,ar_pl0                ; (the row has patches)
+ar_rom: ld a,d                      ; the packed map in page-0 RAM (atr_load): 4-bit codes
+        add a,a
+        add a,atr_rows & 0xFF
         ld l,a
-        ld h,MP_COL/256
-        ld a,(hl)
-        cp e
-        jr z,ar_hit
-        ld h,MP_NEXT/256
-        ld a,(hl)
-        jr ar_pl
-ar_hit: ld h,MP_ATR/256
-        ld a,(hl)
-        pop de
-        pop hl
-        ret
-ar_rom: push bc                     ; the packed map in page-0 RAM (atr_load): 4-bit codes
-        ld l,d
-        ld h,0
-        add hl,hl
-        ld bc,atr_rows
-        add hl,bc
+        ld a,0
+        adc a,atr_rows / 256
+        ld h,a
         ld a,(hl)
         inc hl
         ld h,(hl)
@@ -263,10 +243,9 @@ ar_rom: push bc                     ; the packed map in page-0 RAM (atr_load): 4
         srl a
         add a,l
         ld l,a
-        adc a,h
-        sub l
-        ld h,a
-        ld a,(hl)
+        jr nc,ar_nb
+        inc h
+ar_nb:  ld a,(hl)
         bit 0,e
         jr nz,ar_odd
         rrca                        ; (an even column: the high nibble)
@@ -274,12 +253,43 @@ ar_rom: push bc                     ; the packed map in page-0 RAM (atr_load): 4
         rrca
         rrca
 ar_odd: and 15
-        ld c,a
-        ld b,0
-        ld hl,atr_lut
-        add hl,bc
+        add a,atr_lut & 0xFF        ; (atr_lut does not cross a 256-byte boundary)
+        ld l,a
+        ld h,atr_lut / 256
         ld a,(hl)                   ; its attributes
-        pop bc
+        pop hl
+        ret
+ar_pl0: dec a
+ar_pl:  ld l,a
+        ld h,MP_COL/256
+        ld a,(hl)
+        cp e
+        jr z,ar_hit
+        ld h,MP_NEXT/256
+        ld a,(hl)
+        cp 0xFF
+        jr nz,ar_pl
+        jr ar_rom
+ar_hit: ld h,MP_ATR/256
+        ld a,(hl)
+        pop hl
+        ret
+ar_wrap:                            ; 160: the next row's first cell; -1 (FFh): the previous
+        push de                     ; row's last one
+        inc d
+        ld e,0
+        inc a
+        jr nz,ar_w1
+        dec d
+        dec d
+        ld e,MAP_COLS - 1
+ar_w1:  call atr_rc
+        pop de
+        ret
+ar_after0:
+        push hl
+        push de
+        call ar_after
         pop de
         pop hl
         ret
@@ -305,13 +315,9 @@ ar_a2:  ld a,(act_8000)
         call bank_8000
         ld a,c
         pop bc
-        pop de
-        pop hl
         ret
 ar_none:
         xor a
-        pop de
-        pop hl
         ret
 
 ; D = row, E = column, HL = an Amiga map word (DATAL tile offset | attributes): the cell becomes
@@ -636,6 +642,7 @@ tu_lp:  push bc
         pop hl
         ld bc,8*256 + VDP_DATA
         otir
+        call vram_done
         ld bc,128 - 8
         add hl,bc
         ex de,hl

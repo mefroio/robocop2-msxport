@@ -32,6 +32,8 @@ OBJ_END:    equ AM + 0x0BF8
 lv_htab:    equ 0xA000
 
 lv_init:    equ lv_htab + 53*4      ; jp to the level's start
+lv_tick:    equ lv_init + 3         ; jp to the level's hazard handler ($91B0 + 4 * level)
+lv_hz:      equ lv_init + 6         ; dw: the level's hazard list ($915E's immediate)
 
 ; The objects' part of the level's start (level_init $871A; load_level0 $8314 sets $8060).
 obj_start:
@@ -67,9 +69,14 @@ update_objects:
         ld hl,(AM + 0x0B0E)
         ld (AM + 0x0B12),hl         ; the list from its start
         ld ix,OBJ_SLOTS
-uo_lp:  ld a,(ix+OS_TYPE)
+uo_lp:  ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
+        ld a,(ix+OS_TYPE)
         or a
+        if ENEMY_CAP
+        jp z,uo_cap
+        else
         jp z,uo_free
+        endif
         ld l,a
         ld h,0
         add hl,hl
@@ -119,6 +126,24 @@ uo_next:
         jr nc,uo_lp
         ret
 
+        if ENEMY_CAP
+; (The port, tools/mkrom.py ENEMY_CAP: the MSX shows two large characters in full colour at
+; most; with ENEMY_CAP slots in use a free slot spawns nothing, so the level's spawns wait.)
+uo_cap: ld hl,OBJ_SLOTS + OS_TYPE
+        ld de,4
+        ld bc,5 * 256               ; B = slots, C = in use
+uoc_lp: ld a,(hl)
+        or a
+        jr z,uoc_n
+        inc c
+uoc_n:  add hl,de
+        djnz uoc_lp
+        ld a,c
+        cp ENEMY_CAP
+        jp c,uo_free
+        jp uo_next
+        endif
+
 ; A = offset in lv_htab: calls that routine (IX = the slot).
 obj_call:
         ld l,a
@@ -133,13 +158,6 @@ obj_call:
 ; 5Dh..+1AFh, y in camera y - 28h..+A8h) count down (an entry once spawned is skipped while bit 6
 ; of its flags is set); the first one at zero spawns here. Entries outside the window are reset.
 uo_free:
-        ld hl,(gcam_x)
-        ld de,0x5D
-        add hl,de
-        ld (uo_d0),hl               ; D0
-        ld de,0x152
-        add hl,de
-        ld (uo_d2),hl               ; D2
         ld hl,(gcam_y)
         ld de,-0x28
         add hl,de
@@ -147,50 +165,81 @@ uo_free:
         ld de,0xD0
         add hl,de
         ld (uo_d3),hl               ; D3
-        ld iy,(AM + 0x0B12)
-        jr uf_at
-uf_nx:  ld de,14
-        add iy,de
-uf_at:  ld e,(iy+0)
-        ld d,(iy+1)                 ; D4 = x
-        bit 7,d
-        jp nz,uf_end
-        ld (AM + 0x0B12),iy
-        ld hl,(uo_d0)
+        ld hl,(gcam_x)
+        ld bc,0x5E
+        add hl,bc
+        ld b,h
+        ld c,l                      ; BC = D0 + 1 (D0 = camera x + 5Dh, D2 = D0 + 152h)
+        ld hl,(AM + 0x0B12)         ; (the port walks the list with HL, most entries being out
+        jr uf_at                    ; of the window, and sets $B12 - the entry reached - when
+uf_nxi: push iy                     ; it leaves: at a spawn or at the end)
+        pop hl
+        ld de,14
+        add hl,de
+uf_at:  ld e,(hl)
+        inc hl
+        ld a,(hl)
         or a
-        sbc hl,de
-        jp p,uf_out                 ; cmp.w D4,D0; bpl
-        ld hl,(uo_d2)
-        or a
-        sbc hl,de
-        jp m,uf_out                 ; cmp.w D4,D2; bmi
-        ld (uo_d4),de
-        ld e,(iy+2)
-        ld d,(iy+3)                 ; D5 = y
+        jp m,uf_last                ; (x < 0: the end; HL = it + 1)
+        ld d,a                      ; D4 = x
+        ld a,e
+        sub c
+        ld e,a
+        ld a,d
+        sbc a,b                     ; x - D0 - 1: inside (cmp.w D4,D0; bpl, cmp.w D4,D2; bmi)
+        jr z,uf_xin                 ; when below 152h
+        dec a
+        jr nz,uf_out
+        ld a,e
+        cp 0x52
+        jr c,uf_xin
+uf_out: ld de,9                     ; out of the window (HL = the entry + 1): its count reset
+        add hl,de
+        xor a
+        ld (hl),a
+        inc hl
+        ld (hl),a                   ; (+10: the count)
+        inc hl
+        inc hl
+        ld (hl),a                   ; (+12 ^ 1: bit 7 spawned)
+        inc hl
+        jp uf_at
+uf_xin: dec hl                      ; HL = the entry
+        push hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (uo_d4),de               ; D4 = x
+        inc hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)                   ; D5 = y
         ld hl,(uo_d1)
         or a
         sbc hl,de
-        jp p,uf_out
+        jp p,uf_yout
         ld hl,(uo_d3)
         or a
         sbc hl,de
-        jp m,uf_out
+        jp m,uf_yout
+        pop iy                      ; inside the window: IY = the entry
         bit 6,(iy+7^1)
         jr z,uf_cnt
         bit 7,(iy+12^1)
-        jr nz,uf_nx                 ; spawned once already
+        jr nz,uf_nxi                ; spawned once already
 uf_cnt: ld l,(iy+10)
         ld h,(iy+11)
         dec hl
         ld (iy+10),l
         ld (iy+11),h
         bit 7,h
-        jr z,uf_nx                  ; still counting
+        jr z,uf_nxi                 ; still counting
         set 7,(iy+12^1)
         ld l,(iy+8)
         ld h,(iy+9)
         ld (iy+10),l
         ld (iy+11),h                ; the count starts again
+        ld (AM + 0x0B12),iy         ; ($B12: the entry reached)
         call slot_clear
         ld (ix+OS_Y),e
         ld (ix+OS_Y+1),d
@@ -235,10 +284,22 @@ uf_left:
         pop hl
 uf_x:   call slot_place
         jp uo_next
-uf_out: ld (iy+12^1),0
-        ld (iy+10),0
-        ld (iy+11),0
-        jp uf_nx
+uf_yout:
+        pop hl
+        inc hl
+        jp uf_out
+
+; The list's end (HL = it + 1): $B12 is the last entry, unless the walk started at the end.
+uf_last:
+        dec hl
+        ld de,(AM + 0x0B12)
+        or a
+        sbc hl,de
+        jr z,uf_end
+        add hl,de
+        ld de,-14
+        add hl,de
+        ld (AM + 0x0B12),hl
 
 ; The list is done: the spawn delay counts down; once it is negative a map marker can spawn,
 ; every (mask + 1) game frames ($C53D, patched by the level and its end).
@@ -1444,7 +1505,9 @@ xu_ch:  ld a,(AM + (0x16AD ^ 1))
 xu_sl:  ld hl,ac_ediv
         dec (hl)
         xor a
+        ld (bob_own+1),a
 xu_lp:  ld (ea_k),a
+        ld (bob_own),a              ; (the identity of its BOBs: the slot, bob.asm)
         xor 1
         ld e,a
         ld d,0
@@ -1612,7 +1675,8 @@ EB_AY:      equ 0x60
 eb_update:
         ld ix,AM + 0x0C34 + 0x80
         ld b,8
-ebu_lp: ld a,(ix+EB_TYPE)
+ebu_lp: ld (bob_own),ix             ; (the identity of its BOB: bob.asm)
+        ld a,(ix+EB_TYPE)
         or a
         jp z,ebu_nx
         push bc

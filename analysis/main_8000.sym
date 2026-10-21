@@ -26,6 +26,8 @@
 +entry fc04
 +entry fcbe
 +entry fd1a
+# the return address type 25 pushes (pea) before its drawing jump table ($DBD2)
++entry dbea
 8000  start            BRA to the initialisation; followed by 10 public BRA.W entries
 8050  level_number     word: current level (incremented when completed)
 802c  vbl_counter      byte: incremented by the VBL; the main loop waits for >= 2 (25 Hz)
@@ -87,14 +89,14 @@ b4e2  player_anim_table    [steps-1][list offset][height][0]; frame = 16 bytes (
 +data b408 b4e2        player part tables (head g/x/y, arm g/x/y, flash g)
 b408  player_head_tables   head 16x14 parts: graphic offsets from $61bd0, x, y (9 words each)
 b43e  player_arm_tables    arm+gun 32x32 parts: graphic offsets from $62030 ($b43e), x ($b472), y ($b4a6), 26 words each
-b4da  player_flash_offsets muzzle flash 16x16 parts: offsets from $65230 (4 words)
+b4da  hit_spark_offsets    hit spark 16x16 frames (mask + 4 planes): offsets from $65230, by ($16a0 & $e) / 2
 15e2  player_state         word: animation state (index into $b4e2)
 15dc  player_anim_counter  word: frame counter within the state
 15da  player_aim           word: bits 1-2 = aim (up, diagonal up, horizontal, diagonal down)
 1676  player_arm_override  word: special arm pose (0 = from facing/aim)
-16a0  muzzle_flash_timer   word
-16a2  muzzle_flash_x       word: position in the composition buffer
-16a4  muzzle_flash_y       word
+16a0  hit_spark_timer      word: frames of the hit spark (7, set by $fa7c when an enemy bullet hits)
+16a2  hit_spark_x          word: x in RoboCop's buffer (asr 4: words); $fa7c writes the y value here too
+16a4  hit_spark_y          word: line in RoboCop's buffer
 15cc  player_hot_x         word: hotspot x of the current record + 8
 15ce  player_hot_y         word: hotspot y of the current record + 8
 15d0  player_x             word: world position
@@ -136,6 +138,7 @@ c238  msg_suspect          "SUSPECT DESTROYEDe"
 c24b  msg_cain_destroyed   "CAIN DESTROYEDe"
 d46c  msg_chase_cain       "CHASE CAINe"
 ed11  msg_extra_life       "EXTRA LIFEe"
+ed1e  obj45_update         object type 45: the hostage (BOB frames 51-59). In view: a slot from its y's low nibble (flag table $16DB); touched (+$23): $16BE hostages rescued +1, message, energy_target +$20, an extra life at the 10th; else its animation counter +2 (REA/Ghidra, 2026-10-21)
 865a  msg_timeout          "TIMEOUTe"
 f837  msg_pause_on         "PAUSE ONe"
 f82c  msg_pause_off        "PAUSE OFFe"
@@ -149,8 +152,11 @@ f841  msg_debug            "NUKE      HOSTe     ": debug key $21 writes two numb
 aff8  player_move          state machine, steps against map walls (bit 1), jumps/falls/landings (bits 0/2), lifts, camera, start of level
 bd72  lift_check           4 lifts ($B3C-$B63): on one -> y = top - 4, x += dx, flag $167A+index; N set
 bdec  read_joystick        once per game frame (after draw_player): JOY1DAT via $BE26 + fire, else the keyboard byte $802D; skipped while $804D
-f878  palette_fades        fade in ($16CE set: $16CD up to $1F, forces state $F89D) or out; palette flash countdown $F826
-f80e  palette_flash        A0 = palette shown for 4 frames ($F826), then the level palette
+f878  palette_fades        fade in ($16CE set: $16CD up to $1F, forces state 10) or out, every step through $f8c4; palette flash countdown $F826 (at 0 COLOR17-31 from $10016)
+f80e  palette_flash        A0 = RoboCop's colours (COLOR17-31, $f816) for 4 more frames ($F826), then the level's
+f816  set_robocop_colours A0 = 15 colours into the copper's COLOR17-31 ($104e4)
+f8c4  palette_fade         D0 = fade level: COLOR01-31 = the level palette ($f8c6 immediate) with each component at most (D0 >> 1) & $1e
+12082 high_score_entry     score $8046 as 8 characters (+$5b), against the table's last entry; enters a name, sorts the 5 entries
 acbc  spawn_effect         D3 = type, D7 = direction, D0/D1 = x/y into slot $1692 & 14 of the effect table (A3 = $15F4)
 b32c  player_hitboxes      (12, -54, 24, 54), (10, -38, 38, 38), (12, -72, 24, 72): offset in $168E
 b3ae  player_state_params  4 bytes per state: -, $15DF, $15E4 (animation backwards), hitbox offset
@@ -191,4 +197,5 @@ d78   fire_latch           byte: fire held (cleared every 4 frames with the rapi
 9c76  map_object_look      activate_objects: the object's current look (block of map words, $110/$112 = width/height - 1) copied into the map; negative look = destroyed ($F98C)
 9fc4  obj_relocate         with RoboCop in states 12/13 for $50 frames: debris, then RoboCop and the camera to ($15D6, $15D8), state $10 asked, fade-in again
 15d6  player_relocate_xy   2 words: where obj_relocate puts RoboCop (level header +20/+22)
+d876  obj29_update         object type 29: a gunner that stays put (BOB frames 36-37: its two facings). Word at A3: below $40 -> FUN_c948 (not decoded); from $40 it counts up, faces RoboCop (x vs player_x), fires at phase $0E (FUN_f5bc; shot speed $4000 at +$E0) and goes back to 0 at phase $17 (REA/Ghidra, 2026-10-21)
 df6e  obj32_update         object type 32 (level 1 end): camera offsets patched, map words from its table ($DE68: x, y, word) written one per 4 frames, explosions, $16D0 level complete

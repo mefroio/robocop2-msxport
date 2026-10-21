@@ -132,6 +132,41 @@ mc_below:
         ld de,(ao_y)
         ret
 
+; HL = x, DE = y -> A = the attributes of the cell $EF8E leaves in A0 (the shots test (1,A0)):
+; row y >> 4, column (x >> 4) - 8; above the map or past its rows A0 stays on row 0.
+map_atr:
+        ld a,l
+        srl h
+        rra
+        srl h
+        rra
+        srl h
+        rra
+        srl h
+        rra
+        sub 8
+        ld c,a
+        ld a,e
+        bit 7,d
+        jr nz,mat_r0
+        srl d
+        rra
+        srl d
+        rra
+        srl d
+        rra
+        srl d
+        rra
+        inc d
+        dec d
+        jr nz,mat_r0
+        cp MAP_ROWS
+        jr c,mat_r
+mat_r0: xor a
+mat_r:  ld d,a
+        ld e,c
+        jp atr_lin
+
 ; ----- the activators of level 1's object types ($9EC4 + offset) -----
 
 ; HL = x, DE = y, B = D5's high byte, C = explosion type: the last free one of the 8 slots
@@ -245,19 +280,167 @@ pickup_drop:
         ld (AM + 0x1694),hl
         ret
 
-; ----- palette flash ($F80E) -----
+; ----- $BDCE: the random word $B32 -----
 
-; A = flash palette (PAL_...): shown for 4 game frames ($F826), then the level's palette again
-; ($F878; with the palette effects).
+; Every game frame rotated left by CIA-A timer A's low byte and XORed with timer B. The Z80's
+; refresh register stands in for the timers; builds with a JOY script read them as the execution
+; bench does (FFh: a rotation by 63, i.e. 15, and FFFFh), so that the traces compare.
+rnd_step:
+        if INPUT_SCRIPT
+        ld b,15
+        ld de,0xFFFF
+        else
+        ld a,r
+        and 15
+        ld b,a
+        ld a,r
+        ld d,a
+        ld a,(AM + 0x0B02)
+        xor d
+        ld e,a
+        endif
+        ld hl,(AM + 0x0B32)
+        inc b
+        jr rnd_n
+rnd_l:  add hl,hl
+        jr nc,rnd_n
+        inc l
+rnd_n:  djnz rnd_l
+        ld a,h
+        xor d
+        ld h,a
+        ld a,l
+        xor e
+        ld l,a
+        ld (AM + 0x0B32),hl
+        ret
+
+; ----- the palette on screen: the copper's colours ($1049E) -----
+
+; pf_pal (the play field's palette, loaded at every VBLANK) changes as the copper's colours do:
+; the fade ($F8C4) computes all of it from the level's palette, a flash ($F80E) and its end
+; ($F878) rewrite RoboCop's colours. The Amiga tints his sprite colours (COLOR17-31); here his
+; entries that the background never uses (flash_idx, tools/msxsprites.py) take the tint, so
+; that only the sprites change colour.
+
+; A = flash palette (PAL_...): RoboCop in its colours for 4 more game frames ($F826), then in the
+; level's again (pl_fade). Keeps BC, DE, IX, IY.
 PAL_LEVEL:  equ 0
 PAL_ENEMYHIT: equ 1                 ; $100B0 (an enemy touched RoboCop)
 PAL_SHOT:   equ 2                   ; $10092 (an enemy shot hit him)
 PAL_ELECTRIC: equ 3                 ; $100CE (an electric barrier)
 PAL_REFILL: equ 4                   ; $100EC (energy refill)
+PAL_BEAM:   equ 5                   ; $10074 (an electric beam of level 1, $933A)
+PAL_REVERSE: equ 6                  ; $1010A (the reversed controls, every 8th frame)
 pal_flash:
         ld (ac_flpal),a
         ld hl,4
         ld (ac_flash),hl
+        push bc
+        push de
+        call pal_robo
+        pop de
+        pop bc
+        ret
+
+; A = flash palette (PAL_LEVEL: the level's own): RoboCop's entries of pf_pal from it ($F816).
+pal_robo:
+        ld hl,flash_pals - 2 * FLASH_N
+        ld de,2 * FLASH_N
+        or a
+        jr z,prb_lv
+prb_f:  add hl,de
+        dec a
+        jr nz,prb_f
+        ex de,hl                    ; DE: the flash's colours
+        ld hl,flash_idx
+        ld b,FLASH_N
+prb_lp: push hl
+        ld l,(hl)
+        ld h,0
+        add hl,hl
+        push de
+        ld de,pf_pal
+        add hl,de
+        pop de
+        ld a,(de)
+        ld (hl),a
+        inc de
+        inc hl
+        ld a,(de)
+        ld (hl),a
+        inc de
+        pop hl
+        inc hl
+        djnz prb_lp
+        ret
+prb_lv: ld de,flash_idx
+        ld b,FLASH_N
+prl_lp: ld a,(de)
+        inc de
+        push de
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,palette
+        add hl,de
+        push hl
+        ld hl,pf_pal
+        add hl,de
+        ex de,hl
+        pop hl
+        ld a,(hl)
+        ld (de),a
+        inc hl
+        inc de
+        ld a,(hl)
+        ld (de),a
+        pop de
+        djnz prl_lp
+        ret
+
+; A = the fade level ($16CD, 0-1Fh): pf_pal = the level's palette with every 3-bit component
+; at most A >> 2 ($F8C4: every 4-bit component at most (A >> 1) & 1Eh, 0-Eh: the same eight
+; steps).
+pal_fade:
+        rrca
+        rrca
+        and 7
+        ld c,a                      ; the limit for B and G
+        rlca
+        rlca
+        rlca
+        rlca
+        ld b,a                      ; the limit for R (bits 4-6)
+        ld hl,palette
+        ld de,pf_pal
+pfd_lp: ld a,(hl)
+        and 0x70
+        cp b
+        jr c,pfd_r
+        ld a,b
+pfd_r:  ld (de),a                   ; R
+        ld a,(hl)
+        and 7
+        cp c
+        jr c,pfd_b
+        ld a,c
+pfd_b:  ex de,hl
+        or (hl)
+        ld (hl),a                   ; R | B
+        ex de,hl
+        inc hl
+        inc de
+        ld a,(hl)
+        cp c
+        jr c,pfd_g
+        ld a,c
+pfd_g:  ld (de),a                   ; G
+        inc hl
+        inc de
+        ld a,e
+        cp (pf_pal + 32) & 0xFF
+        jr nz,pfd_lp
         ret
 
 ; ----- update_energy_can ($89BE), the logic -----

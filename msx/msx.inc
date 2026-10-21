@@ -5,9 +5,15 @@ VDP_DATA:   equ 0x98
 VDP_CTRL:   equ 0x99
 VDP_PAL:    equ 0x9A
 VDP_IND:    equ 0x9B
+RDSLT:      equ 0x000C
+WRSLT:      equ 0x0014
 ENASLT:     equ 0x0024
 CHGMOD:     equ 0x005F
 RSLREG:     equ 0x0138
+INITXT:     equ 0x006C
+CHPUT:      equ 0x00A2
+MSXVER:     equ 0x002D              ; the BIOS's MSX version: 0 MSX1, 1 MSX2, 2 MSX2+, 3 turbo R
+MODE:       equ 0xFAFC              ; bits 1-2: the VRAM (0 16 KiB, 1 64 KiB, 2 128 KiB)
 EXPTBL:     equ 0xFCC1
 SLTTBL:     equ 0xFCC5
 RG9SAV:     equ 0xFFE8
@@ -47,6 +53,7 @@ R26_PAGE3:  equ 0x20                ; V9958 with SP2: shows page 3 unscrolled
 HUD_VRAM_LINE: equ 208
 VRAM_HUD:   equ 0x18000 + HUD_VRAM_LINE*128
 HUD_R23:    equ (HUD_VRAM_LINE - VIEW_LINES - HUD_BLACK) & 255   ; R#23 that shows it at line 167
+SPLIT_R19:  equ (HUD_R23 + SPLIT_LINE) & 255    ; R#19 after the split: its match is behind (isr.asm)
 SPR_PAT:    equ 0x1D800             ; R#6 = 3Bh
 SPR_COL_A:  equ 0x1E000             ; SAT = SPR_COL_A + 200h, R#5 = C7h
 SPR_COL_B:  equ 0x1E400             ; SAT = SPR_COL_B + 200h, R#5 = CFh
@@ -107,6 +114,8 @@ s38_rq_col: equ 0xC049              ; next column (0..15, relative to the page)
 s38_rq_pass: equ 0xC04A             ; 0 = displayed page, 1 = back page
 s38_tmp_row: equ 0xC04B
 s38_tmp_x:  equ 0xC04C
+s38_flip_seq: equ 0xCA7B            ; seq of the list that shows the last flip (s38_work: its page is free once shown)
+cam_held:   equ 0xF16F              ; 1: the last update kept the camera at a page's edge (cadence: CAD_HOLD)
 disp_c0:    equ 0xC04D              ; published state (for verification)
 disp_f:     equ 0xC04E
 disp_page:  equ 0xC04F
@@ -117,33 +126,27 @@ vbl_list_b: equ 0xC0A0              ; 32 bytes
 split_list: equ 0xC0C0              ; [len, value, reg|80h, ...] for the HUD
 
 ; sprites (sprites.asm)
-spr_shown:  equ 0xC0E0              ; set (0 = A, 1 = B) whose layout the last published list shows
-up_state:   equ 0xC0E1              ; upload of the other set's layout: 0 idle, 1 pages, 2 patterns,
-                                    ; 3 colour rows, 4 complete (that set goes on screen next frame)
-up_idx:     equ 0xC0E2              ; next object (pages) or SAT entry of the pass
-up_units:   equ 0xC0E3              ; work left in this frame
-up_next:    equ 0xC0E4              ; slot / entry the VRAM pointer is at (FFh: unknown)
-spr_vblank: equ 0xC0E5              ; 1: sat_buf goes to the set on screen after the VBLANK
+pk_state:   equ 0xC0E0              ; published frame: 0 on screen, 1 its queue to run (split
+                                    ; interrupt: sprites.asm spr_upload), 2 ready for the VBLANK
+pk_list:    equ 0xC0E1              ; 2: its register list (vbl_ptr once on screen)
+pk_mux:     equ 0xC0E3              ; 1: the frame on screen has objects alternating (VBLANK:
+                                    ; its SAT pair's halves in turn)
+sat_mux_n:  equ 0xC0E4              ;   the same for the frame being published
+spr_vblank: equ 0xC0E5              ; 1: the frame being published has a new SAT (sat_nb)
 spr_xadj:   equ 0xC0E6              ; SAT x correction of the frame (V9938: f - 8, V9958: 0)
 sat_dirty:  equ 0xC0E7              ; 1: sat_buf must be built again
 mux_on:     equ 0xC0E8              ; objects alternating between frames
 spr_n:      equ 0xC0E9              ; SAT entries the last sat_buf used
 pub_vec:    equ 0xC0EA              ; 2 bytes: engine publish
-bu_over:    equ 0xC0EC              ; budget: 1 when lines stay above the limit (BOBs alternate)
-bu_need:    equ 0xC0ED              ; budget: most sprites RoboCop may put on a line he shares,
-bu_needm:   equ 0xC0EE              ;   the same beside one BOB (alternating)
 bu_tot:     equ 0xC0EF              ; budget: sprites of all the objects shown,
-bu_one:     equ 0xC0F0              ;   the same with every column on one layer (bu_tot + 1)
+bu_one:     equ 0xC0F0              ;   the same with every OR layer dropped (bu_tot + 1)
 lb_n:       equ 0xC0F1              ; layout: entries so far
-tmp_k:      equ 0xC0F2              ; column bit / pattern slot
-tmp_n:      equ 0xC0F3              ; B sprites
 alloc_p:    equ 0xC0F4              ; layout: next pattern slot to try
 tmp_o:      equ 0xC0F5              ; budget: object
 sb_obj:     equ 0xC0F6              ; SAT build: object
 bu_dirty:   equ 0xC078              ; budget: 1 when an object changed what it looks at (shown,
                                     ; composition, screen y) since it last ran
 bu_cut:     equ 0xC067              ; budget: 1: objects left out (bg_cut),
-bu_ninv:    equ 0xC069              ;   objects that meet,
 sb_page:    equ 0xC0FD              ; SAT build: the object's entry page
 act_8000:   equ 0xC07C              ; bank the 8000h window shows (bank.asm)
 act_a000:   equ 0xC07D              ; bank the A000h window shows
@@ -165,32 +168,69 @@ spr_cost:   equ 0xC07A              ; work of the sprite engine and the game log
 st_wait:    equ 0xC07B              ; 1: the last tick's layout waited (a heavy HUD frame)
 lb_sp:      equ 0xC074              ;   2 bytes: the object's entry in the layout on screen,
 lb_ec:      equ 0xC076              ;   its early clock
-sat_buf:    equ 0xC300              ; SAT of the next frame (32 x 4 bytes + 216), 256-aligned
-sat_full:   equ 0xC400              ; the same with every object shown (objects alternating)
+sat_pair0:  equ 0xC300              ; two pairs of SAT buffers (32 x 4 bytes, and + 80h the other
+sat_pair1:  equ 0xC400              ;   frames' with objects alternating), 256-aligned: the frame on
+                                    ;   screen uses one (sat_cur), the one being built the other
 pub_cur:    equ 0xC500              ; MAX_OBJ x 8 bytes: what the SAT being built shows (pub_spr layout)
 pub_spr:    equ 0xC700              ; 2 x MAX_OBJ x 8 bytes: what the SAT of list A (C080) / B (C0A0)
                                     ; shows: per object flags (bit 7 shown, bit 0 BOB), id (2), drop,
                                     ; x (2), y (2)
-lay:        equ 0xC800              ; 2 sets x 256 (MAX_OBJ x sprites.asm LAY_SIZE), 256-aligned
-lay_col:    equ 0xCA00              ; 2 sets x 32 x 2: colour id | 8000h (EC) each set's row holds
-pat_held:   equ 0xCA80              ; 64 x 2: pattern id each pattern slot holds (FFFFh: unknown)
-busy:       equ 0xCB00              ; 64: slots the set on screen uses or the new layout took
-lay_n:      equ 0xCB40              ; 2 bytes: entries used by each set's layout
+disp:       equ 0xC800              ; MAX_OBJ x LAY_SIZE: the version each object shows (sprites.asm
+                                    ; V_...), 256-aligned
+pend:       equ 0xC900              ; MAX_OBJ x LAY_SIZE: the version it prepares (disp + 256)
+col_held:   equ 0xCA00              ; 32 x 2: colour id | 8000h (EC) each SAT entry's row holds (set A;
+                                    ; set B: col_held_b)
+ent_own:    equ 0xCA40              ; 32: object whose run holds each SAT entry (FFh: free)
+pl_obj:     equ 0xCA60              ; plan: the object,
+pl_wait:    equ 0xCA61              ;   1: some of its patterns are on their way,
+pc_start:   equ 0xCA62              ;   its new run's first entry,
+up_window:  equ 0xCA63              ; 2: upload units of one blank time (60 or 50 Hz)
+pq_left:    equ 0xCA65              ; 2: units the frame's queue may still take,
+pq_wr:      equ 0xCA67              ; 2:   its next entry
+su_left:    equ 0xCA69              ; 2: spr_upload: units this blank time has left
+bq_head:    equ 0xCA6B              ; background queue: next entry to load (interrupt),
+bq_tail:    equ 0xCA6C              ;   next free one (main program); low bytes in bq_buf
+fl_n:       equ 0xCA6D              ; low byte of the last slot released for later (SLOT_PG)
+sat_cur:    equ 0xCA6E              ; 2: the SAT pair of the frame on screen,
+sat_nb:     equ 0xCA70              ; 2:   of the frame being built
+pl_pq:      equ 0xCA72              ; plan: 1 when the object's patterns may take the frame's queue,
+pl_pass:    equ 0xCA73              ;   0: the objects showing nothing yet, 1: the others,
+pl_rcz:     equ 0xCA74              ;   low byte of ent_own past RoboCop's zone (no BOB run there)
+pr_bsz:     equ 0xCA75              ; pc_run: the best hole's size (FFh: none),
+pr_bst:     equ 0xCA76              ;   the run's first SAT entry there
+pl_pa:      equ 0xCA77              ; 2: plan: the next free place of the first work list,
+pl_pb:      equ 0xCA79              ; 2:   of the second
+pl_wa:      equ 0xED10              ; 17: plan: objects that show nothing yet, FFh at the end
+pl_wb:      equ 0xED21              ; 17:   the other objects to bring on
+bu_ord:     equ 0xED32              ; 15: budget: the BOB objects by importance, FFh at the end
+pl_st:      equ 0xED42              ; 16: plan: per object 1 or 2 when it goes into that work list
+bo_pos:     equ 0xED52              ; 6: bu_order: per rank its count, then its next place
+pat_held:   equ 0xCA80              ; 64 x 2: pattern id each pattern slot holds, or will once its
+                                    ; upload runs (FFFFh: unknown)
+slot_ref:   equ 0xCB00              ; 64: entries of shown or prepared versions using each slot
 lk_cache:   equ 0xCB42              ; LK_CACHE_N x 2: per object-list entry the look last written
 LK_CACHE_N: equ 60                  ;   into the map (Amiga address; 0: none) (mapobj.asm)
 ao_cand:    equ 0xCBC0              ; up to 61: activate_objects' candidates (entry numbers, FFh
                                     ; after the last; within one 256-byte page)
 so_x:       equ 0xF380              ; 2 x 60: the object list's x sorted (page 3's BIOS area: free
 so_n:       equ 0xF400              ;   once the BIOS is not used), their entry numbers
-obj_tab:    equ 0xCC00              ; MAX_OBJ x 32 bytes (sprites.asm: O_...)
+obj_tab:    equ 0xCC00              ; MAX_OBJ x 32 bytes (sprites.asm: O_...; 256-byte aligned)
 demo_tab:   equ 0xC580              ; demo actors (sprites.asm)
 ent_pages:  equ 0x2000              ; (page 0 RAM) MAX_OBJ x 2 pages of 256 bytes: entries
                                     ; (sprites.asm ENT_SIZE)
-bu_band:    equ 0xE0A0              ; budget: per band of 8 lines the sprites the objects there can
-                                    ; put on a line,
-bu_bmax:    equ 0xE0C0              ;   the largest of them (bu_band + 20h, same page)
-pat_slot:   equ 0xE100              ; per pattern id the slot it was put in last (FFh: none; a hint:
-                                    ; pat_held says what each slot holds)
+ln_cnt:     equ 0xE000              ; budget: VIEW_LINES (E000h-E0A2h, 256-byte aligned): the sprites
+                                    ;   on each line of the play area (E0A3h-E0FFh: free)
+pat_slot:   equ 0xE100              ; 1024 (256-aligned): per pattern id & 3FFh the slot it was put in
+                                    ; last (FFh: none; a hint: pat_held says what each slot holds)
+bq_buf:     equ 0xE500              ; 64 x [slot, pattern id (2), slot generation]: patterns of
+                                    ; versions being prepared, loaded by the interrupt (a ring)
+pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
+                                    ; uploads (sprites.asm Q_...)
+SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:
+SO_OK:      equ 0x00                ;   1: its pattern is in VRAM (or in the frame's queue),
+SO_Q:       equ 0x40                ;   1: in the background queue,
+SO_GEN:     equ 0x80                ;   generation (each new pattern),
+SO_FL:      equ 0xC0                ;   (the slots released when the planned frame is on screen)
 demo_timer: equ 0xC0D2              ; demo: tick counter of the actors
 
 ; HUD (hud.asm). The values use the game's BCD layouts.
@@ -272,6 +312,8 @@ p_onlift:   equ AM + 0x167A         ; 4: on lift n (at p_onlift + (n ^ 1))
 p_hb:       equ AM + 0x168E         ; 2: hitbox (offset in pl_hitbox here; a pointer on the Amiga)
 p_pend:     equ AM + 0x1696         ; 2: state asked for the next frame (high byte FFh: none)
 p_conf:     equ AM + 0x1698         ; 2: frames of reversed controls
+fire_latch: equ AM + (0x0D78 ^ 1)   ; fire held (cleared every 4 frames with weapon 1)
+w3_alt:     equ AM + (0x16D6 ^ 1)   ; weapon 3: wide or narrow spread next
 p_fade:     equ AM + (0x16CD ^ 1)   ; palette fade level
 p_fadein:   equ AM + (0x16CE ^ 1)   ; non-zero: fading in, else out
 g_keys:     equ AG + (0x802D ^ 1)   ; keyboard byte: the joystick's bits, bit 7 once a key was used
@@ -289,7 +331,6 @@ snd_b31:    equ AM + (0x0B31 ^ 1)
 
 ; game logic: the port's own variables
 G_VARS:     equ 0xCE00
-lvl_bank:   equ 0xCE09              ; the level's logic bank (logic_map maps it at A000h)
 uo_d0:      equ 0xCE0A              ; update_objects' registers: D0 (2),
 uo_d1:      equ 0xCE0C              ;   D1 (2),
 uo_d2:      equ 0xCE0E              ;   D2 (2),
@@ -299,12 +340,32 @@ key_p:      equ 0xCE14              ; key_scan: P as last seen
 pause_n:    equ 0xCE15              ; ticks before "PAUSE ON." again
 dbg_msg:    equ 0xCE18              ; 20: the message "NUKE nn HOST nn" ($F841, written by $F788)
 g_tick:     equ 0xCE05              ; 1 on the frames the game ticks
-g_acc:      equ 0xCE06              ; cadence: + g_step per frame, the game ticks at CAD_TICK (10)
-g_step:     equ 0xCE07              ; 6 at 50 Hz, 5 at 60 Hz (30 ticks per second)
-g_after:    equ 0xCE08              ; 1 on the first frame after a tick (sprite layout)
+g_acc:      equ 0xCE06              ; cadence: + g_step per frame, the game ticks at CAD_TICK
+g_step:     equ 0xCE07              ; 6 at 50 Hz, 5 at 60 Hz (300 a second: TICK_HZ ticks)
 p_row:      equ 0xCE34              ; map row and column of the frame's start position
 p_col:      equ 0xCE35
 p_rec:      equ 0xCE36              ; frame record shown
+pf_x:       equ 0xCE38              ; 2: update_player's fire and the shots: D0 (x),
+pf_y:       equ 0xCE3A              ; 2:   D1 (y),
+pf_dx:      equ 0xCE3C              ; 2:   D2 (the shot's x step),
+pf_d7:      equ 0xCE3E              ;   D7 (direction)
+sp_d7:      equ 0xCE3F              ; D7 as the special objects ($8B32) leave it for update_player
+ht_n:       equ 0xCE40              ; hit_test: the boxes in ht_box,
+ht_ok:      equ 0xCE41              ;   1 once they are worked out this tick (CE42h-CE43h: free)
+ph_x0:      equ 0xCE44              ; 2: $FA7C: RoboCop's box: D0 (left),
+ph_y0:      equ 0xCE46              ; 2:   D1 (top),
+ph_x1:      equ 0xCE48              ; 2:   D4 (right, exclusive),
+ph_y1:      equ 0xCE4A              ; 2:   D5 (bottom, exclusive)
+ph_dmg:     equ 0xCE4C              ; a bullet's damage; a pickup's type (/ 4 in pl_hits)
+sp_flag:    equ 0xCE4E              ; 2: $8B32: the record's flag byte (A4, an MSX address),
+sp_x:       equ 0xCE50              ; 2:   D0 (x),
+sp_y:       equ 0xCE52              ; 2:   D1 (y),
+sp_atpt:    equ 0xCE54              ;   a lift at its path point (D4)
+sc_run:     equ 0xCE56              ; 2: test builds' joystick script: the run of sc_start,
+sc_start:   equ 0xCE58              ; 2:   its first game frame
+ext_joy:    equ 0xCE5A              ; EXTJOY test builds: the joystick byte the Tcl driver puts here
+h_row:      equ 0xCE5B              ; handlers' map cell: row,
+h_col:      equ 0xCE5C              ;   column (-8..167)
 v_x:        equ 0xCE6A              ; 2: the view the game asks the scroll engine for
 v_y:        equ 0xCE6C              ; 2
 pm_d0:      equ 0xCE70              ; player_move's registers: D0 (joystick bits),
@@ -312,6 +373,46 @@ pm_d1:      equ 0xCE71              ;   D1 (state at the frame's start),
 pm_d2:      equ 0xCE72              ;   D2 (new state, FFh: none),
 pm_d4:      equ 0xCE73              ;   D4 (x step),
 pm_d5:      equ 0xCE74              ;   D5 (state & 7Eh)
+spk_k:      equ 0xCE75              ; the hit spark this tick: its frame + 1 (0: none; pl_frame)
+ps_x:       equ 0xCE76              ; 2: pl_show: RoboCop's composition on screen, x,
+ps_y:       equ 0xCE78              ; 2:   y
+wf_n:       equ 0xCE7A              ; VBLANKs since the last wait_frame (more than 1: a late frame)
+g_tn:       equ 0xCE7B              ; game ticks still to run in this main-loop frame
+up_lmode:   equ 0xCE7D              ; non-zero: this frame's upload runs late (sprites.asm up_step)
+front_mode: equ 0xEC44              ; 1: the front end shows a picture (the VBLANK interrupt only
+                                    ;   counts frames and runs the sound)
+ps_bank:    equ 0xEC45              ; front.asm pic_show: the picture's bank,
+ps_lines:   equ 0xEC46              ;   its lines
+os_mode:    equ 0xEC47              ; obj_set: the silhouette asked for (0, BM_FLASH, BM_BLACK)
+lb_mode:    equ 0xEC48              ; lb_fill: the entry's silhouette
+spl_bas:    equ 0xEC4E              ; 2: sp_lift: the record's first path point
+fl_pend:    equ 0xEC49              ; 5: per enemy slot, a hit flash drawn in a tick the display
+                                    ;   skipped, shown with the next tick shown (bob.asm)
+snd_fm:     equ 0xEC42              ; 1: an OPLL was found (sound.asm snd_detect)
+snd_slot:   equ 0xEC43              ;   the slot searched / found
+vram_busy:  equ 0xEC50              ; 1 while the main program streams to VRAM (vram_write ...
+                                    ;   vram_done): the VBLANK interrupt leaves the SAT to vram_done
+sat_due:    equ 0xEC51              ; 1: the SAT of the list just put on screen waits for vram_done
+sat_vaddr:  equ 0xEC52              ; 2: that SAT's address as port 99h writes it (low, high | 40h;
+                                    ;   R#14 = 7)
+sat_len:    equ 0xEC54              ; bytes of sat_buf it takes
+bob_own:    equ 0xEC56              ; 2: the owner of the BOBs drawn now (each system's object or
+                                    ;   slot, set by its loop): with their order, their identity
+                                    ;   from tick to tick (bob.asm)
+bob_lown:   equ 0xEC58              ; 2: the owner of the last BOB recorded,
+bob_pno:    equ 0xEC5A              ;   its part number (0, 1... for the BOBs of one owner in order)
+bf_hint:    equ 0xEC5B              ; bob_flush: where the next identity is looked for first,
+bf_nnew:    equ 0xEC5C              ;   records still without an object,
+bf_new:     equ 0xEC5D              ;   2 x BOB_MAX: those records (EC5Dh-EC98h)
+obj_key:    equ 0xECA0              ; MAX_OBJ x 4: each BOB object's identity: part, owner (2),
+                                    ;   category + 1 (0: none) (bob.asm bob_flush)
+bf_claim:   equ 0xECE0              ; MAX_OBJ: 1 for the objects bob_flush gave a record this tick
+bf_htab:    equ 0xE800              ; 256: per hash of an identity the object it was given last
+bf_unm:     equ 0xED58              ; bob_flush: objects with an identity no record took yet
+bf_lp:      equ 0xED59              ; 2: bf_show: the object's bf_last record
+bf_last:    equ 0xED60              ; MAX_OBJ x 6: per object the A2, D4 and mode of its last frame
+bob_skip:   equ 0xCE7C              ; non-zero: the tick's BOBs are not recorded (a tick run in a row
+                                    ; before the frame's last one: only the last one is shown)
 G_VARS_END: equ 0xCE80
 ; BOBs of the game's tick (bob.asm): the call's arguments (bob_a2..bob_y contiguous, as a record)
 bob_a2:     equ 0xCE80              ; 3: A2, the graphics (low byte first)
@@ -329,7 +430,11 @@ bd_dmod:    equ 0xCE95              ; 2:   destination modulo
 bob_cat:    equ 0xCE97              ; the category of the BOBs drawn now (bob.asm BC_...)
 bf_obj:     equ 0xCE98              ; bob_flush: the next sprite object,
 bf_catn:    equ 0xCE99              ;   the category being placed
-bob_list:   equ 0xF100              ; BOB_MAX x BOB_REC (F100h-F27Bh; the stack below F380h)
+bob_list:   equ 0xEA60              ; BOB_MAX x BOB_REC (EA60h-EC21h)
+cat_head:   equ 0xEC30              ; 2 x BOB_CATS: each category's last record (0: none; bob.asm)
+hz_ylo:     equ 0xEC3C              ; 2: hz_update's window: camera y - 64h,
+hz_xlo:     equ 0xEC3E              ; 2:   camera x + 73h,
+hz_xhi:     equ 0xEC40              ; 2:   camera x + 1A0h
 ; activate_objects (objects.asm)
 ao_a4:      equ 0xCEA0              ; 2: A4, the next collision slot (MSX address in AM)
 ao_a1:      equ 0xCEA2              ; 2: the entry's Amiga address
@@ -350,6 +455,11 @@ ao_xhi:     equ 0xCED2              ; 2
 ao_lo:      equ 0xCED4              ; its range in so_x
 ao_hi:      equ 0xCED5
 ao_cnt:     equ 0xCED6              ; entries in so_x
+tick_n:     equ 0xCEE0              ; 2: game ticks since the power-on (the test scripts' frames)
+g_event:    equ 0xCEE2              ; what the last tick's frame_end asks for (FE_..., 0)
+lv_fresh:   equ 0xCEE3              ; non-zero: the level's lists are copied into RAM at its start
+sec_n:      equ 0xCEE4              ; display frames into the timer's second
+lvl_bank:   equ 0xCEE5              ; the level's logic bank (logic_map maps it at A000h; kept by pl_init)
 ; enemy bullets ($F5BC, objects.asm ebullet_add)
 eb_x:       equ 0xCEB4              ; 2: D0
 eb_y:       equ 0xCEB6              ; 2: D1
@@ -383,11 +493,50 @@ ac_objlA:   equ 0xDD0E              ; 2: the level's object list's Amiga address
 ac_flash:   equ 0xDD10              ; 2: palette flash countdown ($F826)
 ac_flpal:   equ 0xDD13              ; the flash's palette (PAL_..., objects.asm)
 ac_ediv:    equ 0xDD15              ; explosions: frame divider ($F07E, a byte: kept at A ^ 1)
+ac_jmask:   equ 0xDD16              ; player_move's joystick mask ($B02B: 7Fh, 0 while the vehicle
+                                    ;   steers; the code's value at power-on, rc2.asm)
+ac_ridest:  equ 0xDD18              ; 2: RoboCop's state on the vehicle ($8C98: 2, or 3)
 AC_VARS_END: equ 0xDD80
 spawn_ram:  equ 0xDD80              ; DD80h-DFFFh: the level's spawn list ($B0E; 14-byte records,
                                     ; words little-endian), copied from the level bank at its start
 objl_ram:   equ 0xEE00              ; EE00h-F0FFh: the level's object list ($9C18; 12-byte records)
-; (E100h-EDFFh: pat_slot; F100h-F27Fh: bob_list; F280h-F37Fh: the stack)
+SP_RAM:     equ 0xE900              ; E900h-E9FFh: the level's special objects' records ($8B32)
+sp_ptrs:    equ 0xEA00              ; their list as MSX pointers (0 after the last; up to 16)
+lk_over:    equ 0xF168              ; LOCKSTEP test builds: frames that started late
+sat_ph:     equ 0xF169              ; sat_out: the tick of the VBLANK its SAT is for (its half)
+bo_dirty:   equ 0xF16A              ; 1: an object's identity changed (budget: bu_order again)
+pl_unl:     equ 0xF16B              ; plan: the slots of the version being built not loaded yet
+su_vrchk:   equ 0xF16C              ; spr_upload: 1 to stop at the vertical blank (split interrupt)
+spr_dsp:    equ 0xF16D              ; R#5 of the sprite set on screen (the interrupt's: sprites.asm iv_sat)
+smo_hi:     equ 0xF16E              ; sat_mux_out: the SAT's high address byte
+pq_rd:      equ 0xF1C3              ; 2: the published list's queue: where its upload goes on
+rs_held:    equ 0xF1C5              ; 2: rows_sync: the col_held of the set being prepared,
+rs_colhi:   equ 0xF1C7              ;   its colour table's high address byte (port 99h form)
+sp_cam_x:   equ 0xF1C8              ; 2: the camera the objects' screen places were taken against
+sp_cam_y:   equ 0xF1CA              ; 2:   (cam_follow)
+col_held_b: equ 0xF200              ; 32 x 2: col_held of sprite set B (col_held: set A's)
+mux_e0:     equ 0xF170              ; 33: the entries that alternate in SAT pair 0 (count, then 4 *
+mux_e1:     equ 0xF1A0              ; 33:   entry each; sat_build, sat_mux_out), in pair 1
+sb_mux:     equ 0xF1C1              ; 2: sat_build: the list being filled
+rc_hold:    equ 0xF191              ; budget: RoboCop's one-layer sprites the totals count (the
+rc_hold_t:  equ 0xF192              ;   largest of his recent versions), the tick it was set at
+pl_pack:    equ 0xF193              ; plan: 1 once the BOBs' runs were packed (sat_pack: once a plan)
+ft_line:    equ 0xF194              ; budget: the line something gives way on (FFh: the total),
+ft_best:    equ 0xF195              ;   the cheapest OR layer found so far (its gain),
+ft_bix:     equ 0xF196              ;   2: its object (0: none),
+ft_tier:    equ 0xF198              ;   the tier looked at (O_TIER),
+ft_bbit:    equ 0xF199              ;   the band found (its bit),
+ln_neg:     equ 0xF19A              ;   1: ln_obj / ln_add take sprites away from the lines
+sp_list:    equ 0xF1D0              ; 16: sat_pack: the objects whose runs it places, in order
+ht_box:     equ 0xF100              ; 10 x 10: hit_test's boxes (F100h-F163h, within a 256-byte page)
+ph_w:       equ 0xF164              ; 2: pl_hits: an enemy's width,
+ph_h:       equ 0xF166              ; 2:   height
+pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
+                                    ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
+; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
+; C069h, C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F19Bh-F19Fh, F1CCh-F1CFh, E0A3h-E0FFh, F1E0h-F1FFh, F240h-F27Fh:
+; free; EA60h-EC41h: bob_list,
+; cat_head, hz_ylo..; F280h-F37Fh: the stack)
 
 ; --- page 0 RAM (0000h-3FFFh: the main RAM once the BIOS is no longer needed, tiles.asm ram_page0)
 TC_SLOT:    equ 0x0000              ; 512 x 2: slot + 1 holding each tile (0: not in VRAM)
@@ -401,6 +550,7 @@ MP_ATR:     equ 0x0E00              ;   attributes,
 MP_NEXT:    equ 0x0F00              ;   next patch of the row (FFh: none)
 RD_Q:       equ 0x1000              ; RD_Q_SIZE x (row, column): cells to redraw
 RD_Q_SIZE:  equ 64
+RD_BURST:   equ 6                   ; changed cells drawn in a row between the HUD split and the VBLANK
 tc_hand:    equ 0x1080              ; 2: the tile cache's clock hand
 mp_free:    equ 0x1082              ; first free patch (FFh: none)
 mp_used:    equ 0x1083              ; patches in use

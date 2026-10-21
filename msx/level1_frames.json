@@ -1,0 +1,24 @@
+{
+  "_about": [
+    "Animation frames the user removed (2026-10-21, frame chooser build/review/quadros.html), for",
+    "tools/msxsprites.py --remove. rc: RoboCop 'state:step' -> the step shown instead (the step",
+    "before that stays; both sides; every aim; moved to the removed record's hot spot). bob: BOB",
+    "'addr:w:h' (hex) -> [the frame shown instead, dy, dx] (moved so that it shows where that frame",
+    "is drawn: the hostage's frames 5-7 are drawn 4 px higher, table $EE02), or null: a frame the",
+    "level never draws (the lift's two level-3 parts $5397C and $53BC0, special_lift $8EB0)."
+  ],
+  "rc": {
+    "6:1": "6:0", "7:1": "7:0",
+    "6:3": "6:2", "7:3": "7:2",
+    "6:4": "6:2", "7:4": "7:2",
+    "12:4": "12:3", "13:4": "13:3"
+  },
+  "bob": {
+    "49c24:48:28": ["498dc:48:28", 0, 0],
+    "4a2b4:48:28": ["49f6c:48:28", 0, 0],
+    "4a944:48:28": ["4a5fc:48:28", 4, 0],
+    "4afd4:48:28": ["4ac8c:48:28", 0, 0],
+    "5397c:32:29": null,
+    "53bc0:32:16": null
+  }
+}

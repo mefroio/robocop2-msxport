@@ -170,3 +170,102 @@ c53d 1 marker_mask msx=dd04
 169e 2 relocate_count
 1694 2 pickup_next
 a562 rec:wwwwww:59 objl msx=ee00
+# --- RoboCop's fire (update_player $ACEC): 8 shot / effect slots (type, direction, x, y)
+0d78 1 fire_latch
+1692 2 fx_next         next slot (& 14)
+16d6 1 w3_alt          weapon 3: the spread used next
+805c 2 weapon
+8030 2 ammo            BCD
+15f4 2 fx0_type
+1614 2 fx0_dir
+1634 2 fx0_x
+1654 2 fx0_y
+15f6 2 fx1_type
+1616 2 fx1_dir
+1636 2 fx1_x
+1656 2 fx1_y
+15f8 2 fx2_type
+1618 2 fx2_dir
+1638 2 fx2_x
+1658 2 fx2_y
+15fa 2 fx3_type
+161a 2 fx3_dir
+163a 2 fx3_x
+165a 2 fx3_y
+15fc 2 fx4_type
+161c 2 fx4_dir
+163c 2 fx4_x
+165c 2 fx4_y
+15fe 2 fx5_type
+161e 2 fx5_dir
+163e 2 fx5_x
+165e 2 fx5_y
+1600 2 fx6_type
+1620 2 fx6_dir
+1640 2 fx6_x
+1660 2 fx6_y
+1602 2 fx7_type
+1622 2 fx7_dir
+1642 2 fx7_x
+1662 2 fx7_y
+0b32 2 random          $BDCE (CIA timers; the bench's read FFh)
+16d5 1 machine_on      type 25 about
+# --- special objects ($8B32): records in the code area (MSX: SP_RAM), the vehicle, the lifts' table
+9018 rec:wwwwwwww:7 special msx=e900
+8c98 2 veh_state msx=dd18
+b02b 1 joy_mask msx=dd17
+f826 2 pal_flash msx=dd10
+f07e 1 expl_div msx=dd14
+0b3c 2 lift_left0
+0b3e 2 lift_left1
+0b40 2 lift_left2
+0b42 2 lift_left3
+0b44 2 lift_right0
+0b46 2 lift_right1
+0b48 2 lift_right2
+0b4a 2 lift_right3
+0b4c 2 lift_top0
+0b4e 2 lift_top1
+0b50 2 lift_top2
+0b52 2 lift_top3
+0b5c 2 lift_flag0
+0b5e 2 lift_flag1
+0b60 2 lift_flag2
+0b62 2 lift_flag3
+0d79 1 veh_low
+0d7a 2 veh_vx
+0d7c 4 veh_vy
+16d8 1 riding
+16a0 2 spark
+16a2 2 spark_x
+16a4 2 spark_y
+16aa 2 refill
+16c0 2 nukes_n
+1698 2 rev_ctrl
+# --- pickups ($F900): type bytes, x, y, vy
+0d80 1 pk0_type
+0d81 1 pk1_type
+0d82 1 pk2_type
+0d83 1 pk3_type
+0d84 2 pk0_x
+0d88 2 pk1_x
+0d8c 2 pk2_x
+0d90 2 pk3_x
+0d94 4 pk0_y
+0d98 4 pk1_y
+0d9c 4 pk2_y
+0da0 4 pk3_y
+0da4 4 pk0_vy
+0da8 4 pk1_vy
+0dac 4 pk2_vy
+0db0 4 pk3_vy
+# --- main_loop after the frame: death, lives, level end, timer
+8034 2 lives
+8050 2 level
+804c 1 time_out
+16cc 1 dying
+16bc 2 death_count
+16d0 1 level_done
+16c4 2 end_count
+16d7 1 sky_drop
+15f0 2 w15f0

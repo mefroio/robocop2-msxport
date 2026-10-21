@@ -47,9 +47,44 @@ vdp_cmd:
         otir
         ret
 
-; Sets the VRAM write address E:HL (E = bit 16) for port 98h.
+; vdp_cmd for a command drawing into lines the screen shows (HL = its 15 bytes, the VDP idle):
+; R#32-R#45 now, the start (R#46) only between the HUD split and the VBLANK interrupt
+; (split_armed = 0), tested and written with the interrupts off, so that it is done long before
+; the beam draws those lines again. Z when it started, NZ (nothing started) otherwise.
+vdp_cmd_q:
+        ld a,(split_armed)
+        or a
+        ret nz
+        di
+        ld a,32
+        out (VDP_CTRL),a
+        ld a,0x80+17
+        out (VDP_CTRL),a
+        ei
+        ld bc,14*256 + VDP_IND
+        otir                        ; R#32-R#45
+        ld b,(hl)                   ; (the command)
+        di
+        ld a,(split_armed)
+        or a
+        jr nz,vcq_late
+        ld a,b
+        out (VDP_CTRL),a
+        ld a,0x80+46
+        out (VDP_CTRL),a            ; R#46: it starts
+        ei
+        xor a
+        ret
+vcq_late:
+        ei
+        ret
+
+; Sets the VRAM write address E:HL (E = bit 16) for port 98h; the stream that follows ends
+; with vram_done (isr.asm: the VBLANK interrupt writes the SAT of a new list itself).
 vram_write:
         di
+        ld a,1
+        ld (vram_busy),a
         ld a,h
         rlca
         rlca
@@ -69,6 +104,24 @@ vram_write:
         ei
         ret
 
+; The end of a VRAM stream: the y's of alternating sprites the VBLANK interrupt left meanwhile
+; go now (sprites.asm sat_mux_out; still early in the frame: the streams are short). Keeps BC,
+; DE, HL.
+vram_done:
+        di
+        xor a
+        ld (vram_busy),a
+        ld a,(sat_due)
+        or a
+        jr z,vd_x
+        push bc
+        push hl
+        call sat_mux_out
+        pop hl
+        pop bc
+vd_x:   ei
+        ret
+
 ; Copies B*256 bytes from HL to port 98h (B = 0: 64 KiB is not supported).
 vram_blocks:
         ld c,VDP_DATA
@@ -78,6 +131,51 @@ vb_lp:  push bc
         pop bc
         djnz vb_lp
         ret
+
+; E = banks of 8 KiB: the tiles from the ROM -> VRAM from 10000h (8 at the start: 10000h-1FFFFh,
+; the HUD and the sprite tables follow; 4 after a SCREEN 8 picture: G7 interleaves its bytes
+; over both halves of VRAM, so a picture overwrites 10000h-16A00h).
+tiles_upload:
+        push de
+        ld e,1
+        ld hl,0
+        call vram_write
+        pop de
+        ld d,BANK_TILES
+ut_bank:
+        ld a,d
+        call bank_8000
+        ld hl,0x8000
+        ld b,32
+        push de
+        call vram_blocks
+        pop de
+        inc d
+        dec e
+        jr nz,ut_bank
+        jp vram_done
+
+; The HUD's empty panel: page 3 from line HUD_VRAM_LINE (after the tiles, which cover pages 2-3);
+; also at each new game (hud.asm hud_init: the last game's digits and message go). Keeps the
+; 8000h window.
+hud_upload:
+        ld a,(act_8000)
+        push af
+        ld e,1
+        ld hl,VRAM_HUD & 0xFFFF
+        call vram_write
+        ld a,HUD_IMG_BANK
+        call bank_8000
+        ld hl,0x8000
+        ld b,HUD_LINES/2            ; 128 bytes per line: 256 per pair of lines
+        call vram_blocks
+        if HUD_LINES & 1
+        ld bc,128*256 + VDP_DATA
+        otir                        ; the odd last line
+        endif
+        call vram_done
+        pop af
+        jp bank_8000
 
 ; SCREEN 5, 212 lines, VDP ID, IM 2, palette, tiles (pages 2-3), HUD and sprite tables.
 ; Returns with the display off and no VDP interrupt enabled.
@@ -120,36 +218,9 @@ vdp_setup:
         ld hl,palette
         ld bc,32*256 + VDP_PAL
         otir
-        ; tiles: 64 KiB from the ROM -> VRAM 10000h-1FFFFh
-        ld e,1
-        ld hl,0
-        call vram_write
-        ld d,BANK_TILES
         ld e,8
-ut_bank:
-        ld a,d
-        call bank_8000
-        ld hl,0x8000
-        ld b,32
-        push de
-        call vram_blocks
-        pop de
-        inc d
-        dec e
-        jr nz,ut_bank
-        ; HUD: page 3 from line HUD_VRAM_LINE (after the tiles, which cover pages 2-3)
-        ld e,1
-        ld hl,VRAM_HUD & 0xFFFF
-        call vram_write
-        ld a,HUD_IMG_BANK
-        call bank_8000
-        ld hl,0x8000
-        ld b,HUD_LINES/2            ; 128 bytes per line: 256 per pair of lines
-        call vram_blocks
-        if HUD_LINES & 1
-        ld bc,128*256 + VDP_DATA
-        otir                        ; the odd last line
-        endif
+        call tiles_upload
+        call hud_upload
         ; sprite tables: both SATs end at sprite 0 (Y = 216)
         ld e,1
         ld hl,(SPR_COL_A + 0x200) & 0xFFFF
@@ -161,6 +232,7 @@ ut_bank:
         call vram_write
         ld a,216
         out (VDP_DATA),a
+        call vram_done
         ld a,R5_SET_A
         ld (spr_set),a
         ld b,5

@@ -6,6 +6,20 @@
 
 ; draw_tile: A = row, E = column (world). Ignores tiles outside the map.
 draw_tile:
+        call dt_prep
+        ret nc
+        call vdp_wait
+        ld hl,cmdbuf
+        call vdp_cmd
+dt_count:
+        ld hl,(tiles_drawn)
+        inc hl
+        ld (tiles_drawn),hl
+        ret
+
+; A = row, E = column (world) -> C with cmdbuf set for the tile's copy into the ring, NC outside
+; the map. Keeps DE.
+dt_prep:
         cp MAP_ROWS
         ret nc
         ld c,a
@@ -14,6 +28,7 @@ draw_tile:
         ret nc
         ld a,c
         call tile_src
+        ld a,c                      ; (tile_src keeps BC, not A)
         add a,a
         add a,a
         add a,a
@@ -37,12 +52,7 @@ draw_tile:
         ld hl,16
         ld (cmdbuf+8),hl
         ld (cmdbuf+10),hl
-        call vdp_wait
-        ld hl,cmdbuf
-        call vdp_cmd
-        ld hl,(tiles_drawn)
-        inc hl
-        ld (tiles_drawn),hl
+        scf
         ret
 
 ; Fills the initial ring and clears the queues.
@@ -90,8 +100,14 @@ si_col: push bc
         jp scroll_publish
 
 ; Once per frame: one column/row step at a time (the camera waits at the cell edge while
-; the previous one is pending), one tile of work, then the registers of the next frame.
+; the previous one is pending), one tile of work, then the registers of the next frame. It works
+; toward the view the game wants (v_x, v_y; cam_x, cam_y are what it shows), also on frames
+; without a tick (the cadence holds the ticks while the view shown lags far behind).
 scroll_update:
+        ld hl,(v_x)
+        ld (cam_x),hl
+        ld hl,(v_y)
+        ld (cam_y),hl
         call cam_cells              ; B = cx, C = cy
         ld a,(prev_cx)
         cp b
@@ -184,11 +200,18 @@ su_vset:
 su_work:
         jp scroll_work
 
-; Draws one queued tile if the VDP is idle (column first, then row).
+; Draws one queued tile if the VDP is idle (column first, then row); between the HUD split and
+; the VBLANK the cells the game changed come first.
 scroll_work:
         call vdp_busy
         ret nz
-        ld a,(q_col)
+        ld a,(split_armed)
+        or a
+        jr nz,sw_cq
+        call sw_redraw
+        call vdp_busy
+        ret nz
+sw_cq:  ld a,(q_col)
         cp 0xFF
         jr z,sw_row
         ld e,a
@@ -222,27 +245,63 @@ sw_row: ld a,(q_row)
         ld a,b
         jp draw_tile
 
-; A cell the game changed (tiles.asm rd_queue), redrawn when it is in the kept area.
+; The cells the game changed (tiles.asm rd_queue) that are in the kept area: between the HUD split
+; and the VBLANK up to RD_BURST in a row (vdp_cmd_q: started where the beam is off the play area,
+; each waiting for the one before); at other times the oldest one at once (the ring is always on
+; screen: a cell may then show half drawn for one picture, but a change never waits).
 sw_redraw:
+        ld b,RD_BURST
+swr_lp: push bc
+        call swr_one
+        pop bc
+        ret nz                      ; (no more now)
+        djnz swr_lp
+        ret
+
+; -> Z when the oldest request was drawn (or dropped: out of the kept area or the map), NZ when
+; there is none or it is not the time.
+swr_one:
         call rd_peek
-        ret z
-        call rd_pop
+        jr z,swr_none
         ld a,(prev_cy)
         dec a
         ld b,a
         ld a,d
         sub b
         cp VIEW_ROWS
-        ret nc
+        jr nc,swr_drop
         ld a,(prev_cx)
         dec a
         ld b,a
         ld a,e
         sub b
         cp 19
-        ret nc
+        jr nc,swr_drop
+        ld a,(split_armed)
+        or a
+        jr nz,swr_late
         ld a,d
-        jp draw_tile
+        call dt_prep
+        jr nc,swr_drop
+        call vdp_wait               ; (the one before)
+        ld hl,cmdbuf
+        call vdp_cmd_q
+        ret nz                      ; (the time passed: again later)
+        call rd_pop
+        call dt_count
+        xor a
+        ret
+swr_drop:
+        call rd_pop
+        xor a
+        ret
+swr_late:
+        call rd_pop                 ; (at other times one at once: a change never waits)
+        ld a,d
+        call draw_tile
+swr_none:
+        or 1
+        ret
 
 ; Registers of the next frame: R#26 = ((X+7)>>3) & 63, R#27 = (-X) & 7 with X = cam_x - 8, so
 ; that the camera sits at screen x = 8 as on the V9938 (MSK hides x 0-7); R#23 = cam_y,
