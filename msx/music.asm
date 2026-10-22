@@ -11,7 +11,8 @@
 ;   OPLL:          the melody on OPLL channels 0-2, the drums on its rhythm section;
 ;   SCC and OPLL:  the melody on the SCC (the samples' own waveforms), the drums on the OPLL;
 ;   neither:       mus_mode 0: the PSG player's title (sndplay.asm).
-; The in-game sound effects stay on the PSG player in every mode.
+; In game, with an SCC, the sound effects play there too (their tonal part; their noise on the
+; PSG: fx_start below); without one, on the PSG player.
 ;
 ; RoboCop's speech keeps its place in the music here (tick VOICE_TICK; the user's choice for the
 ; SCC): the tick raises mus_speak and front.asm front_fire plays it (vm_music) as PSG PCM: for its
@@ -75,6 +76,21 @@ mus_init:
         ld (mus_on),a
         ld (mus_speak),a
         ld (mus_dc),a
+        ld (snd_last),a
+        ld (fx_act),a
+        ld (fx_son),a
+        call fx_wnone
+        ld hl,mus_v + MV_LEFT       ; every voice idle (the music's, the effects' PSG ones)
+        ld de,MV_SIZE
+        ld b,4
+mui_v:  ld (hl),a
+        add hl,de
+        djnz mui_v
+        ld hl,fx_pv + MV_LEFT
+        ld b,3
+mui_p:  ld (hl),a
+        add hl,de
+        djnz mui_p
         if NO_SCC
         ld b,0
         else
@@ -247,6 +263,15 @@ muq_v:  ld (ix+MV_LEFT),a
         ld (ix+MV_NEW),a
         add ix,de
         djnz muq_v
+        ld ix,fx_pv                 ; (the effects' PSG voices: their sound goes with snd_stop's)
+        ld b,3
+muq_e:  ld (ix+MV_LEFT),a
+        ld (ix+MV_NEW),a
+        add ix,de
+        djnz muq_e
+        ld (fx_act),a
+        ld (fx_son),a
+        call fx_wnone               ; (the music may load the channels' waveforms)
         ld a,(mus_mode)
         rra
         jr nc,muq_f
@@ -389,13 +414,17 @@ ma_c:   ld a,(act_8000)             ; (the records' banks)
         jp nz,mo_rhy
         jp mo_psg
 
-; IX = a voice: its next record (at its stream's end the stream's start again: voice 0 then
-; begins the tune's tick count again), MV_NEW for what it gives. Its bank stays at 8000h.
+; IX = a voice of the music: its next record (at its stream's end the stream's start again:
+; voice 0 then begins the tune's tick count again), MV_NEW for what it gives. Its bank stays at
+; 8000h.
 mv_rec: ld a,(ix+MV_BANK)
         ld (BANK_8000),a
         ld l,(ix+MV_PTR)
         ld h,(ix+MV_PTR+1)
-mvr_rd: call mr_byte
+mvr_rd: ld a,(hl)                   ; the duration (mr_byte inline: every record reads it)
+        inc hl
+        bit 5,h
+        call nz,mr_next
         or a
         jr nz,mvr_go
         ld a,(ix+MV_SBANK)
@@ -412,8 +441,12 @@ mvr_rd: call mr_byte
         ld (mus_tick),de
         jr mvr_rd
 mvr_go: ld (ix+MV_LEFT),a
-        call mr_byte
+        ld a,(hl)                   ; the ctl (D: as read, E: its field bits)
+        inc hl
+        bit 5,h
+        call nz,mr_next
         ld (ix+MV_CTL),a
+        ld d,a
         ld e,a
         ld a,(ix+MV_KIND)
         cp MVK_RHY
@@ -435,7 +468,7 @@ mvr_b:  bit 5,e
 mvr_x:  ld a,e
         and 0x30
         or 1
-        bit 7,(ix+MV_CTL)
+        bit 7,d
         jr z,mvr_o
         or 0x80
 mvr_o:  ld (ix+MV_NEW),a
@@ -459,6 +492,7 @@ mr_byte:
         inc hl
         bit 5,h
         ret z
+mr_next:
         ld h,0x80
         push af
         ld a,(ix+MV_BANK)
@@ -470,38 +504,34 @@ mr_byte:
 
 ; ----- the chips -----
 
-; Voices 0-2 on the SCC's channels 1-3: the waveform (scc_waves through scc_wb: the SCC may be
-; in another slot), the period and the volume of each record given this tick.
+; Voices 0-2 on the SCC's channels 1-3: each record given this tick (mo_sc1).
 mo_scc: ld ix,mus_v
         ld b,0
-mos_lp: ld c,(ix+MV_NEW)
+mos_lp: call mo_sc1
+        ld de,MV_SIZE
+        add ix,de
+        inc b
+        ld a,b
+        cp 3
+        jr nz,mos_lp
+        ret
+
+; IX = a voice on SCC channel B (0-3): the waveform (mo_wv), the period and the volume its
+; record gave this tick. Keeps B, IX.
+mo_sc1: ld c,(ix+MV_NEW)
         ld a,c
         or a
-        jr z,mos_n
+        ret z
         push bc
         bit 5,c
         jr z,mos_p
-        ld l,(ix+MV_AUX)            ; the waveform: 32 bytes to 9800h + 32 x channel
-        ld h,0
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,scc_waves
-        add hl,de
-        ld de,scc_wb
-        ld bc,32
-        ldir
-        pop bc
-        push bc
         ld a,b
         rrca
         rrca
         rrca
         ld e,a
-        ld d,SCC_WAVE / 256
-        call scc_wv
+        ld d,SCC_WAVE / 256         ; DE = 9800h + 32 x channel
+        call mo_wv
 mos_p:  pop bc
         push bc
         bit 4,c
@@ -526,13 +556,40 @@ mos_v:  pop bc
         and 15
         call scc_wr
         pop bc
-mos_n:  ld de,MV_SIZE
-        add ix,de
-        inc b
-        ld a,b
-        cp 3
-        jr nz,mos_lp
         ret
+
+; IX = a voice, DE = its SCC channel's waveform registers: waveform MV_AUX there, from the title
+; music's table (scc_waves) or, while the music is off, the effects' (fx_waves; both here, at
+; A000h): straight into the cartridge's own SCC, through scc_wb into another slot's (sound.asm
+; scc_wv: page 2 is not this bank meanwhile).
+mo_wv:  ld l,(ix+MV_AUX)
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld bc,scc_waves
+        ld a,(mus_on)
+        or a
+        jr nz,mov_t
+        ld bc,fx_waves
+mov_t:  add hl,bc
+        ld bc,32
+        ld a,(scc_pg2)
+        or a
+        jr nz,mov_x
+        ld a,SCC_REGS
+        ld (BANK_8000),a
+        ldir
+        ld a,(act_8000)
+        ld (BANK_8000),a
+        ret
+mov_x:  push de
+        ld de,scc_wb
+        ldir
+        pop de
+        jp scc_wv
 
 ; Voices 0-2 on the OPLL's channels 0-2: for each record given this tick, the key off first for
 ; a new note, the F-number, the instrument and volume, then the block, F-number bit 8, sustain
@@ -618,21 +675,33 @@ mor_k:  ld a,0x0E
         ld a,0x0E
         jp opll_w
 
-; IX = the drums' voice on PSG voice C: its tone period, volume, noise period (with noise on)
-; and the mixer's bits 2 and 5 (sndplay.asm sq_out's way: snd_mix, port A input, port B output).
-mo_psg: ld a,(ix+MV_NEW)
+; IX = the drums' voice: on PSG voice C (mo_pv).
+mo_psg: ld a,2
+
+; IX = a voice in sndplay.asm's PSG format, A = its PSG voice (0-2): for a record given this
+; tick, its tone period (with tone on), volume, noise period (with noise on) and the mixer's
+; tone and noise bits (sndplay.asm sq_out's way: snd_mix, port A input, port B output).
+mo_pv:  ld e,a
+        ld a,(ix+MV_NEW)
         or a
         ret z
-        ld c,(ix+MV_CTL)
-        ld a,4
+; E = the PSG voice: IX's record to it (mo_pv's output).
+mo_pw:  ld c,(ix+MV_CTL)
+        bit 4,c
+        jr z,mop_v
+        ld a,e
+        add a,a
+        ld d,a
         out (PSG_ADDR),a
         ld a,(ix+MV_PER)
         out (PSG_DATA),a
-        ld a,5
+        ld a,d
+        inc a
         out (PSG_ADDR),a
         ld a,(ix+MV_PER+1)
         out (PSG_DATA),a
-        ld a,10
+mop_v:  ld a,e
+        add a,8
         out (PSG_ADDR),a
         ld a,c
         and 15
@@ -643,16 +712,28 @@ mo_psg: ld a,(ix+MV_NEW)
         out (PSG_ADDR),a
         ld a,(ix+MV_AUX)
         out (PSG_DATA),a
-mop_m:  ld a,(snd_mix)
-        or 0x24
+mop_m:  ld a,1                      ; D = the voice's tone bit, B its noise bit
+        ld b,e
+        inc b
+        jr mop_s
+mop_l:  add a,a
+mop_s:  djnz mop_l
+        ld d,a
+        add a,a
+        add a,a
+        add a,a
+        ld b,a
+        ld a,(snd_mix)
+        or d
+        or b
         and 0x3F
         or 0x80
         bit 4,c
         jr z,mop_t
-        and 0xFB                    ; (tone on)
+        xor d                       ; (tone on)
 mop_t:  bit 5,c
         jr z,mop_w
-        and 0xDF                    ; (noise on)
+        xor b                       ; (noise on)
 mop_w:  ld (snd_mix),a
         ld e,a
         ld a,7
@@ -660,6 +741,491 @@ mop_w:  ld (snd_mix),a
         ld a,e
         out (PSG_DATA),a
         ret
+
+; ----- the in-game sound effects with an SCC -----
+
+; The effects (tools/msxsccfx.py sccfx.bin, in bank SCCFX_BANK: tools/mkrom.py checks that its
+; streams fit the bank; its waveforms here, fx_waves: tools/mkrom.py music.inc): per effect its
+; Amiga channel, a stream for its tonal part on SCC channel 0-3 (that channel: a new effect there
+; replaces the one playing, as on the Amiga) and one for its noise part on a PSG voice (channels
+; 0-2: A-C; 3: an idle voice, C first, else the one nearest its record's end), in the music's
+; formats, one-shot. sndplay.asm hands them over (sq_sfx: sound.asm fx_go) and, while one plays
+; (fx_act), ticks them with its own ticks (fx_tk); the title music, while it plays, owns the
+; voices. Their records have readers of their own (fxr_sc, fxr_ps: no bank crossing, the fields
+; straight to the chip): measured in openMSX on the coverage drive, the music's reader and
+; output made a tick cost 2300 T-states on average, these 1560.
+
+; A = an effect (1..SND_SFX_N), in the VBLANK interrupt: its parts from their first records.
+; While the Amiga's channel 3 plays an effect, a lower one there than the last one started is
+; not played ($1822C, as sndplay.asm does).
+fx_start:
+        ld c,a
+        ld a,(mus_on)
+        or a
+        ret nz
+        ld a,SCCFX_BANK
+        ld (BANK_8000),a
+        ld a,c
+        dec a
+        ld l,a
+        ld h,0
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        or a
+        sbc hl,de
+        ld de,0x8004
+        add hl,de                   ; its entry (7 (n - 1) on): the channel, the two streams
+        ld b,(hl)
+        inc hl
+        ld a,b
+        cp 3
+        jr nz,fxs_ok
+        push hl
+        call fx_busy3
+        pop hl
+        jr z,fxs_ok
+        ld a,(snd_last)
+        ld d,a
+        ld a,c
+        cp d
+        jr c,fxs_x
+fxs_ok: ld a,c
+        ld (snd_last),a
+        push hl
+        ld ix,mus_v                 ; the tonal part: SCC voice B
+        ld de,MV_SIZE
+        ld a,b
+        or a
+        jr z,fxs_v
+fxs_l:  add ix,de
+        dec a
+        jr nz,fxs_l
+fxs_v:  pop hl
+        push bc
+        call fx_ofs
+        push hl
+        jr z,fxs_m
+        ld (ix+MV_PTR),e
+        ld (ix+MV_PTR+1),d
+        call fxr_sc                 ; its first record to the SCC
+        jr fxs_n
+fxs_m:  xor a                       ; (none: the channel silent)
+        ld (ix+MV_LEFT),a
+        ld c,a
+        call fxr_so
+fxs_n:  pop hl
+        pop bc
+        ld a,SCCFX_BANK             ; the noise part
+        ld (BANK_8000),a
+        call fx_ofs
+        push af
+        push de
+        call fx_pown
+        ld a,b
+        cp 3
+        call nc,fx_pfree            ; (channel 3: a voice free, else the nearest its end)
+        ld ix,fx_pv
+        ld de,MV_SIZE
+        ld (fx_tmp),a
+        or a
+        jr z,fxs_p
+fxs_q:  add ix,de
+        dec a
+        jr nz,fxs_q
+fxs_p:  pop de
+        pop af
+        jr z,fxs_x
+        ld a,(fx_tmp)
+        ld (ix+MV_RV),a
+        ld (ix+MV_RV+1),b
+        ld (ix+MV_PTR),e
+        ld (ix+MV_PTR+1),d
+        ld b,a
+        call fxr_ps                 ; its first record to its voice
+fxs_x:  ld a,1
+        ld (fx_act),a               ; (sndplay.asm ticks the engine from now on)
+        ld hl,fx_son
+        cp (hl)
+        jr z,fxs_y
+        ld (hl),a
+        ld hl,SCC_ON                ; (channels 0-3 on, once after a stop)
+        ld a,0x0F
+        call scc_wr
+fxs_y:  ld a,(act_8000)
+        ld (BANK_8000),a
+        ret
+
+; No effect waveform known in the SCC's channels (fx_wc FFh). A = 0 after; keeps BC, DE.
+fx_wnone:
+        ld hl,fx_wc
+        ld a,0xFF
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        xor a
+        ret
+
+; IX = a voice: silent from now on (its outputs write volume 0).
+fx_mute:
+        xor a
+        ld (ix+MV_LEFT),a
+        ld (ix+MV_CTL),a
+        inc a
+        ld (ix+MV_NEW),a
+        ret
+
+; HL = a 24-bit offset in sccfx.bin's header (that bank at 8000h) -> HL past it; Z when it is 0,
+; else NZ, A = the bank of that place, DE = its address in the 8000h window. Keeps BC.
+fx_ofs: ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld a,(hl)
+        inc hl
+        push hl
+        ld h,a
+        or d
+        or e
+        jr z,fxo_x
+        ld a,d
+        rlca
+        rlca
+        rlca
+        and 7
+        ld l,a
+        ld a,h
+        add a,a
+        add a,a
+        add a,a
+        or l
+        add a,SCCFX_BANK
+        ld l,a
+        ld a,d
+        and 0x1F
+        or 0x80
+        ld d,a
+        ld a,l
+        or a
+fxo_x:  pop hl
+        ret
+
+; B = an Amiga channel: the PSG voices its last effect played still sounding, silent. Keeps B.
+fx_pown:
+        ld ix,fx_pv
+        ld c,0
+fxp_l:  ld a,(ix+MV_LEFT)
+        or a
+        jr z,fxp_n
+        ld a,(ix+MV_RV+1)
+        cp b
+        jr nz,fxp_n
+        call fx_mute
+        push bc
+        ld a,c
+        call mo_pv
+        pop bc
+fxp_n:  ld de,MV_SIZE
+        add ix,de
+        inc c
+        ld a,c
+        cp 3
+        jr nz,fxp_l
+        ret
+
+; A = a PSG voice for channel 3's noise: an idle one (C first), else the one nearest its record's
+; end. Keeps B.
+fx_pfree:
+        ld ix,fx_pv + 2 * MV_SIZE
+        ld hl,0xFF00
+        ld c,2
+fxf_l:  ld a,(ix+MV_LEFT)
+        cp h
+        jr nc,fxf_n
+        ld h,a
+        ld l,c
+fxf_n:  ld de,0 - MV_SIZE
+        add ix,de
+        dec c
+        jp p,fxf_l
+        ld a,l
+        ret
+
+; NZ when the Amiga's channel 3 plays an effect (SCC voice 3, or a PSG voice it holds). Keeps
+; BC.
+fx_busy3:
+        ld a,(mus_v + 3 * MV_SIZE + MV_LEFT)
+        or a
+        ret nz
+        push bc
+        ld ix,fx_pv
+        ld b,3
+fxb_l:  ld a,(ix+MV_LEFT)
+        or a
+        jr z,fxb_n
+        ld a,(ix+MV_RV+1)
+        cp 3
+        jr z,fxb_y
+fxb_n:  ld de,MV_SIZE
+        add ix,de
+        djnz fxb_l
+        pop bc
+        xor a
+        ret
+fxb_y:  pop bc
+        or a                        ; (A = 3: NZ)
+        ret
+
+; From sndplay.asm's tick (fx_tk), unless the title music plays: each playing voice advances
+; (MV_LEFT counted down in place); at the end of its record the next one (or silence at its
+; stream's end) goes to its chip at once (fxr_sc, fxr_ps). fx_act 0 when none plays any more.
+fx_tick:
+        ld a,(mus_on)
+        or a
+        ret nz
+        ld a,SCCFX_BANK             ; (the streams: one bank, tools/mkrom.py checks it)
+        ld (BANK_8000),a
+        ld hl,mus_v + 0 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_0
+        dec (hl)
+        jr nz,fxt_0
+        ld ix,mus_v + 0 * MV_SIZE
+        ld b,0
+        call fxr_sc
+fxt_0:
+        ld hl,mus_v + 1 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_1
+        dec (hl)
+        jr nz,fxt_1
+        ld ix,mus_v + 1 * MV_SIZE
+        ld b,1
+        call fxr_sc
+fxt_1:
+        ld hl,mus_v + 2 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_2
+        dec (hl)
+        jr nz,fxt_2
+        ld ix,mus_v + 2 * MV_SIZE
+        ld b,2
+        call fxr_sc
+fxt_2:
+        ld hl,mus_v + 3 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_3
+        dec (hl)
+        jr nz,fxt_3
+        ld ix,mus_v + 3 * MV_SIZE
+        ld b,3
+        call fxr_sc
+fxt_3:
+        ld hl,fx_pv + 0 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_4
+        dec (hl)
+        jr nz,fxt_4
+        ld ix,fx_pv + 0 * MV_SIZE
+        ld b,0
+        call fxr_ps
+fxt_4:
+        ld hl,fx_pv + 1 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_5
+        dec (hl)
+        jr nz,fxt_5
+        ld ix,fx_pv + 1 * MV_SIZE
+        ld b,1
+        call fxr_ps
+fxt_5:
+        ld hl,fx_pv + 2 * MV_SIZE + MV_LEFT
+        ld a,(hl)
+        or a
+        jr z,fxt_6
+        dec (hl)
+        jr nz,fxt_6
+        ld ix,fx_pv + 2 * MV_SIZE
+        ld b,2
+        call fxr_ps
+fxt_6:
+        ld a,(act_8000)
+        ld (BANK_8000),a
+        ld hl,mus_v + MV_LEFT       ; any voice still playing? (else fx_act 0: no more ticks;
+        ld a,(hl)                   ; every voice's MV_LEFT in page C2h)
+        ld l,(mus_v + 1 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld l,(mus_v + 2 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld l,(mus_v + 3 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld l,(fx_pv + 0 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld l,(fx_pv + 1 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld l,(fx_pv + 2 * MV_SIZE + MV_LEFT) & 0xFF
+        or (hl)
+        ld (fx_act),a
+        ret
+
+; IX = an effect's voice on SCC channel B whose record ended, its stream's bank at 8000h: the
+; next record (at the stream's end silence: MV_LEFT 0) to the SCC at once. Keeps B, IX.
+fxr_sc: ld l,(ix+MV_PTR)
+        ld h,(ix+MV_PTR+1)
+        ld a,(hl)                   ; the duration
+        or a
+        jr z,fxr_se
+        ld (ix+MV_LEFT),a
+        inc hl
+        ld c,(hl)                   ; the ctl
+        inc hl
+        bit 4,c
+        jr z,fxr_s1
+        ld e,(hl)                   ; DE = the period
+        inc hl
+        ld d,(hl)
+        inc hl
+fxr_s1: bit 5,c
+        jr z,fxr_s2
+        ld a,(hl)                   ; the waveform
+        inc hl
+        ld (ix+MV_AUX),a
+fxr_s2: ld (ix+MV_PTR),l
+        ld (ix+MV_PTR+1),h
+        jr fxr_so
+fxr_se: ld (ix+MV_LEFT),a           ; (the stream's end: volume 0)
+        ld c,a
+
+; IX = an effect's voice on SCC channel B, C = its record's ctl, DE its period (when the ctl's
+; bit 4 gives one), MV_AUX its waveform (bit 5; not loaded again when the channel has it,
+; fx_wc): to the SCC. The cartridge's own: its registers mapped for the writes (SCCFX_BANK at
+; 8000h again after); another slot's: mo_sc1's way. Keeps B, IX.
+fxr_so: ld a,(scc_pg2)
+        or a
+        jr nz,fxr_sx
+        ld a,SCC_REGS
+        ld (BANK_8000),a
+        bit 5,c
+        jr z,fxr_s3
+        call fxr_wc
+        call nz,fxr_ld
+fxr_s3: bit 4,c
+        jr z,fxr_s4
+        ld a,b
+        add a,a
+        add a,SCC_FREQ & 0xFF
+        ld l,a
+        ld h,SCC_FREQ / 256
+        ld (hl),e
+        inc hl
+        ld (hl),d
+fxr_s4: ld a,b
+        add a,SCC_VOL & 0xFF
+        ld l,a
+        ld h,SCC_VOL / 256
+        ld a,c
+        and 15
+        ld (hl),a
+        ld a,SCCFX_BANK
+        ld (BANK_8000),a
+        ret
+fxr_sx: ld (ix+MV_CTL),c            ; (another slot's SCC)
+        bit 4,c
+        jr z,fxr_x1
+        ld (ix+MV_PER),e
+        ld (ix+MV_PER+1),d
+fxr_x1: ld a,c
+        and 0x30
+        or 1
+        ld (ix+MV_NEW),a
+        bit 5,c
+        jp z,mo_sc1
+        call fxr_wc
+        jp nz,mo_sc1
+        res 5,(ix+MV_NEW)           ; (that waveform is there already)
+        jp mo_sc1
+
+; IX = an effect's voice on SCC channel B, MV_AUX a waveform -> Z when the channel has it
+; already, else NZ (fx_wc notes it). Keeps BC, DE.
+fxr_wc: ld hl,fx_wc
+        ld a,l
+        add a,b
+        ld l,a
+        ld a,(ix+MV_AUX)
+        cp (hl)
+        ld (hl),a
+        ret
+
+; IX = an effect's voice on SCC channel B, the SCC's registers at 9800h: waveform MV_AUX
+; (fx_waves, here at A000h) into the channel. Keeps BC, DE.
+fxr_ld: push bc
+        push de
+        ld a,b
+        rrca
+        rrca
+        rrca
+        ld e,a
+        ld d,SCC_WAVE / 256         ; DE = 9800h + 32 x channel
+        ld l,(ix+MV_AUX)
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld bc,fx_waves
+        add hl,bc
+        ld bc,32
+        ldir
+        pop de
+        pop bc
+        ret
+
+; IX = an effect's PSG voice B whose record ended, its stream's bank at 8000h: the next record
+; (at the stream's end silence: MV_LEFT 0) to the PSG at once (mo_pv's output).
+fxr_ps: ld l,(ix+MV_PTR)
+        ld h,(ix+MV_PTR+1)
+        ld a,(hl)                   ; the duration
+        or a
+        jr z,fxr_pe
+        ld (ix+MV_LEFT),a
+        inc hl
+        ld a,(hl)                   ; the ctl
+        inc hl
+        ld (ix+MV_CTL),a
+        bit 6,a
+        jr z,fxr_p1
+        ld c,(hl)                   ; the tone period
+        inc hl
+        ld (ix+MV_PER),c
+        ld c,(hl)
+        inc hl
+        ld (ix+MV_PER+1),c
+fxr_p1: bit 7,a
+        jr z,fxr_p2
+        ld c,(hl)                   ; the noise period
+        inc hl
+        ld (ix+MV_AUX),c
+fxr_p2: ld (ix+MV_PTR),l
+        ld (ix+MV_PTR+1),h
+        ld e,b
+        jp mo_pw
+fxr_pe: ld (ix+MV_LEFT),a           ; (the stream's end: volume 0)
+        ld (ix+MV_CTL),a
+        ld e,b
+        jp mo_pw
 
 ; ----- RoboCop's speech -----
 

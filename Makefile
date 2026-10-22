@@ -68,6 +68,7 @@ msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)
 	$(VPYTHON) -I tools/msxvoice.py $(BUILD)/msx
 	$(VPYTHON) -I tools/msxscc.py --out $(BUILD)/msx
 	$(VPYTHON) -I tools/msxfm.py --out $(BUILD)/msx
+	$(VPYTHON) -I tools/msxsccfx.py --out $(BUILD)/msx
 
 rom: msx
 	$(PYTHON) -I tools/mkrom.py $(BUILD)/msx/level1 $(BUILD)/msx/rc2.rom $(ROMOPTS)

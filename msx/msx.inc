@@ -78,7 +78,12 @@ vm_hit:     equ 0xC208              ; vm_play: 1 when fire ended the speech
 mus_dc:     equ 0xC209              ; 1: PSG voices A and B hold the speech PCM's middle level (music.asm)
 scc_pg2:    equ 0xC20A              ; the SCC's slot in A8h's bits 4-5 when another cartridge has it (0: ours; sound.asm)
 scc_a8:     equ 0xC20B              ; A8h while page 2 shows that SCC (sound.asm scc_open)
+fx_tmp:     equ 0xC20C              ; music.asm fx_start: the PSG voice of the effect's noise part
+fx_act:     equ 0xC20D              ; music.asm: 1 while an effect plays on the SCC engine (sndplay.asm ticks it)
+fx_son:     equ 0xC20E              ; music.asm: 1 once the SCC's channels 0-3 are on for the effects
+fx_wc:      equ 0xC2A0              ; 4: music.asm fx_osc: the effect waveform each SCC channel 0-3 holds (FFh: none)
 scc_wb:     equ 0xC250              ; 32: a waveform on its way to the SCC (music.asm mo_scc)
+fx_pv:      equ 0xC270              ; 3 x MV_SIZE (16): the effects' PSG voices with an SCC (music.asm fx_start)
 mus_v:      equ 0xC210              ; 4 x MV_SIZE (16): the voices (3 melodic, the drums)
 
 vdp_id:     equ 0xC000              ; 0 = V9938, 2 = V9958

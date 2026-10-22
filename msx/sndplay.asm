@@ -99,7 +99,10 @@ sqq_x:  ld a,(RG9SAV)
         jr c,sqf_t
         ld (hl),0
         ret
-sqf_t:  ld ix,snd_v
+sqf_t:  ld a,(mus_mode)             ; (an SCC: the effects play there, these voices stay idle)
+        rra
+        jr c,sqf_x
+        ld ix,snd_v
         ld b,0
 sqf_v:  ld a,(ix+SV_LEFT)
         or a
@@ -112,7 +115,10 @@ sqf_n:  ld de,SV_SIZE
         ld a,b
         cp 3
         jr nz,sqf_v
-        ret
+sqf_x:  ld a,(fx_act)               ; (effects playing on the SCC: they tick with these ticks)
+        or a
+        ret z
+        jp fx_tk
 
 ; A = an effect (1..SND_SFX_N): it starts.
 sq_sfx: or a
@@ -120,6 +126,10 @@ sq_sfx: or a
         cp SND_SFX_N + 1
         ret nc
         ld c,a
+        ld a,(mus_mode)             ; an SCC: the effect plays there and its noise on the PSG
+        rra                         ; (music.asm fx_start)
+        ld a,c
+        jp c,fx_go
         ld ix,snd_v                 ; the Amiga's channel 3 busy with an effect?
         ld b,3
 sqs_c3: ld a,(ix+SV_CH)

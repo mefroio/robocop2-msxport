@@ -756,6 +756,49 @@ which as sprites were striped, cut or left out.
   2.1 dB for the PSG title on the same machine. The OPLL's drums end sooner than the Amiga's
   samples (a snare's tail, 20 ticks on, is silent: the rhythm section's envelopes).
 
+### The in-game sound effects on the SCC (`msx/music.asm` `fx_...`, 2026-10-22)
+
+- **Why** (the user: "agora com suporte a SCC+ não poderíamos também converter todos os SFX para
+  ficar o mais próximo do Amiga?"): of the 42 effects' 737 ticks (the exact Amiga model) 342 are
+  a tone, 164 tone + noise, 231 noise; an SCC plays the tones with the samples' own waveforms
+  (#0, a 22-byte synthetic cycle, exactly), the PSG keeps the noise (the SCC has none). Without
+  an SCC the effects stay as they were (`sndplay.asm`).
+- **Data**: `tools/msxsccfx.py` (`sccfx.bin` in `SCCFX_BANK`, 4473 bytes: its streams must fit
+  the bank, `tools/mkrom.py` checks it; its 49 waveforms copied into `BANK_MUSIC` as `fx_waves`):
+  per effect its Amiga channel, an SCC stream (the tonal part: 37 effects) and a PSG stream (the
+  noise part: 29), in the title music's formats, one-shot. Each tick of the exact Amiga model is
+  measured (pitch with an octave check over YIN, the tone and noise shares, the brightness) and
+  each effect's tonal ticks grouped into 1-4 waveforms fitted to the bytes played. Against the
+  Amiga, SCC version / PSG version: spectral distance 3.3 / 5.9 dB, pitch within 50 cents 82 /
+  21 % of the tonal ticks, envelope error 0.6 / 1.0 dB, brightness error 0.44 / 0.81 octave; the
+  pure-noise effects stay as they were (the same PSG noise), the dark explosions are still
+  0.5-1.6 octaves brighter (the PSG's darkest noise). Previews: `build/music/preview/sfx_all_*.wav`.
+- **Engine**: `sndplay.asm` `sq_sfx` hands an effect over when an SCC was found (`sound.asm`
+  `fx_go` → `fx_start`, `BANK_MUSIC` mapped meanwhile) and ticks the engine with its own 50 Hz
+  ticks while one plays (`fx_act`; `fx_tk` → `fx_tick`). The tonal part plays on SCC channel 0-3
+  = the effect's Amiga channel (a new effect there replaces the one playing, as on the Amiga; the
+  title music's voices `mus_v` serve, idle in game), the noise part on a PSG voice (`fx_pv`:
+  channels 0-2 on A-C, channel 3 on an idle voice, C first, else the one nearest its record's
+  end, as `sndplay.asm` does); the `$1822C` rule (a lower effect than the last one is not played
+  while channel 3 plays one) is kept. The SCC in the cartridge: its registers mapped once per
+  output and written straight, the waveform from `fx_waves` straight into the chip, skipped when
+  the channel holds it already (`fx_wc`); in another slot: through `scc_wr` / `scc_wv`.
+- **Cost, measured in openMSX** (the coverage drive, game frames 90-1400, C-BIOS MSX2 at 60 Hz:
+  an effect playing 92 % of the ticks): the whole sound hook takes 3.25 % of the CPU (1940
+  T-states a VBLANK) against 1.87 % (1120) with the PSG effects. Through the music's record
+  reader and output it took 4.81 % (a tick 2290 T-states, a start 4500); the effects' own
+  readers (`fxr_sc`, `fxr_ps`: no bank crossing, the fields straight to the chip, `MV_LEFT`
+  counted down in place), the PSG player's voices skipped with an SCC (idle there) and the tone
+  period written only with the tone on brought a tick to 1560, a start to 3340. The game's
+  speed (game frames a second over five busy windows, C-BIOS MSX2 and FS-A1FX): 1.9 % lower than
+  with the PSG effects on average (2.9 % before), within the windows' own spread of ±3 %.
+- **Checked headless** (`sess_fxlog.tcl`, `fxcheck.py`: a model of the engine replays the effect
+  starts the game made against `sccfx.bin`): every tick of 40 s of the drive (about 230 starts,
+  1500 ticks) the SCC's channels 0-3 (volume, period, waveform) and the PSG voices' volumes and
+  noise bits equal the model, with the SCC in the cartridge and in another slot (`-extb scc`).
+  The title music stays register-exact on every chip set (SCC in the cartridge or another slot,
+  OPLL, SCC + OPLL) after the routines it shares changed.
+
 ## HUD
 
 The Amiga status panel (320×46, line 0 black) is rebuilt by `tools/msxhud.py` with every

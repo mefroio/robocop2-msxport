@@ -187,10 +187,25 @@ snd_bk: push de
         push ix
         ld (BANK_A000),a
         call fc_hl
-        ld a,(act_a000)
+sbk_r:  ld a,(act_a000)
         ld (BANK_A000),a
         pop ix
         pop de
+        ret
+
+; From sndplay.asm (BANK_INPUT at A000h, in the VBLANK interrupt) with an SCC: effect A starts
+; on the SCC and the PSG (fx_go: music.asm fx_start), or the effects advance a tick (fx_tk:
+; fx_tick), with BANK_MUSIC at A000h meanwhile; BANK_INPUT again after.
+fx_go:  ld hl,fx_start
+        jr fx_bk
+fx_tk:  ld hl,fx_tick
+fx_bk:  ld c,a
+        ld a,BANK_MUSIC
+        ld (BANK_A000),a
+        ld a,c
+        call fc_hl
+fxb_r:  ld a,BANK_INPUT
+        ld (BANK_A000),a
         ret
 
 ; HL = a routine of music.asm (BANK_MUSIC at A000h around it; the bank that was there comes

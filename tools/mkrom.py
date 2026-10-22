@@ -19,7 +19,8 @@
   then  RoboCop's speech as PSG PCM (tools/msxvoice.py voice.bin) from bank VOICE_BANK, the
         speech in the music (voice_mix.bin) from VOICE_MIX_BANK, the title music for the SCC
         (tools/msxscc.py scc.bin) from bank SCC_BANK and for the OPLL (tools/msxfm.py fm.bin) from
-        bank FM_BANK (msx/music.asm reads them through the 8000h window); up to 128 banks in all
+        bank FM_BANK, the sound effects for the SCC (tools/msxsccfx.py sccfx.bin) from bank
+        SCCFX_BANK (msx/music.asm reads them through the 8000h window); up to 128 banks in all
         (1 MiB, the user's choice for the speech and the next levels: a 1 MiB MegaRAM or flash
         cartridge), the ROM padded to a power of two; the banks the 8000h window maps must not be
         63 or 127 (those select the SCC's registers at 9800h, KonamiSCC: checked here)
@@ -70,9 +71,9 @@ OPTIONS = {
                    " 2: an animation never skips a step of 2 ticks, about 5 % slower in busy scenes)"),
     "CAD_HOLD": (2, "the same while the V9938 scroll keeps the camera at a page's edge (its next page not built yet)"),
     "ENEMY_CAP": (1, "N > 0 = at most N enemy slots in use (the original has 5; the user chose 1): 0 = the original, for trace tests"),
-    "NO_SCC": (0, "1 = the title music ignores an SCC (test: the OPLL or PSG modes on a KonamiSCC cartridge)"),
+    "NO_SCC": (0, "1 = the title music and the sound effects ignore an SCC (test: the OPLL or PSG modes on a KonamiSCC cartridge)"),
     "NO_FM": (0, "1 = the title music ignores an OPLL (test)"),
-    "NO_SCC_INT": (0, "1 = the title music ignores the cartridge's own SCC: only another slot's (test: KonamiSCC + -ext scc+)"),
+    "NO_SCC_INT": (0, "1 = the title music and the sound effects ignore the cartridge's own SCC: only another slot's (test: KonamiSCC + -ext scc+)"),
     "DAMAGE_X": (3, "1-3: the enemies' damage to RoboCop multiplied (their bullets, touching them): 3 = the user's choice"
                     " for the fewer enemies (ENEMY_CAP), 1 = the original, for trace tests; the missile (enemy bullet"
                     " types 1 and 2, damage 40h) at most 2, the user's choice (msx/hits.asm)"),
@@ -198,7 +199,8 @@ def voice_inc(label: str, blob: bytes, bank: int, streams: list[tuple[int, int]]
     return out
 
 
-def music_inc(scc: bytes, scc_bank: int, waves_n: int, fm: bytes, fm_bank: int, tick: int, since: int) -> str:
+def music_inc(scc: bytes, scc_bank: int, waves_n: int, fm: bytes, fm_bank: int, tick: int, since: int,
+              sccfx: bytes) -> str:
     """music.inc (BANK_MUSIC, msx/music.asm): each stream's bank and address in the 8000h window
     (the blobs start at their banks), the SCC's waveforms, the OPLL's patch block, and the
     voices' records at `tick`, the first after the speech (vm_music: mus_snap_...)."""
@@ -219,6 +221,9 @@ def music_inc(scc: bytes, scc_bank: int, waves_n: int, fm: bytes, fm_bank: int, 
     lines += db(fm[fo[4]:fo[4] + 14])
     lines.append(f"scc_waves:                          ; {len(waves) // 32} waveforms of 32 bytes")
     lines += db(waves)
+    fwo, fwn = offsets(sccfx, 1)[0], sccfx[3]
+    lines.append(f"fx_waves:                           ; the sound effects' {fwn} waveforms (tools/msxsccfx.py)")
+    lines += db(sccfx[fwo:fwo + 32 * fwn])
     lines.append(f"; the voices as mus_adv leaves them after tick {tick} (the first after the speech: vm_music)")
     lines += voice_inc("mus_snap_scc", scc, scc_bank, [(0, MVK_SCC), (1, MVK_SCC), (2, MVK_SCC)], tick, since)
     lines += voice_inc("mus_snap_psg", scc, scc_bank, [(3, MVK_PSG)], tick, since)
@@ -317,13 +322,19 @@ def main(argv: list[str]) -> int:
     voice += voice_mix
     scc = (level.parent / "scc.bin").read_bytes()       # the title music on the SCC (tools/msxscc.py)
     fm = (level.parent / "fm.bin").read_bytes()         #   and on the OPLL (tools/msxfm.py)
+    sccfx = (level.parent / "sccfx.bin").read_bytes()   # the sound effects on the SCC (tools/msxsccfx.py)
+    if offsets(sccfx, 1)[0] > BANK:                     # (msx/music.asm fx_tick maps SCCFX_BANK alone)
+        print("error: the sound effects' streams take more than a bank", file=sys.stderr)
+        return 1
     scc = scc + b"\xff" * (-len(scc) % BANK)
     fm = fm + b"\xff" * (-len(fm) % BANK)
+    sccfx = sccfx + b"\xff" * (-len(sccfx) % BANK)
     bank_scc = bank_voice + len(voice) // BANK
     bank_fm = bank_scc + len(scc) // BANK
+    bank_sccfx = bank_fm + len(fm) // BANK
     # the banks the 8000h window maps (KonamiSCC: 63 and 127 select the SCC's registers instead)
     at_8000 = list(range(2, 2 + len(LOGIC))) + list(range(2 + len(LOGIC), bank_atr + 4 + dyn_banks)) \
-        + list(range(bank_voice, bank_fm + len(fm) // BANK))
+        + list(range(bank_voice, bank_sccfx + len(sccfx) // BANK))
     bad = sorted(set(at_8000) & {63, 127})
     if bad:
         print(f"error: bank(s) {bad} would be mapped at 8000h (the SCC's registers)", file=sys.stderr)
@@ -343,11 +354,12 @@ def main(argv: list[str]) -> int:
         + "".join(f"PIC_{n.upper()}_BANK: equ {pic_first[i]}\nPIC_{n.upper()}_LINES: equ {len(pics[i]) // 256}\n"
                   for i, (n, f) in enumerate(PICTURES)) +
         f"VOICE_BANK: equ {bank_voice}\nVOICE_MIX_BANK: equ {bank_mix}\nSCC_BANK: equ {bank_scc}\nFM_BANK: equ {bank_fm}\n"
+        f"SCCFX_BANK: equ {bank_sccfx}\n"
         f"VIEW_KX: equ {kx}\nVIEW_KY: equ {ky}\n")
     (gen / "input.inc").write_text(input_inc(script, tele))
     vq = equates(level.parent / "voice.inc")
     (gen / "music.inc").write_text(music_inc(scc, bank_scc, equates(level.parent / "scc.inc")["SCC_WAVES"], fm, bank_fm,
-                                             vq["VOICE_TICK"] + vq["VOICE_TICKS"], vq["VOICE_TICK"]))
+                                             vq["VOICE_TICK"] + vq["VOICE_TICKS"], vq["VOICE_TICK"], sccfx))
     (gen / "options.inc").write_text("; generated by tools/mkrom.py: build options\n" + "".join(
         f"{k}: equ {v}{' ' * max(1, 12 - len(str(v)))}; {OPTIONS[k][1]}\n" for k, v in opts.items())
         + f"INPUT_SCRIPT: equ {1 if script or opts['EXTJOY'] else 0}           ; 1: the JOY script plays (input.inc)\n")
@@ -381,7 +393,7 @@ def main(argv: list[str]) -> int:
            + field_img + b"\xff" * (BANK - len(field_img))
            + field_dyn + b"\xff" * (dyn_banks * BANK - len(field_dyn))
            + b"".join(p + b"\xff" * (-len(p) % BANK) for p in pics)
-           + voice + scc + fm)
+           + voice + scc + fm + sccfx)
     if len(rom) > 0x100000:
         print(f"error: the ROM takes {len(rom) // BANK} banks (1 MiB: 128)", file=sys.stderr)
         return 1
