@@ -401,9 +401,11 @@ which as sprites were striped, cut or left out.
   the game over picture, `FE_NEXT` the level's statistics; both then go to the title and a new
   game until the next levels exist).
 - **Fewer enemies** (`tools/mkrom.py` `ENEMY_CAP`, 1 in the product): with that many enemy slots
-  in use a free slot spawns nothing (`objects.asm` `uo_cap`). The types that draw nothing do
-  not count: 32, the level's end, which forces the henchmen's spawns it waits for (counted, it
-  took the only slot and the level could never end), and 44, the ride's pickup dropper.
+  in use a free slot spawns nothing (`objects.asm` `uo_cap`). Only the enemies count: not the
+  types that draw nothing, 32, the level's end, which forces the henchmen's spawns it waits for
+  (counted, it took the only slot and the level could never end), and 44, the ride's pickup
+  dropper; nor 45, the hostage, drawn into the play field (the user's choice, 2026-10-22: a
+  hostage shows together with an enemy).
 - **The cracked wall** (map object 25 of level 1, type 5Ch, activator `obj_relocate` `$9FC4`,
   `mapobj.asm` `act_10`): after 80 ticks of "up" in front of it RoboCop and the camera go to
   the level header's +20/+22 (`$15D6`/`$15D8`, set by `level1.asm` `l1i_hdr` as `level_init`
