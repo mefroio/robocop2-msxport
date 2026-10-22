@@ -645,15 +645,24 @@ which as sprites were striped, cut or left out.
   found (`snd_fm`). Then `music.asm` `mus_init` looks for an SCC: in the cartridge's own slot
   (its mapper's bank 3Fh at `8000h` shows the registers at `9800h`: a Konami SCC or flash
   cartridge; a MegaRAM has none) by four values written to the first waveform byte (`9800h`),
-  each read back after about 1 ms (`sound.asm` `scc_pat`; until 2026-10-22 eight bytes at
-  `9800h-9807h` read back at once, which missed the SCC+ emulation of the user's MSX Pico+;
-  on a MegaRAM or a Konami mapper a write there selects the `8000h` bank, and `tools/mkrom.py`
+  each read back after about 1 ms, in one of up to four tries (`sound.asm` `scc_pat`; on a
+  MegaRAM or a Konami mapper a write there selects the `8000h` bank, and `tools/mkrom.py`
   checks that those banks' bytes at `1800h` cannot answer all four), else
   (`sound.asm` `scc_scan`) in the other primary slots that are not expanded (an SCC or SCC+
   cartridge beside a MegaRAM: page 2 switched to it through port `A8h`), skipping any whose
   `8000h` is RAM, after 3Fh written to its `9000h` (an SCC+ starts in SCC mode). Every SCC
-  access then goes through `sound.asm` `scc_wr` / `scc_wv` (`scc_open` / `scc_close` in the
-  fixed area: page 2 may be the other cartridge meanwhile).
+  access then runs in the fixed area (`sound.asm` `scc_pv`, `scc_on`, `scc_v0`, `scc_wv`
+  between `scc_open` and `scc_close`: page 2 may be the other cartridge meanwhile), but the
+  in-cartridge effects' fast path (`music.asm` `fxr_so`, page 2's `A000h` half untouched).
+- **Stores to the SCC, as Konami's games make them** (2026-10-22): every register store is to a
+  fixed address (`ld (nn),a`), per channel (`scc_pvs`), and the channels' enable is written
+  again with every record (1-3 for the title music, 0-3 for the effects); the waveforms go with
+  `ldir` (each store right after a load). On the user's SX-2 (an MSX2+ on an FPGA) with an MSX
+  Pico+ (SCC+ emulation in the cartridge), the music and effects were silent: their test
+  cartridges showed one store or load through `(hl)`/`(de)` in four lost (the bus cycle right
+  after the instruction's own fetch), none through `(nn)` (12 of 12), and a single lost store of
+  the channels' enable had kept every channel off. Byte for byte the same writes on every
+  other machine: the title music and the effects stay register-exact in openMSX.
 - `snd_frame` runs from the VBLANK interrupt (the music keeps its tempo while the game catches
   up); the PSG's address latch is shared with the joystick reads, so outside the interrupt
   every PSG access runs with interrupts disabled and R7 keeps port A as input.
@@ -809,7 +818,7 @@ which as sprites were striped, cut or left out.
   end, as `sndplay.asm` does); the `$1822C` rule (a lower effect than the last one is not played
   while channel 3 plays one) is kept. The SCC in the cartridge: its registers mapped once per
   output and written straight, the waveform from `fx_waves` straight into the chip, skipped when
-  the channel holds it already (`fx_wc`); in another slot: through `scc_wr` / `scc_wv`.
+  the channel holds it already (`fx_wc`); in another slot: through `scc_pv` / `scc_wv`.
 - **Cost, measured in openMSX** (the coverage drive, game frames 90-1400, C-BIOS MSX2 at 60 Hz:
   an effect playing 92 % of the ticks): the whole sound hook takes 3.25 % of the CPU (1940
   T-states a VBLANK) against 1.87 % (1120) with the PSG effects. Through the music's record

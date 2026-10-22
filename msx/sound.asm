@@ -51,11 +51,93 @@ opll_w: out (OPLL_ADDR),a
 
 PPI_SLOT:   equ 0xA8
 
-; HL = an SCC register (9800h-98FFh), A = its value. Keeps HL, DE.
-scc_wr: push af
+; Every store to an SCC register is to a fixed address (ld (nn),a), as Konami's games store: on
+; the user's SX-2, the MSX Pico+'s SCC missed a store or a load through (hl) or (de) one time in
+; four (right after the instruction's own fetch), never one through (nn) (their test cartridges,
+; 2026-10-22). The waveforms go with ldir (each store after a load).
+
+; B = an SCC channel (0-3), C = its record's ctl or MV_NEW (bit 4: DE is a period to set), A =
+; its volume: those to the SCC and its channels on again (1-3 while the title music plays, 0-3
+; for the effects: a store the chip missed does not keep them silent). scc_pv: through scc_open
+; and scc_close; scc_pvs: the SCC's registers at 9800h already. Keeps BC, DE, HL.
+scc_pv: push bc
+        push af
         call scc_open
         pop af
-        ld (hl),a
+        pop bc
+        call scc_pvs
+        jp scc_close
+scc_pvs:
+        push af
+        ld a,b
+        or a
+        jr z,spv_0
+        dec a
+        jr z,spv_1
+        dec a
+        jr z,spv_2
+        bit 4,c
+        jr z,spv_3v
+        ld a,e
+        ld (SCC_FREQ + 6),a
+        ld a,d
+        ld (SCC_FREQ + 7),a
+spv_3v: pop af
+        ld (SCC_VOL + 3),a
+        jr spv_on
+spv_0:  bit 4,c
+        jr z,spv_0v
+        ld a,e
+        ld (SCC_FREQ + 0),a
+        ld a,d
+        ld (SCC_FREQ + 1),a
+spv_0v: pop af
+        ld (SCC_VOL + 0),a
+        jr spv_on
+spv_1:  bit 4,c
+        jr z,spv_1v
+        ld a,e
+        ld (SCC_FREQ + 2),a
+        ld a,d
+        ld (SCC_FREQ + 3),a
+spv_1v: pop af
+        ld (SCC_VOL + 1),a
+        jr spv_on
+spv_2:  bit 4,c
+        jr z,spv_2v
+        ld a,e
+        ld (SCC_FREQ + 4),a
+        ld a,d
+        ld (SCC_FREQ + 5),a
+spv_2v: pop af
+        ld (SCC_VOL + 2),a
+spv_on: ld a,(mus_on)
+        or a
+        ld a,7
+        jr nz,spv_e
+        ld a,0x0F
+spv_e:  ld (SCC_ON),a
+        ret
+
+; A = the SCC's channels on (bits 0-4). Keeps BC, DE, HL.
+scc_on: push bc
+        push af
+        call scc_open
+        pop af
+        ld (SCC_ON),a
+        pop bc
+        jr scc_close
+
+; Every SCC channel at volume 0. Keeps BC, DE, HL.
+scc_v0: push bc
+        call scc_open
+        xor a
+        ld (SCC_VOL + 0),a
+        ld (SCC_VOL + 1),a
+        ld (SCC_VOL + 2),a
+        ld (SCC_VOL + 3),a
+        ld (SCC_VOL + 4),a
+        pop bc
         jr scc_close
 
 ; DE = a channel's waveform (9800h + 32 x channel): scc_wb's 32 bytes there.
@@ -145,22 +227,31 @@ ssc_n:  ld a,c
         ret
 
 ; Z when the SCC's first waveform byte (9800h, page 2 showing its registers) keeps four values
-; written there, each read back after about 1 ms: an emulated SCC may answer there alone, or
-; late (8 bytes at 9800h-9807h read back at once missed the MSX Pico+'s, the user's,
-; 2026-10-22). ROM there, or a MegaRAM or Konami mapper (a write there selects the 8000h bank),
-; gives NZ. Uses AF, B, HL.
+; written there, each read back after about 1 ms, in one of four tries: an emulated SCC may answer
+; late, or miss one (the MSX Pico+'s, the user's, 2026-10-22). ROM there, or a MegaRAM or Konami
+; mapper (a write there selects the 8000h bank), never answers. Uses AF, B.
 scc_pat:
-        ld hl,0x9800
+        ld a,4                      ; (up to four tries)
+scp_t:  push af
         ld a,0x5A
-scp_lp: ld (hl),a
+scp_lp: ld (0x9800),a               ; (fixed addresses: see scc_pv)
         ld b,0
 scp_w:  djnz scp_w                  ; (3300 T-states)
-        cp (hl)
-        ret nz
+        ld b,a
+        ld a,(0x9800)
+        cp b
+        jr nz,scp_n
+        ld a,b
         add a,0x65                  ; (5Ah, BFh, 24h, 89h)
         cp 0xEE
         jr nz,scp_lp
+        pop af
         xor a                       ; (Z)
+        ret
+scp_n:  pop af
+        dec a
+        jr nz,scp_t
+        inc a                       ; (NZ)
         ret
 
 ; ----- the players (sndplay.asm in BANK_INPUT, music.asm in BANK_MUSIC) -----

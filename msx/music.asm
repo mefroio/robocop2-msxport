@@ -4,7 +4,8 @@
 ; The chips (mus_init, at power-on): an SCC answering in the cartridge's own slot (the Konami SCC
 ; mapper: 3Fh written to 9000h shows its registers at 9800h; an SCC+ starts in SCC mode; a
 ; MegaRAM has none), else in another primary slot (an SCC or SCC+ cartridge: sound.asm scc_scan;
-; every access goes through sound.asm scc_wr / scc_wv), and the OPLL cold.asm snd_detect found.
+; every access through sound.asm's routines in the fixed area: scc_pv, scc_on, scc_v0, scc_wv),
+; and the OPLL cold.asm snd_detect found.
 ; mus_mode then says what plays the title music (tools/msxscc.py, tools/msxfm.py: the Amiga's
 ; channels 0-2 and its drums, channel 3), the user's request for "the closest to the Amiga":
 ;   SCC:           the melody on SCC channels 1-3, the drums on PSG voice C;
@@ -178,9 +179,8 @@ mst_d:  call mst_one
         ld a,(mus_mode)
         rra
         jr nc,mst_t
-        ld hl,SCC_ON                ; the SCC's channels 1-3 on (their volumes 0 until the
-        ld a,7                      ; first records)
-        call scc_wr
+        ld a,7                      ; the SCC's channels 1-3 on (their volumes 0 until the
+        call scc_on                 ; first records)
 mst_t:  ld hl,0xFFFF                ; (the first tick makes it 0)
         ld (mus_tick),hl
         xor a
@@ -279,17 +279,9 @@ muq_e:  ld (ix+MV_LEFT),a
         ld a,(mus_mode)
         rra
         jr nc,muq_f
-        ld hl,SCC_ON
         xor a
-        call scc_wr                 ; every channel off,
-        ld hl,SCC_VOL
-        ld b,5
-muq_s:  push bc
-        xor a
-        call scc_wr                 ;   at volume 0
-        pop bc
-        inc hl
-        djnz muq_s
+        call scc_on                 ; every channel off,
+        call scc_v0                 ;   at volume 0
 muq_f:  ld a,(mus_mode)
         and MM_FM | MM_RHY
         jr z,muq_p
@@ -521,7 +513,7 @@ mos_lp: call mo_sc1
         ret
 
 ; IX = a voice on SCC channel B (0-3): the waveform (mo_wv), the period and the volume its
-; record gave this tick. Keeps B, IX.
+; record gave this tick, the channels on again (sound.asm scc_pv). Keeps B, IX.
 mo_sc1: ld c,(ix+MV_NEW)
         ld a,c
         or a
@@ -537,30 +529,11 @@ mo_sc1: ld c,(ix+MV_NEW)
         ld d,SCC_WAVE / 256         ; DE = 9800h + 32 x channel
         call mo_wv
 mos_p:  pop bc
-        push bc
-        bit 4,c
-        jr z,mos_v
-        ld a,b
-        add a,a
-        add a,SCC_FREQ & 0xFF
-        ld l,a
-        ld h,SCC_FREQ / 256
-        ld a,(ix+MV_PER)
-        call scc_wr
-        inc hl
-        ld a,(ix+MV_PER+1)
-        call scc_wr
-mos_v:  pop bc
-        push bc
-        ld a,b
-        add a,SCC_VOL & 0xFF
-        ld l,a
-        ld h,SCC_VOL / 256
+        ld e,(ix+MV_PER)
+        ld d,(ix+MV_PER+1)
         ld a,(ix+MV_CTL)
         and 15
-        call scc_wr
-        pop bc
-        ret
+        jp scc_pv
 
 ; IX = a voice, DE = its SCC channel's waveform registers: waveform MV_AUX there, from the title
 ; music's table (scc_waves) or, while the music is off, the effects' (fx_waves; both here, at
@@ -855,9 +828,8 @@ fxs_x:  ld a,1
         cp (hl)
         jr z,fxs_y
         ld (hl),a
-        ld hl,SCC_ON                ; (channels 0-3 on, once after a stop)
-        ld a,0x0F
-        call scc_wr
+        ld a,0x0F                   ; (channels 0-3 on, once after a stop)
+        call scc_on
 fxs_y:  ld a,(act_8000)
         ld (BANK_8000),a
         ret
@@ -1125,23 +1097,9 @@ fxr_so: ld a,(scc_pg2)
         jr z,fxr_s3
         call fxr_wc
         call nz,fxr_ld
-fxr_s3: bit 4,c
-        jr z,fxr_s4
-        ld a,b
-        add a,a
-        add a,SCC_FREQ & 0xFF
-        ld l,a
-        ld h,SCC_FREQ / 256
-        ld (hl),e
-        inc hl
-        ld (hl),d
-fxr_s4: ld a,b
-        add a,SCC_VOL & 0xFF
-        ld l,a
-        ld h,SCC_VOL / 256
-        ld a,c
+fxr_s3: ld a,c
         and 15
-        ld (hl),a
+        call scc_pvs                ; (sound.asm: stores to fixed addresses)
         ld a,SCCFX_BANK
         ld (BANK_8000),a
         ret
@@ -1299,14 +1257,7 @@ mus_mute:
         ld a,(mus_mode)
         rra
         jr nc,mum_f
-        ld hl,SCC_VOL
-        ld b,3
-mum_s:  push bc
-        xor a
-        call scc_wr
-        pop bc
-        inc hl
-        djnz mum_s
+        call scc_v0
 mum_f:  ld a,(mus_mode)
         and MM_FM
         jr z,mum_r
