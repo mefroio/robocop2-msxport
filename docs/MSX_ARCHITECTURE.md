@@ -448,7 +448,8 @@ which as sprites were striped, cut or left out.
   2026-10-22 the whole walk waited: a hostage whose place came into view while an enemy lived
   appeared when that enemy went, on screen out of nowhere (the user saw it; reproduced in
   openMSX: entry 10, 23 ticks late, spawned the tick the enemy left). An enemy that waited still
-  appears at its place when the slot frees, on screen if its place is in view.
+  appears at its place when the slot frees, on screen if its place is in view (kept, the user's
+  choice, 2026-10-22, over skipping it or waiting until its place is off screen).
 - **Harder hits** (`tools/mkrom.py` `DAMAGE_X`, 3 in the product): the enemies' bullets take
   their damage (`$FA63`) times `DAMAGE_X` and touching an enemy costs `DAMAGE_X` instead of 1
   (`hits.asm`), but the missile, enemy bullet types 1 and 2 (damage 40h, fired only by the
