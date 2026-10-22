@@ -96,6 +96,10 @@ mui_p:  ld (hl),a
         else
         xor a
         ld (scc_pg2),a
+        if FORCE_SCC
+        ld b,MM_SCC                 ; (test build: the cartridge's SCC, not tested for)
+        jr mui_s
+        endif
         if NO_SCC_INT
         else
         call scc_detect
@@ -126,9 +130,9 @@ mui_x:  ld a,b
         ei
         ret
 
-; An SCC in the cartridge's slot -> A = MM_SCC (NZ) when its waveform RAM keeps 8 bytes written
-; there, else 0 (ROM there, or a MegaRAM: writes select its banks). The interrupts off; the
-; 8000h window shows act_8000's bank after.
+; An SCC in the cartridge's slot -> A = MM_SCC (NZ) when 9800h keeps what is written there
+; (sound.asm scc_pat), else 0 (ROM there, or a MegaRAM: writes select its banks). The
+; interrupts off; the 8000h window shows act_8000's bank after.
 scc_detect:
         ld a,SCC_REGS
         ld (BANK_8000),a

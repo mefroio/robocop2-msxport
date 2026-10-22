@@ -91,9 +91,9 @@ sco_x:  ld c,a
         ret
 
 ; At power-on (music.asm mus_init, the interrupts off), when the cartridge has none: an SCC in
-; another primary slot that is not expanded, the first where 8000h is not RAM and 9800h keeps 8
-; bytes written there after 3Fh at 9000h (a Konami SCC cartridge's mapper, an SCC+ in SCC mode:
-; the registers at 9800h) -> scc_pg2 = that slot in A8h's bits 4-5 (0: none).
+; another primary slot that is not expanded, the first where 8000h is not RAM and 9800h keeps
+; what is written there after 3Fh at 9000h (scc_pat; a Konami SCC cartridge's mapper, an SCC+ in
+; SCC mode: the registers at 9800h) -> scc_pg2 = that slot in A8h's bits 4-5 (0: none).
 scc_scan:
         xor a
         ld (scc_pg2),a
@@ -144,24 +144,22 @@ ssc_n:  ld a,c
         jr c,ssc_lp
         ret
 
-; Z when the SCC's waveform RAM (9800h-9807h, page 2 showing it) keeps 8 bytes written there.
-; Uses AF, B, HL.
+; Z when the SCC's first waveform byte (9800h, page 2 showing its registers) keeps four values
+; written there, each read back after about 1 ms: an emulated SCC may answer there alone, or
+; late (8 bytes at 9800h-9807h read back at once missed the MSX Pico+'s, the user's,
+; 2026-10-22). ROM there, or a MegaRAM or Konami mapper (a write there selects the 8000h bank),
+; gives NZ. Uses AF, B, HL.
 scc_pat:
         ld hl,0x9800
         ld a,0x5A
-        ld b,8
-scp_w:  ld (hl),a
-        inc hl
-        add a,0x25
-        djnz scp_w
-        ld hl,0x9800
-        ld a,0x5A
-        ld b,8
-scp_r:  cp (hl)
+scp_lp: ld (hl),a
+        ld b,0
+scp_w:  djnz scp_w                  ; (3300 T-states)
+        cp (hl)
         ret nz
-        inc hl
-        add a,0x25
-        djnz scp_r
+        add a,0x65                  ; (5Ah, BFh, 24h, 89h)
+        cp 0xEE
+        jr nz,scp_lp
         xor a                       ; (Z)
         ret
 

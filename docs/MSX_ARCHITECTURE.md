@@ -644,7 +644,11 @@ which as sprites were striped, cut or left out.
   bit 0 of `7FF6h` in its slot). The PSG is always used; the OPLL (ports `7Ch`/`7Dh`) when
   found (`snd_fm`). Then `music.asm` `mus_init` looks for an SCC: in the cartridge's own slot
   (its mapper's bank 3Fh at `8000h` shows the registers at `9800h`: a Konami SCC or flash
-  cartridge; a MegaRAM has none) by 8 bytes written to the waveform RAM and read back, else
+  cartridge; a MegaRAM has none) by four values written to the first waveform byte (`9800h`),
+  each read back after about 1 ms (`sound.asm` `scc_pat`; until 2026-10-22 eight bytes at
+  `9800h-9807h` read back at once, which missed the SCC+ emulation of the user's MSX Pico+;
+  on a MegaRAM or a Konami mapper a write there selects the `8000h` bank, and `tools/mkrom.py`
+  checks that those banks' bytes at `1800h` cannot answer all four), else
   (`sound.asm` `scc_scan`) in the other primary slots that are not expanded (an SCC or SCC+
   cartridge beside a MegaRAM: page 2 switched to it through port `A8h`), skipping any whose
   `8000h` is RAM, after 3Fh written to its `9000h` (an SCC+ starts in SCC mode). Every SCC
@@ -725,7 +729,8 @@ which as sprites were striped, cut or left out.
   OPLL the drums (channel 3 on its rhythm section) and, without an SCC, the melody too (OPLL
   channels 0-2); with an SCC alone the drums ride PSG voice C; with neither, the PSG player's
   title as before. The in-game effects stay on the PSG player in every mode. Test builds:
-  `NO_SCC=1`, `NO_FM=1`, `NO_SCC_INT=1` (only another slot's SCC).
+  `NO_SCC=1`, `NO_FM=1`, `NO_SCC_INT=1` (only another slot's SCC), `FORCE_SCC=1` (the
+  cartridge's SCC, not tested for: hardware whose SCC the test misses).
 - **The data**: `tools/msxscc.py` (`scc.bin`: three SCC voice streams, the PSG drum stream in
   `sndplay.asm`'s format, nine 32-byte waveforms; 25.8 KiB) and `tools/msxfm.py` (`fm.bin`:
   three OPLL voice streams, the rhythm stream, the custom instrument and the rhythm's pitches;

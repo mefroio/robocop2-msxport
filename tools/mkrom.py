@@ -79,6 +79,8 @@ OPTIONS = {
     "NO_SCC": (0, "1 = the title music and the sound effects ignore an SCC (test: the OPLL or PSG modes on a KonamiSCC cartridge)"),
     "NO_FM": (0, "1 = the title music ignores an OPLL (test)"),
     "NO_SCC_INT": (0, "1 = the title music and the sound effects ignore the cartridge's own SCC: only another slot's (test: KonamiSCC + -ext scc+)"),
+    "FORCE_SCC": (0, "1 = test build: the title music and the sound effects on the cartridge's SCC without testing for it"
+                     " (hardware whose SCC the detection misses)"),
     "DAMAGE_X": (3, "1-3: the enemies' damage to RoboCop multiplied (their bullets, touching them): 3 = the user's choice"
                     " for the fewer enemies (ENEMY_CAP), 1 = the original, for trace tests; the missile (enemy bullet"
                     " types 1 and 2, damage 40h) at most 2, the user's choice (msx/hits.asm)"),
@@ -411,6 +413,12 @@ def main(argv: list[str]) -> int:
     while size < len(rom):
         size *= 2
     rom += b"\xff" * (size - len(rom))
+    # (msx/sound.asm scc_pat on a MegaRAM holding this image: each value written at 9800h
+    # selects that bank at 8000h, so the byte read back is the bank's at 1800h: never all four)
+    if all(rom[(v % (len(rom) // BANK)) * BANK + 0x1800] == v for v in (0x5A, 0xBF, 0x24, 0x89)):
+        print("error: on a MegaRAM the SCC test would find an SCC (banks 5Ah, BFh, 24h, 89h at 1800h)",
+              file=sys.stderr)
+        return 1
     out.write_bytes(rom)
     print(f"{out}: {len(rom) // 1024} KiB ({len(rom) // BANK} banks); tiles in {bank_tiles}-{bank_map - 1}, "
           f"map in {bank_map}-{bank_spr - 1} ({rows} rows), RoboCop sprites in {bank_spr}-"
