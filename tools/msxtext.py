@@ -9,8 +9,8 @@ high scores").
   hand-drawn shadow colour 4. Here each glyph is 8 x 8 pixels in SCREEN 5 (4 bytes a line, the
   left pixel high), the cell's every pixel written (colour 0 between).
 - Palette ($109A8, COLOR01-15, components at most E): the MSX's 3-bit components (c * 7 / 15,
-  rounded), as the VBLANK loads the play field's (isr.asm pf_pal: R then B in the first byte,
-  G in the second).
+  rounded, then the colour grade: tools/msxbright.py), as the VBLANK loads the play field's
+  (isr.asm pf_pal: R then B in the first byte, G in the second).
 - Statistics script ($1132F, show_level_stats $85D8 fills its three number fields with $11DC6
   and runs it through $10762): its bytes up to its FF 07 (the interpreter's format in
   rc2front.py), with the offsets of the three 8-character fields.
@@ -18,7 +18,8 @@ high scores").
   tools/msxpic.py): CREDIT's lines in the same font (capitals only), centred over the dark band
   below RoboCop's chin, the strokes in the logo's light grey-blue and their shadow in dark blue
   (G7 bytes: the text screens' green and blue are too dark over the picture); the pixels between
-  them keep the picture. OUT.png is its preview.
+  them keep the picture. OUT.png is its preview. (The pictures keep the plain colours: the
+  colour grade made them look blown out, the user's choice, 2026-10-22.)
 - GAME OVER under the game over picture (with OVER.sc8 and OUT2.sc8, the user's choice: PIC9
   has no text): a black band of BAND lines below it with the words in the same font and colours
   at twice the size, centred (front.asm pic_show centres the taller picture).
@@ -34,6 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rc2front  # noqa: E402
+from msxbright import grade_pal  # noqa: E402
 from planar import write_png  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,7 +63,7 @@ def glyph_sc5(ram: bytes, g: int) -> bytes:
 
 
 def msx_palette(ram: bytes) -> bytes:
-    """COLOR00 (black) + COLOR01-15 as V9938 palette pairs."""
+    """COLOR00 (black) + COLOR01-15 as V9938 palette pairs (before the colour grade)."""
     out = bytearray(b"\x00\x00")
     for i in range(15):
         c = struct.unpack_from(">H", ram, rc2front.TEXT_PALETTE + 2 * i)[0]
@@ -143,7 +145,7 @@ def main(argv: list[str]) -> int:
             f"TXT_STATS_LEN: equ {len(script)}\n"
             + "".join(f"TXT_F{i + 1}: equ {f - STATS}{' ' * 12}; its number field ($11DC6: 8 characters)\n"
                       for i, f in enumerate(STATS_FIELDS))
-            + "txt_pal:                            ; $109A8 (pf_pal's format)\n" + db_lines(msx_palette(ram))
+            + "txt_pal:                            ; $109A8 (pf_pal's format)\n" + db_lines(grade_pal(msx_palette(ram)))
             + "txt_stats:                          ; $1132F\n" + db_lines(script)
             + f"txt_glyphs:                         ; $65DB0: {rc2front.BITMAP_GLYPHS} x 8 lines x 4 bytes\n"
             + "".join(f"        ; {rc2front.GLYPH_NAMES[g]!r}\n" + db_lines(glyph_sc5(ram, g))

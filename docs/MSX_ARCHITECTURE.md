@@ -83,6 +83,19 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
    user compared a 30 Hz and a 25 Hz ROM and kept 25 Hz, which leaves the display more CPU).
    `tools/mkrom.py TICK_HZ=30` still builds the NTSC rate. The display keeps the machine's
    own refresh rate (the BIOS setting, `RG9SAV`).
+8. **Colour grade** (2026-10-22): the game play a little brighter and with more contrast than
+   the Amiga's colours converted level for level, palettes only (no tile, sprite or HUD pixel
+   changes). Every 3-bit component goes through `BRIGHT` = 0 1 3 4 5 6 7 7
+   (`tools/msxbright.py`): the play field's palette, RoboCop's flashes, the HUD's, the fade's
+   limits and the level statistics' text (shown over the HUD); the user chose the brightest of
+   three previews of the play field and HUD. The SCREEN 8 pictures (title, game over) keep the
+   plain colours: graded they looked blown out (the user's choice). The conversions' `.pal`
+   files and previews stay in the plain colours, which their colour matching and the checks use;
+   `tools/mkrom.py` grades them into `build/msx/gen` (`level1_grade.pal`, `hud_grade.pal`: names
+   of their own, z80asm looks in its working directory first) and writes `grade.inc`.
+   Checked in openMSX: the VDP's play-field and HUD palettes equal the graded ones, a frame
+   of the coverage drive equals the approved preview pixel for pixel, and every step of a fade
+   (32 calls, the 8 steps) equals the graded palette limited by `fade_cap`.
 
 ## VRAM layout
 
@@ -472,7 +485,9 @@ which as sprites were striped, cut or left out.
   steps) computes all of it; a flash (`pal_flash`) and its end write RoboCop's entries
   (`pal_robo`). The Amiga tints only his sprite colours (COLOR17-31, six palettes); here his
   joint-palette entries that the background never uses take the tint (`tools/msxsprites.py`
-  `robocop_flash.inc`: entries 2, 3, 5, 7 in level 1), so the background never changes.
+  `robocop_flash.inc`: entries 2, 3, 7 in level 1), so the background never changes. Every
+  colour here is through the colour grade (decision 8): the fade limits the graded palette to
+  `fade_cap[step]` (the grade of the original's limit, the same as grading the faded colours).
 - **Controls**: joystick port 1 (trigger A fire, trigger B = the Amiga's F1/right Shift);
   without joystick input the keyboard as on the Amiga: cursor keys, SPACE/RETURN/TAB/ESC/BS/
   DEL fire, F1/SHIFT. Read once per game frame at the original's point (the logic sees them

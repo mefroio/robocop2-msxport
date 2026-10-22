@@ -53,7 +53,7 @@ $(BUILD)/sprites/catalog.json:
 $(BUILD)/emu/cov_level1.json: $(BUILD)/ram/level1_full.bin
 	$(VPYTHON) -I tools/amigacov.py --scenario level1 $@
 
-msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)/emu/cov_level1.json
+msx: extract pics $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)/emu/cov_level1.json
 	$(VPYTHON) -I tools/msxsprites.py $(X)/boot/main_8000.bin $(X)/files/PERMA_05.bin $(X)/files/DATAL1_10.bin \
 		--rows 51 --bobs $(BUILD)/sprites/catalog.json --drawn $(BUILD)/emu/cov_level1.json \
 		--ram $(BUILD)/ram/level1_full.bin --level level1 --remove msx/level1_frames.json $(BUILD)/msx/robocop
@@ -62,6 +62,8 @@ msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)
 	$(PYTHON) -I tools/msxhud.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud --black 4
 	$(PYTHON) -I tools/msxhudrt.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud_rt
 	$(PYTHON) -I tools/player.py --inc $(BUILD)/msx/player.inc
+	$(VPYTHON) -I tools/msxpic.py $(BUILD)/png/TPIC.png $(BUILD)/msx/title
+	$(VPYTHON) -I tools/msxpic.py $(BUILD)/png/PIC9_11.png $(BUILD)/msx/gameover
 	$(PYTHON) -I tools/msxtext.py $(BUILD)/ram/level1_full.bin $(BUILD)/msx/text.inc \
 		$(BUILD)/msx/title.sc8 $(BUILD)/msx/title_credit.sc8 $(BUILD)/msx/gameover.sc8 $(BUILD)/msx/gameover_text.sc8
 	$(VPYTHON) -I tools/msxsound.py --out $(BUILD)/msx/sound.inc --budget 7680

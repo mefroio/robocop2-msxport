@@ -9,7 +9,8 @@ msx/hud.asm records it), but compared with what the VDP drew line by line instea
 static render of VRAM, so writes during the display, per-line sprite limits and the split
 all count. openMSX's picture is taken at (32, 14) for the whole display (R#18 included: the
 expected frame's coordinates are those of tools/msxscreen.py's render, which applies it);
-colours are compared after taking openMSX's 8-bit levels back to the 3-bit ones. Capture with
+colours are compared after taking openMSX's 8-bit levels back to the 3-bit ones, the expected
+ones through the ROM's colour grade (tools/msxbright.py). Capture with
 openMSX rendering every frame ('set maxframeskip 0': unthrottled it skips frames otherwise).
 
 Per frame: the differing pixels of the play area (sprite pixels apart: the expected sprite
@@ -27,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import msxframe as mf  # noqa: E402
+from msxbright import grade_pal  # noqa: E402
 from planar import write_png  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,7 +90,7 @@ def check(d: Path, level: Path, hud: Path) -> tuple[dict, list[bytes], list[byte
     _, _, real = read_png(d / "real.png")
     pal_play = level.with_suffix(".pal").read_bytes()
     pal_hud = hud.with_suffix(".pal").read_bytes()
-    prgb, hrgb = mf.rgb9(pal_play), mf.rgb9(pal_hud)
+    prgb, hrgb = mf.rgb9(grade_pal(pal_play)), mf.rgb9(grade_pal(pal_hud))
     mp = level.with_suffix(".map").read_bytes()
     til = level.with_suffix(".til").read_bytes()
     rows_map = len(mp) // (mf.COLS * 2)

@@ -386,10 +386,11 @@ slot_page2:
         include "player.inc"        ; RoboCop's logic tables (tools/player.py --inc)
 
 palette:
-        incbin "level1.pal"
+        incbin "level1_grade.pal"   ; (the level's palette through the colour grade: tools/mkrom.py)
         include "robocop_flash.inc" ; RoboCop's palette flashes (tools/msxsprites.py)
 hud_palette:
-        incbin "hud.pal"
+        incbin "hud_grade.pal"
+        include "grade.inc"         ; the fade's limits through the colour grade (tools/mkrom.py)
 rowtab:
         include "rowtab.inc"
 

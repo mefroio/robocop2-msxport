@@ -400,12 +400,17 @@ prl_lp: ld a,(de)
         ret
 
 ; A = the fade level ($16CD, 0-1Fh): pf_pal = the level's palette with every 3-bit component
-; at most A >> 2 ($F8C4: every 4-bit component at most (A >> 1) & 1Eh, 0-Eh: the same eight
-; steps).
+; at most fade_cap[A >> 2] ($F8C4: every 4-bit component at most (A >> 1) & 1Eh, 0-Eh: the same
+; eight steps; fade_cap: each step's limit through the colour grade, as the palette's).
 pal_fade:
         rrca
         rrca
         and 7
+        ld e,a
+        ld d,0
+        ld hl,fade_cap
+        add hl,de
+        ld a,(hl)
         ld c,a                      ; the limit for B and G
         rlca
         rlca
