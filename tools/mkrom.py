@@ -16,12 +16,17 @@
   then  the play-field BOBs' atlas (tools/msxsprites.py _field.bin), bank FIELD_IMG_BANK, and
         their dynamic frames (_fdyn.bin), from bank FIELD_DYN_BANK
   then  the SCREEN 8 pictures (PICTURES)
-  then  RoboCop's speech as PSG PCM (tools/msxvoice.py voice.bin), from bank VOICE_BANK;
-        up to 128 banks in all (1 MiB, the user's choice for the speech and the next levels: a 1 MiB
-        MegaRAM or flash cartridge), the ROM padded to a power of two; the banks the 8000h window
-        maps must not be 63 or 127 (those select the SCC's registers at 9800h, KonamiSCC)
+  then  RoboCop's speech as PSG PCM (tools/msxvoice.py voice.bin) from bank VOICE_BANK, the
+        speech in the music (voice_mix.bin) from VOICE_MIX_BANK, the title music for the SCC
+        (tools/msxscc.py scc.bin) from bank SCC_BANK and for the OPLL (tools/msxfm.py fm.bin) from
+        bank FM_BANK (msx/music.asm reads them through the 8000h window); up to 128 banks in all
+        (1 MiB, the user's choice for the speech and the next levels: a 1 MiB MegaRAM or flash
+        cartridge), the ROM padded to a power of two; the banks the 8000h window maps must not be
+        63 or 127 (those select the SCC's registers at 9800h, KonamiSCC: checked here)
 Generates build/msx/gen/banks.inc, rowtab.inc, options.inc (build options, see OPTIONS),
-input.inc (the JOY script) and the original's tables the logic banks include (tools/amitab.py
+input.inc (the JOY script), music.inc (the music streams' banks and addresses from the blobs'
+headers, the SCC's waveforms, the OPLL's patch, the voices' state after the speech) and the
+original's tables the logic banks include (tools/amitab.py
 with analysis/amiga_tables.tsv, from the level's RAM image build/ram/level1_full.bin), copies the level palette, the HUD (tools/msxhud.py) and RoboCop's
 logic tables (tools/player.py --inc) into build/msx/gen, assembles with z80asm and writes
 build/msx/rc2.rom.
@@ -44,8 +49,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BANK = 0x2000
-LOGIC = ("LC1", "LC2", "L1", "LC3", "INPUT", "FRONT", "FIELD")        # logic banks after the two code banks (msx/rc2.asm sections):
-                                    # modules at 8000h (one at a time), the level at A000h
+LOGIC = ("LC1", "LC2", "L1", "LC3", "INPUT", "FRONT", "FIELD", "MUSIC")  # logic banks after the two code banks (msx/rc2.asm
+                                    # sections): modules at 8000h (one at a time), the level at A000h
 PICTURES = (("title", "title_credit"), ("gameover", "gameover_text"))   # the SCREEN 8 pictures next to
                                     # the level's files (name, file): TPIC with the port's credit
                                     # (tools/msxtext.py), PIC9 with GAME OVER below it
@@ -65,6 +70,9 @@ OPTIONS = {
                    " 2: an animation never skips a step of 2 ticks, about 5 % slower in busy scenes)"),
     "CAD_HOLD": (2, "the same while the V9938 scroll keeps the camera at a page's edge (its next page not built yet)"),
     "ENEMY_CAP": (1, "N > 0 = at most N enemy slots in use (the original has 5; the user chose 1): 0 = the original, for trace tests"),
+    "NO_SCC": (0, "1 = the title music ignores an SCC (test: the OPLL or PSG modes on a KonamiSCC cartridge)"),
+    "NO_FM": (0, "1 = the title music ignores an OPLL (test)"),
+    "NO_SCC_INT": (0, "1 = the title music ignores the cartridge's own SCC: only another slot's (test: KonamiSCC + -ext scc+)"),
     "DAMAGE_X": (3, "1-3: the enemies' damage to RoboCop multiplied (their bullets, touching them): 3 = the user's choice"
                     " for the fewer enemies (ENEMY_CAP), 1 = the original, for trace tests; the missile (enemy bullet"
                     " types 1 and 2, damage 40h) at most 2, the user's choice (msx/hits.asm)"),
@@ -134,6 +142,89 @@ def bob_hash(sprites_json: Path) -> bytes:
             raise SystemExit("BOBHASH: the overflow slots are full")
         table[8 * h:8 * h + 8] = key + bytes([f["id"], f.get("sil", 0xFF), 0])
     return bytes(table)
+
+
+def offsets(blob: bytes, n: int) -> list[int]:
+    """The n little-endian 24-bit offsets at the start of a music blob (tools/msxscc.py, msxfm.py)."""
+    return [blob[3 * i] | blob[3 * i + 1] << 8 | blob[3 * i + 2] << 16 for i in range(n)]
+
+
+MVK_SCC, MVK_PSG, MVK_FM, MVK_RHY = range(4)     # msx/music.asm's stream kinds
+
+
+def voice_at(blob: bytes, start: int, bank: int, kind: int, tick: int, since: int) -> bytes:
+    """A music.asm voice record (MV_..., 16 bytes) as mus_adv leaves it after `tick` of the stream
+    at `start` of a blob from `bank` on (records of dur, ctl and the fields its bits give): the
+    next record's address and bank, the ticks left, the ctl, period, aux and rhythm volumes in
+    effect, the stream's start, MV_NEW for vm_music's outputs (every field; bit 7 when an OPLL
+    note began after `since`) and the kind; the rhythm's keys cleared (struck when its record
+    began)."""
+    word, byte = (0x40, 0x80) if kind == MVK_PSG else (0x10, 0x20)
+    p, t, per, aux, rv, again = start, 0, 0, 0, [0, 0, 0], False
+    while True:
+        d = blob[p]
+        if d == 0:
+            p = start
+            continue
+        ctl, q = blob[p + 1], p + 2
+        if kind == MVK_RHY:
+            if ctl & 0x20:
+                rv, q = list(blob[q:q + 3]), q + 3
+        else:
+            if ctl & word:
+                per, q = blob[q] | blob[q + 1] << 8, q + 2
+            if ctl & byte:
+                aux, q = blob[q], q + 1
+        again |= kind == MVK_FM and bool(ctl & 0x80) and since < t <= tick
+        if t + d > tick:
+            break
+        t, p = t + d, q
+    if kind == MVK_RHY:
+        ctl &= 0xE0
+
+    def where(off: int) -> list[int]:
+        a = 0x8000 + off % BANK
+        return [a & 0xFF, a >> 8, bank + off // BANK]
+    return bytes(where(q) + [d - (tick - t), ctl, per & 0xFF, per >> 8, aux] + where(start)
+                 + [0x31 | (0x80 if again else 0)] + rv + [kind])
+
+
+def voice_inc(label: str, blob: bytes, bank: int, streams: list[tuple[int, int]], tick: int, since: int) -> list[str]:
+    """voice_at of a blob's streams (header index, kind) as z80asm lines after a label."""
+    out = [f"{label}:"]
+    for i, kind in streams:
+        rec = voice_at(blob, offsets(blob, 4)[i], bank, kind, tick, since)
+        out.append("        db " + ", ".join(str(v) for v in rec))
+    return out
+
+
+def music_inc(scc: bytes, scc_bank: int, waves_n: int, fm: bytes, fm_bank: int, tick: int, since: int) -> str:
+    """music.inc (BANK_MUSIC, msx/music.asm): each stream's bank and address in the 8000h window
+    (the blobs start at their banks), the SCC's waveforms, the OPLL's patch block, and the
+    voices' records at `tick`, the first after the speech (vm_music: mus_snap_...)."""
+    def entries(label: str, blob: bytes, bank: int, what: str) -> list[str]:
+        out = [f"{label}:{' ' * max(1, 28 - len(label))}; {what}: bank, address (8000h window)"]
+        for off in offsets(blob, 4):
+            out.append(f"        db {bank + off // BANK}\n        dw 0x{0x8000 + off % BANK:04X}")
+        return out
+    def db(data: bytes) -> list[str]:
+        return ["        db " + ", ".join(str(b) for b in data[i:i + 16]) for i in range(0, len(data), 16)]
+    so, fo = offsets(scc, 5), offsets(fm, 5)
+    waves = scc[so[4]:so[4] + 32 * waves_n]
+    lines = ["; generated by tools/mkrom.py: the title music's streams (tools/msxscc.py, tools/msxfm.py)"]
+    lines += entries("mus_scc", scc, scc_bank, "the SCC's three voices, then the drums on PSG voice C")
+    lines += entries("mus_fm", fm, fm_bank, "the OPLL's three voices, then its rhythm")
+    lines.append("fm_patch:                           ; the custom instrument (00h-07h), the rhythm's pitches"
+                 " (16h-18h, 26h-28h)")
+    lines += db(fm[fo[4]:fo[4] + 14])
+    lines.append(f"scc_waves:                          ; {len(waves) // 32} waveforms of 32 bytes")
+    lines += db(waves)
+    lines.append(f"; the voices as mus_adv leaves them after tick {tick} (the first after the speech: vm_music)")
+    lines += voice_inc("mus_snap_scc", scc, scc_bank, [(0, MVK_SCC), (1, MVK_SCC), (2, MVK_SCC)], tick, since)
+    lines += voice_inc("mus_snap_psg", scc, scc_bank, [(3, MVK_PSG)], tick, since)
+    lines += voice_inc("mus_snap_fm", fm, fm_bank, [(0, MVK_FM), (1, MVK_FM), (2, MVK_FM)], tick, since)
+    lines += voice_inc("mus_snap_rhy", fm, fm_bank, [(3, MVK_RHY)], tick, since)
+    return "\n".join(lines) + "\n"
 
 
 def equates(path: Path) -> dict[str, int]:
@@ -219,8 +310,24 @@ def main(argv: list[str]) -> int:
     for p in pics:
         pic_first.append(b)
         b += -(-len(p) // BANK)
-    voice = (level.parent / "voice.bin").read_bytes()   # RoboCop's speech, PSG PCM (tools/msxvoice.py)
+    voice = (level.parent / "voice.bin").read_bytes()   # RoboCop's speech, PSG PCM (tools/msxvoice.py),
+    voice_mix = (level.parent / "voice_mix.bin").read_bytes()   # and the speech in the music
     bank_voice = b
+    bank_mix = bank_voice + len(voice) // BANK
+    voice += voice_mix
+    scc = (level.parent / "scc.bin").read_bytes()       # the title music on the SCC (tools/msxscc.py)
+    fm = (level.parent / "fm.bin").read_bytes()         #   and on the OPLL (tools/msxfm.py)
+    scc = scc + b"\xff" * (-len(scc) % BANK)
+    fm = fm + b"\xff" * (-len(fm) % BANK)
+    bank_scc = bank_voice + len(voice) // BANK
+    bank_fm = bank_scc + len(scc) // BANK
+    # the banks the 8000h window maps (KonamiSCC: 63 and 127 select the SCC's registers instead)
+    at_8000 = list(range(2, 2 + len(LOGIC))) + list(range(2 + len(LOGIC), bank_atr + 4 + dyn_banks)) \
+        + list(range(bank_voice, bank_fm + len(fm) // BANK))
+    bad = sorted(set(at_8000) & {63, 127})
+    if bad:
+        print(f"error: bank(s) {bad} would be mapped at 8000h (the SCC's registers)", file=sys.stderr)
+        return 1
     pl = equates(level.parent / "player.inc")
     kx = -(-0x10000 * (COLS * 16 - 256 - pl["CAM_XMAX"]) // pl["CAM_XMAX"])
     ky = -(-0x10000 * (rows * 16 - VIEW_LINES - pl["LVL_YMAX"]) // pl["LVL_YMAX"])
@@ -235,9 +342,12 @@ def main(argv: list[str]) -> int:
         f"BOBHASH: equ 0x8600\n"
         + "".join(f"PIC_{n.upper()}_BANK: equ {pic_first[i]}\nPIC_{n.upper()}_LINES: equ {len(pics[i]) // 256}\n"
                   for i, (n, f) in enumerate(PICTURES)) +
-        f"VOICE_BANK: equ {bank_voice}\n"
+        f"VOICE_BANK: equ {bank_voice}\nVOICE_MIX_BANK: equ {bank_mix}\nSCC_BANK: equ {bank_scc}\nFM_BANK: equ {bank_fm}\n"
         f"VIEW_KX: equ {kx}\nVIEW_KY: equ {ky}\n")
     (gen / "input.inc").write_text(input_inc(script, tele))
+    vq = equates(level.parent / "voice.inc")
+    (gen / "music.inc").write_text(music_inc(scc, bank_scc, equates(level.parent / "scc.inc")["SCC_WAVES"], fm, bank_fm,
+                                             vq["VOICE_TICK"] + vq["VOICE_TICKS"], vq["VOICE_TICK"]))
     (gen / "options.inc").write_text("; generated by tools/mkrom.py: build options\n" + "".join(
         f"{k}: equ {v}{' ' * max(1, 12 - len(str(v)))}; {OPTIONS[k][1]}\n" for k, v in opts.items())
         + f"INPUT_SCRIPT: equ {1 if script or opts['EXTJOY'] else 0}           ; 1: the JOY script plays (input.inc)\n")
@@ -271,7 +381,7 @@ def main(argv: list[str]) -> int:
            + field_img + b"\xff" * (BANK - len(field_img))
            + field_dyn + b"\xff" * (dyn_banks * BANK - len(field_dyn))
            + b"".join(p + b"\xff" * (-len(p) % BANK) for p in pics)
-           + voice)
+           + voice + scc + fm)
     if len(rom) > 0x100000:
         print(f"error: the ROM takes {len(rom) // BANK} banks (1 MiB: 128)", file=sys.stderr)
         return 1

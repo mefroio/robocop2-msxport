@@ -63,7 +63,9 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
    works on MegaRAM and on Konami SCC cartridges. 128 KiB of VRAM remain required.
 3. **Sound**: PSG mandatory + **FM-PAC/MSX-MUSIC** when detected (built into several MSX2+,
    common as a cartridge on MSX2; 9 channels plus drums). SCC only as an option if found in
-   a slot — the MegaRAM has no SCC.
+   a slot — the MegaRAM has no SCC. (2026-10-22, the user's request, "muito melhor e mais
+   próximo possível do Amiga": the title music on an SCC or SCC+ and on an OPLL when found;
+   the in-game effects stay on the PSG. See Sound.)
 4. **SCREEN 5 everywhere** (game, HUD, logos, text screens). SCREEN 8 rejected: fixed 3-3-2
    palette worse for 16-colour art, sprites with a fixed 16-colour palette (rules out the
    approved RoboCop), double VDP cost and 64 KiB pages without room for tiles.
@@ -604,33 +606,45 @@ which as sprites were striped, cut or left out.
   wait, its end), or ends with fire from tick 50 on; then the play area goes black at once.
   The bench's picture of the screen and the model's are identical (agent run, 2026-10-21).
 - The ROM is 1 MiB (128 banks; the user's choice, 2026-10-22, for RoboCop's speech and the next
-  levels: a 1 MiB MegaRAM or flash cartridge): the first 64 hold the game as before (the
-  pictures take the last 13 of them), the speech follows from `VOICE_BANK`, the rest is free.
+  levels: a 1 MiB MegaRAM or flash cartridge): the first 65 hold the game (the pictures take the
+  last 13 of them), then the speech (`VOICE_BANK`; in the music: `VOICE_MIX_BANK`), the title
+  music for the SCC (`SCC_BANK`) and for the OPLL (`FM_BANK`), 74 banks in all; the rest is free.
   The 8000h window must never map bank 63 or 127: on a KonamiSCC cartridge they select the
-  SCC's registers at `9800h`. `BANK_INPUT` holds the test builds' joystick script and the sound
-  player with its streams. The complete game with levels 2 and 3 may need 2 MiB.
+  SCC's registers at `9800h` (`tools/mkrom.py` checks every bank that window maps: the pictures,
+  read at `A000h`, take bank 63). `BANK_INPUT` holds the test builds' joystick script and the
+  PSG player with its streams, `BANK_MUSIC` the SCC / OPLL player and the speech's tables. The
+  complete game with levels 2 and 3 may need 2 MiB.
 
 ## Sound (`msx/sound.asm`)
 
 - At power-on, with the BIOS still in page 0, every slot's page 1 is searched for an OPLL BIOS
   ("APRLOPLL": MSX-MUSIC built in; "PAC2OPLL": an FM-PAC, whose I/O ports are switched on with
   bit 0 of `7FF6h` in its slot). The PSG is always used; the OPLL (ports `7Ch`/`7Dh`) when
-  found (`snd_fm`).
+  found (`snd_fm`). Then `music.asm` `mus_init` looks for an SCC: in the cartridge's own slot
+  (its mapper's bank 3Fh at `8000h` shows the registers at `9800h`: a Konami SCC or flash
+  cartridge; a MegaRAM has none) by 8 bytes written to the waveform RAM and read back, else
+  (`sound.asm` `scc_scan`) in the other primary slots that are not expanded (an SCC or SCC+
+  cartridge beside a MegaRAM: page 2 switched to it through port `A8h`), skipping any whose
+  `8000h` is RAM, after 3Fh written to its `9000h` (an SCC+ starts in SCC mode). Every SCC
+  access then goes through `sound.asm` `scc_wr` / `scc_wv` (`scc_open` / `scc_close` in the
+  fixed area: page 2 may be the other cartridge meanwhile).
 - `snd_frame` runs from the VBLANK interrupt (the music keeps its tempo while the game catches
   up); the PSG's address latch is shared with the joystick reads, so outside the interrupt
   every PSG access runs with interrupts disabled and R7 keeps port A as input.
 - **RoboCop's speech** ("YOUR MOVE, CREEP", in the title music at 57.6 s: instrument 24, sample
   11, "TOM" in its 8SVX header, on Amiga channel 2 and again on channel 0 nine ticks later; the
-  user identified it): tones cannot say it, so the PSG streams leave its notes silent and, the
-  user's choice for the PSG, it plays when the player starts: the title music stops and
-  `front.asm` `voice_play` plays it as PCM (`tools/msxvoice.py`: the two channels rendered as
-  Paula plays them, the A500's filter, 7990 samples a second, 1.68 s in 2 banks from
-  `VOICE_BANK`). Each sample byte indexes `voice_tab`: the three voices' volumes (tone and noise
-  off, a voice outputs its level) whose summed levels come nearest to it on the AY's curve
-  (1.5 % quantisation error, against about 30 % with one voice's 16 levels). The loop takes 448
-  T-states a sample (measured in openMSX on both VDPs) with the interrupts off; every 256
-  samples it reads fire: pressed once released, it ends the speech. Recorded in openMSX: the
-  music up to the key, then the speech, then silence.
+  user identified it): tones cannot say it, so every stream leaves its notes silent and the PSG
+  plays it as PCM (`music.asm` `vm_play`; `tools/msxvoice.py`: the channels rendered as Paula
+  plays them, the A500's filter, 7990 samples a second, 1.68 s in 2 banks). With the PSG alone
+  (the user's choice for the PSG) it plays when the player starts: the title music stops, then
+  `vm_alone` plays the speech (`VOICE_BANK`). With an SCC or an OPLL it keeps its place in the
+  music (the user's choice: "manter a originalidade"; below). Each sample byte indexes
+  `voice_tab`: the three voices' volumes (tone and noise off, a voice outputs its level) whose
+  summed levels come nearest to it on the AY's curve (1.5 % quantisation error, against about
+  30 % with one voice's 16 levels). The loop takes 448 T-states a sample (measured in openMSX:
+  13,364 of 13,417 samples, the others the 52 fire reads, 656-729) with the interrupts off;
+  every 256 samples it reads fire: pressed once released, it ends the speech. Recorded in
+  openMSX: the music up to the key, then the speech, then silence.
 - The original's music and sound effects are tunes of the same player (MU1 at `$18000`):
   `tools/rc2music.py` models it exactly; `tools/msxsound.py` turns its output (per Amiga channel
   and tick: period, volume, instrument, key-ons) and the samples into PSG streams
@@ -667,7 +681,65 @@ which as sprites were striped, cut or left out.
   (R7) keeps port A as input and port B as output. Checked headless: the PSG's registers read
   at every VBLANK of the title (60 and 50 Hz machines) follow the streams state by state at 1.2
   and 1.0 VBLANKs a tick; in game the effects start on their voices (`sess_psgdrive.tcl` in the
-  scratchpad). No FM yet: the OPLL found at power-on stays silent.
+  scratchpad). With the SCC / OPLL player in the ROM the PSG title's registers are the same
+  sequence as before, state by state (858 states, a `NO_SCC=1 NO_FM=1` build, 2026-10-22).
+
+### The title music on the SCC and the OPLL (`msx/music.asm`, `BANK_MUSIC` at `A000h`)
+
+- **What plays it** (`mus_mode`, the user's request for the sound closest to the Amiga): an SCC
+  takes the melody (Amiga channels 0-2 on SCC channels 1-3: each sample's own waveform), an
+  OPLL the drums (channel 3 on its rhythm section) and, without an SCC, the melody too (OPLL
+  channels 0-2); with an SCC alone the drums ride PSG voice C; with neither, the PSG player's
+  title as before. The in-game effects stay on the PSG player in every mode. Test builds:
+  `NO_SCC=1`, `NO_FM=1`, `NO_SCC_INT=1` (only another slot's SCC).
+- **The data**: `tools/msxscc.py` (`scc.bin`: three SCC voice streams, the PSG drum stream in
+  `sndplay.asm`'s format, nine 32-byte waveforms; 25.8 KiB) and `tools/msxfm.py` (`fm.bin`:
+  three OPLL voice streams, the rhythm stream, the custom instrument and the rhythm's pitches;
+  13 KiB), from the same exact Amiga model as `msxsound.py`; their docstrings give the mapping
+  and why (the SCC: waveforms fitted from each sample's sustained body, harmonics 1-15, the
+  levels from the bytes played per whole cycle, a dip before a re-trigger of the same note,
+  the Amiga's real tuning; the OPLL: the preset or the custom patch nearest each sample's
+  spectrum and envelope, the custom one fitted for the bass, per-tick volumes that follow the
+  Amiga through the instruments' own envelopes, BD / SD / TOM at the drums' measured pitches).
+  `tools/mkrom.py` appends both from their banks and writes `gen/music.inc` (each stream's bank
+  and address, the waveforms, the patch, and the voices' state after the speech).
+- **The player**: four voices of 16 bytes (`mus_v`: three melodic, the drums) read their streams
+  through the 8000h window, crossing banks: records of a duration in ticks (0: the stream's
+  start again) and a ctl byte giving the volume and which fields follow (the SCC: the period N
+  and the waveform; the OPLL: the F-number and block, the instrument and sustain, key on, a new
+  note: the key off and on again; the rhythm: the keys struck and the three volume registers).
+  Every stream lasts the tune's loop (5184 ticks), so the voices stay in step. 50 ticks a
+  second from the VBLANK interrupt (`snd_frame` → `mus_frame`; at 60 Hz every sixth VBLANK is
+  skipped); `snd_music` starts it at once (`mus_start`: the custom instrument, the rhythm's
+  pitches, the SCC's channels on), `snd_stop` silences it at once (`mus_stop`).
+- **The speech in the music** (tick `VOICE_TICK`, 2880): the tick raises `mus_speak`; `front.asm`
+  `front_fire` then calls `vm_music`, which mutes the chips (the SCC's volumes 0, the OPLL's
+  melodic volumes 15 with the keys as they are, its rhythm off) and plays `voice_mix.bin`: the
+  Amiga's four channels for the speech's 84 ticks (the speech with the bass and the drums going
+  on, rendered the same way, `MIX_GAIN` 0.57: measured in openMSX, the music around it as loud
+  against the PCM as on the Amiga, within 1 dB in all three modes). Then the voices take the
+  state `mkrom.py` computed for tick 2964 (`mus_snap_...`: each stream decoded to that tick,
+  every field given; an OPLL note again only when one began meanwhile, the rhythm's keys not
+  struck again) and the chips with it, in about 1 ms; the VBLANK the speech held off is
+  dropped and the 60 Hz divider reset, so the next tick comes at its time (+2 ms at 60 Hz, +0
+  at 50 Hz, measured). While the music plays, PSG voices A and B hold the PCM's middle level
+  (`VOICE_DC_A`, `VOICE_DC_B`: a DC, silent; ramped over 20 ms at the music's start and end),
+  so the PCM starts and ends on it without a fade. (First tried: ticking the music from inside
+  the PCM loop every 160 samples; each tick held the samples for 0.4-1 ms, measured, a buzz
+  louder than the quantisation. Fire pressed once released during the speech ends the title.)
+- **Checked headless in openMSX** (2026-10-22, scratchpad `sess_sccregs.tcl`, `sess_fmregs.tcl`,
+  `sess_fmwrites.tcl`, `scccheck.py`, `fmcheck.py`): at every tick of a whole loop and past it
+  (5,564 ticks) the SCC's registers (period, volume, waveform of each channel, the enable) and
+  the drums' PSG registers, or the OPLL's (channels 0-2, the rhythm, the patch), equal the
+  streams decoded independently, on 60 and 50 Hz machines, with the SCC in the cartridge
+  (KonamiSCC), in another slot (`-extb scc`, `-extb scc+`) and with SCC + OPLL; the 84 speech
+  ticks muted, tick 2964 and every tick after it as the streams say. Every new OPLL note writes
+  the key off before the key on (82 of 82). The slot scan finds no SCC on the 15 machines
+  without one, and the game starts on all. Recorded against the Amiga reference (the first 50
+  s, tempo aligned): chroma similarity 0.92 and level error 1.4 dB with the SCC (PSG voice C
+  drums), 0.91 / 1.5 dB with SCC + OPLL, 0.90 / 1.6 dB with the OPLL alone, against 0.84 /
+  2.1 dB for the PSG title on the same machine. The OPLL's drums end sooner than the Amiga's
+  samples (a snare's tail, 20 ticks on, is silent: the rhythm section's envelopes).
 
 ## HUD
 

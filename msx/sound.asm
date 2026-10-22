@@ -1,7 +1,8 @@
-; Sound: the PSG (always) and an OPLL (MSX-MUSIC built in, or an FM-PAC cartridge) when one is
-; found at the start. The music and the sound effects come from the game's tunes (the Amiga's
-; MU1 player: music and effects are tunes of the same format); this file holds the hardware
-; layer and the per-frame hook (snd_frame, from the VBLANK interrupt).
+; Sound: the PSG (always), and for the title music an SCC (in the cartridge's slot) and an OPLL
+; (MSX-MUSIC built in, or an FM-PAC cartridge) when found at the start (music.asm mus_init). The
+; music and the sound effects come from the game's tunes (the Amiga's MU1 player: music and
+; effects are tunes of the same format); this file holds the hardware layer and the per-frame
+; hook (snd_frame, from the VBLANK interrupt).
 ;
 ; Port rules: the PSG's address latch (A0h) is shared with the joystick reads (player.asm
 ; stick_bits: R14/R15 with interrupts disabled), so outside the interrupt every PSG access runs
@@ -9,6 +10,7 @@
 
 PSG_ADDR:   equ 0xA0
 PSG_DATA:   equ 0xA1
+PSG_IN:     equ 0xA2
 OPLL_ADDR:  equ 0x7C
 OPLL_DATA:  equ 0x7D
 PSG_MIX:    equ 0xBF                ; R7: no tone, no noise; port A input, port B output
@@ -38,21 +40,152 @@ opll_w: out (OPLL_ADDR),a
         pop af
         ret
 
-; ----- the player (sndplay.asm, BANK_INPUT) -----
+; ----- the SCC (music.asm's title music) -----
 
-; From the VBLANK interrupt: the requests queued since, then the music and the effects advance.
-snd_frame:
-        ld hl,sq_frame
-; HL = a routine of the player, A its argument: called with BANK_INPUT at A000h (the window's
-; bank back after; act_a000 kept: the interrupts disabled, or the VBLANK interrupt itself).
-; Keeps DE, IX, IY.
-snd_bank:
-        push de
-        push ix
-        ld c,a
-        ld a,BANK_INPUT
-        ld (BANK_A000),a
+; The SCC is in the cartridge's own slot (its mapper's bank 3Fh at 8000h shows the registers at
+; 9800h: a Konami SCC or flash cartridge) or in another primary slot, not expanded (an SCC or
+; SCC+ cartridge beside a MegaRAM: page 2 switched to it through port A8h for each access;
+; scc_pg2 = its slot in A8h's bits 4-5, 0 for the cartridge's own). The code between scc_open
+; and scc_close runs here, in the fixed area (page 2 may not be the cartridge's meanwhile); the
+; interrupts off (or the VBLANK interrupt).
+
+PPI_SLOT:   equ 0xA8
+
+; HL = an SCC register (9800h-98FFh), A = its value. Keeps HL, DE.
+scc_wr: push af
+        call scc_open
+        pop af
+        ld (hl),a
+        jr scc_close
+
+; DE = a channel's waveform (9800h + 32 x channel): scc_wb's 32 bytes there.
+scc_wv: call scc_open
+        ld hl,scc_wb
+        ld bc,32
+        ldir
+scc_close:
+        ld a,(scc_pg2)
+        or a
+        jr nz,scl_x
+        ld a,(act_8000)
+        ld (BANK_8000),a
+        ret
+scl_x:  ld a,(scc_a8)
+        out (PPI_SLOT),a
+        ret
+
+; The SCC's registers at 9800h-98FFh. Uses AF, C.
+scc_open:
+        ld a,(scc_pg2)
+        or a
+        jr nz,sco_x
+        ld a,0x3F
+        ld (BANK_8000),a
+        ret
+sco_x:  ld c,a
+        in a,(PPI_SLOT)
+        ld (scc_a8),a
+        and 0xCF
+        or c
+        out (PPI_SLOT),a
+        ret
+
+; At power-on (music.asm mus_init, the interrupts off), when the cartridge has none: an SCC in
+; another primary slot that is not expanded, the first where 8000h is not RAM and 9800h keeps 8
+; bytes written there after 3Fh at 9000h (a Konami SCC cartridge's mapper, an SCC+ in SCC mode:
+; the registers at 9800h) -> scc_pg2 = that slot in A8h's bits 4-5 (0: none).
+scc_scan:
+        xor a
+        ld (scc_pg2),a
+        in a,(PPI_SLOT)
+        ld d,a                      ; D = A8h as it is,
+        and 0x30
+        ld e,a                      ; E = the cartridge's page 2 (its slot in bits 4-5),
+        ld c,0                      ; C = the slot tried (bits 4-5)
+ssc_lp: ld a,c
+        cp e
+        jr z,ssc_n
+        rrca
+        rrca
+        rrca
+        rrca
+        add a,EXPTBL & 0xFF
+        ld l,a
+        ld h,EXPTBL / 256
+        bit 7,(hl)
+        jr nz,ssc_n                 ; (expanded: its page 2 would need its secondary register)
+        ld a,d
+        and 0xCF
+        or c
+        out (PPI_SLOT),a
+        ld hl,0x8000
+        ld a,(hl)
+        ld b,a
+        cpl
+        ld (hl),a
+        cp (hl)
+        ld (hl),b
+        jr z,ssc_r                  ; (RAM: written back)
+        ld a,0x3F
+        ld (0x9000),a
+        call scc_pat
+        jr nz,ssc_r
         ld a,c
+        ld (scc_pg2),a
+ssc_r:  ld a,d
+        out (PPI_SLOT),a
+        ld a,(scc_pg2)
+        or a
+        ret nz
+ssc_n:  ld a,c
+        add a,0x10
+        ld c,a
+        cp 0x40
+        jr c,ssc_lp
+        ret
+
+; Z when the SCC's waveform RAM (9800h-9807h, page 2 showing it) keeps 8 bytes written there.
+; Uses AF, B, HL.
+scc_pat:
+        ld hl,0x9800
+        ld a,0x5A
+        ld b,8
+scp_w:  ld (hl),a
+        inc hl
+        add a,0x25
+        djnz scp_w
+        ld hl,0x9800
+        ld a,0x5A
+        ld b,8
+scp_r:  cp (hl)
+        ret nz
+        inc hl
+        add a,0x25
+        djnz scp_r
+        xor a                       ; (Z)
+        ret
+
+; ----- the players (sndplay.asm in BANK_INPUT, music.asm in BANK_MUSIC) -----
+
+; From the VBLANK interrupt: the title music on the SCC / OPLL while it plays (music.asm), then
+; the PSG player's requests queued since, its music and effects.
+snd_frame:
+        ld a,(mus_on)
+        or a
+        jr z,sf_psg
+        ld a,BANK_MUSIC
+        ld hl,mus_frame
+        call snd_bk
+sf_psg: ld hl,sq_frame
+; HL = a routine of the PSG player: called with BANK_INPUT at A000h (the window's bank back
+; after; act_a000 kept: the interrupts disabled, or the VBLANK interrupt itself). Keeps DE, IX,
+; IY.
+snd_bank:
+        ld a,BANK_INPUT
+; A = BANK_INPUT or BANK_MUSIC, HL = a routine there: the same.
+snd_bk: push de
+        push ix
+        ld (BANK_A000),a
         call fc_hl
         ld a,(act_a000)
         ld (BANK_A000),a
@@ -60,14 +193,34 @@ snd_bank:
         pop de
         ret
 
-; The title's music from its start (queued: the VBLANK interrupt starts it).
-snd_music:
-        ld a,SQ_MUSIC
-        jr snd_play
+; HL = a routine of music.asm (BANK_MUSIC at A000h around it; the bank that was there comes
+; back). Keeps nothing but what the routine leaves in RAM.
+mus_call:
+        ld a,(act_a000)
+        push af
+        ld a,BANK_MUSIC
+        call bank_a000
+        call fc_hl
+        pop af
+        jp bank_a000
 
-; Everything silent ($18004): the PSG at once, the voices at the next VBLANK. (At power-on
-; rc2.asm calls sq_init through snd_bank: the interrupts stay off.)
+; The title's music from its start: on the SCC / OPLL at once (music.asm), else queued for the
+; PSG player (the VBLANK interrupt starts it).
+snd_music:
+        ld a,(mus_mode)
+        or a
+        ld a,SQ_MUSIC
+        jr z,snd_play
+        ld hl,mus_start
+        jr mus_call
+
+; Everything silent ($18004): the SCC / OPLL and the PSG at once, the PSG player's voices at the
+; next VBLANK. (At power-on rc2.asm calls sq_init through snd_bank: the interrupts stay off.)
 snd_stop:
+        ld a,(mus_mode)
+        or a
+        ld hl,mus_stop
+        call nz,mus_call
         ld a,SQ_STOP
 ; A = sound (the game's tune number; $18014 with D0): queued for the VBLANK interrupt, which
 ; starts it (the main program never keeps the interrupts off for it: the HUD's split).

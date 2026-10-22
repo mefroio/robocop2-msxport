@@ -114,7 +114,7 @@ AY_INT = PSG_HZ / 8                     # the PSG counters' rate (a tone half-pe
 TICK_HZ = 50                            # the Amiga player's tick rate (and the MSX player's)
 SPEECH_INST = 24                        # RoboCop's speech ("YOUR MOVE, CREEP": sample 11, "TOM" in its
                                         # header) in the title: PSG PCM on start instead
-                                        # (tools/msxvoice.py, front.asm voice_play), silent here
+                                        # (tools/msxvoice.py, msx/music.asm vm_play), silent here
 FS = 44100                              # preview WAVs
 SPT = FS // TICK_HZ                     # 882 output samples per tick
 DMA_PERIOD = 113.75                     # one audio DMA word (2 bytes) per NTSC raster line: the

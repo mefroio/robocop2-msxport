@@ -36,6 +36,8 @@ init:   di
         call front_call             ; page 0: RAM from now on (no more BIOS calls; cold.asm)
         jp c,no_ram                 ; (cold.asm: BANK_FRONT still at 8000h)
         call snd_init               ; the PSG (and the OPLL) silent (cold.asm: BANK_FRONT at 8000h)
+        ld hl,mus_init
+        call mus_call               ; an SCC: the title music's chips (music.asm)
         ld hl,sq_init
         call snd_bank               ; the player idle, its queue empty (the interrupts still off)
         ld hl,AC_VARS               ; the variables of the Amiga's code area at the power-on
@@ -440,9 +442,6 @@ input_end:
         include "front.asm"
         include "cold.asm"          ; init routines of the fixed code (cold.asm)
         include "text.inc"          ; the text screens' font and the statistics (tools/msxtext.py)
-front_tab:
-        ds (0x100 - (front_tab & 0xFF)) & 0xFF, 0xFF  ; (voice_tab: 256-byte aligned)
-        include "voice.inc"         ; RoboCop's speech: its PSG table (tools/msxvoice.py)
 front_end:
         ds 0xA000 - front_end, 0xFF
 
@@ -452,3 +451,14 @@ front_end:
         include "field.asm"
 field_end:
         ds 0xC000 - field_end, 0xFF
+
+; ----- the title music on the SCC / OPLL and RoboCop's speech (BANK_MUSIC at A000h around their
+; calls: mus_call, snd_frame) -----
+        org 0xA000
+        include "music.asm"
+        include "music.inc"         ; the streams' banks, the SCC's waveforms, the OPLL's patch (tools/mkrom.py)
+music_tab:
+        ds (0x100 - (music_tab & 0xFF)) & 0xFF, 0xFF  ; (voice_tab: 256-byte aligned)
+        include "voice.inc"         ; RoboCop's speech: its PSG tables (tools/msxvoice.py)
+music_end:
+        ds 0xC000 - music_end, 0xFF
