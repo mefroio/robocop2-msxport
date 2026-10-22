@@ -81,7 +81,10 @@ scc_a8:     equ 0xC20B              ; A8h while page 2 shows that SCC (sound.asm
 fx_tmp:     equ 0xC20C              ; music.asm fx_start: the PSG voice of the effect's noise part
 fx_act:     equ 0xC20D              ; music.asm: 1 while an effect plays on the SCC engine (sndplay.asm ticks it)
 fx_son:     equ 0xC20E              ; music.asm: 1 once the SCC's channels 0-3 are on for the effects
+scp_mask:   equ 0xC20F              ; sound.asm scc_pat: the test values read back so far (a bit each)
 fx_wc:      equ 0xC2A0              ; 4: music.asm fx_osc: the effect waveform each SCC channel 0-3 holds (FFh: none)
+scp_need:   equ 0xC2A4              ; sound.asm scc_pat: the test values that must be read back
+scp_try:    equ 0xC2A5              ;   and the tries left
 scc_wb:     equ 0xC250              ; 32: a waveform on its way to the SCC (music.asm mo_scc)
 fx_pv:      equ 0xC270              ; 3 x MV_SIZE (16): the effects' PSG voices with an SCC (music.asm fx_start)
 mus_v:      equ 0xC210              ; 4 x MV_SIZE (16): the voices (3 melodic, the drums)

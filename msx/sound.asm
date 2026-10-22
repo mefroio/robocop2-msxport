@@ -210,6 +210,7 @@ ssc_lp: ld a,c
         jr z,ssc_r                  ; (RAM: written back)
         ld a,0x3F
         ld (0x9000),a
+        ld a,3                      ; (three of the four values: an unknown cartridge)
         call scc_pat
         jr nz,ssc_r
         ld a,c
@@ -226,32 +227,63 @@ ssc_n:  ld a,c
         jr c,ssc_lp
         ret
 
-; Z when the SCC's first waveform byte (9800h, page 2 showing its registers) keeps four values
-; written there, each read back after about 1 ms, in one of four tries: an emulated SCC may answer
-; late, or miss one (the MSX Pico+'s, the user's, 2026-10-22). ROM there, or a MegaRAM or Konami
-; mapper (a write there selects the 8000h bank), never answers. Uses AF, B.
+; A = how many of four values must have answered (1 in the cartridge's own slot, whose image
+; tools/mkrom.py checks; 3 in another slot, an unknown cartridge) -> Z when, over up to eight
+; tries, that many different values written to the SCC's first waveform byte (9800h, page 2
+; showing its registers) were read back about 1 ms later. An emulated SCC may not answer at times:
+; the MSX Pico+ on the user's SX-2 read back 00 one time in four to two in four while its stores
+; always landed (their test cartridges, 2026-10-22). ROM there, an empty slot, a MegaRAM or a
+; Konami mapper (a write there selects the 8000h bank) answer none of them in ours. Uses AF, B.
 scc_pat:
-        ld a,4                      ; (up to four tries)
-scp_t:  push af
-        ld a,0x5A
+        ld (scp_need),a
+        xor a
+        ld (scp_mask),a
+        ld a,8
+        ld (scp_try),a
+scp_t:  ld a,0x5A
 scp_lp: ld (0x9800),a               ; (fixed addresses: see scc_pv)
         ld b,0
 scp_w:  djnz scp_w                  ; (3300 T-states)
         ld b,a
         ld a,(0x9800)
         cp b
-        jr nz,scp_n
-        ld a,b
+        jr nz,scp_nx
+        ld a,b                      ; (read back: its bit, 1 << (value & 3), in scp_mask)
+        and 3
+        inc a
+        push bc
+        ld b,a
+        ld a,0x80
+scp_bt: rlca
+        djnz scp_bt
+        pop bc
+        push hl
+        ld hl,scp_mask
+        or (hl)
+        ld (hl),a
+        pop hl
+scp_nx: ld a,b
         add a,0x65                  ; (5Ah, BFh, 24h, 89h)
         cp 0xEE
         jr nz,scp_lp
-        pop af
-        xor a                       ; (Z)
-        ret
-scp_n:  pop af
+        ld a,(scp_mask)             ; (how many values read back so far)
+        ld b,0
+scp_cn: srl a
+        jr nc,scp_c0
+        inc b
+scp_c0: or a
+        jr nz,scp_cn
+        ld a,(scp_need)
         dec a
+        cp b
+        jr c,scp_ok                 ; (need - 1 < count: enough)
+        ld a,(scp_try)
+        dec a
+        ld (scp_try),a
         jr nz,scp_t
-        inc a                       ; (NZ)
+        or 1                        ; (NZ)
+        ret
+scp_ok: xor a                       ; (Z)
         ret
 
 ; ----- the players (sndplay.asm in BANK_INPUT, music.asm in BANK_MUSIC) -----

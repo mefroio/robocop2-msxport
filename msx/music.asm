@@ -131,12 +131,13 @@ mui_x:  ld a,b
         ei
         ret
 
-; An SCC in the cartridge's slot -> A = MM_SCC (NZ) when 9800h keeps what is written there
-; (sound.asm scc_pat), else 0 (ROM there, or a MegaRAM: writes select its banks). The
-; interrupts off; the 8000h window shows act_8000's bank after.
+; An SCC in the cartridge's slot -> A = MM_SCC (NZ) when 9800h gives back one of four values
+; written there in up to eight tries (sound.asm scc_pat), else 0 (ROM there, or a MegaRAM: writes
+; select its banks). The interrupts off; the 8000h window shows act_8000's bank after.
 scc_detect:
         ld a,SCC_REGS
         ld (BANK_8000),a
+        ld a,1                      ; (one of the four values: tools/mkrom.py checks our image)
         call scc_pat
         ld c,0
         jr nz,scd_x

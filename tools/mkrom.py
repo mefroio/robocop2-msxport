@@ -413,11 +413,17 @@ def main(argv: list[str]) -> int:
     while size < len(rom):
         size *= 2
     rom += b"\xff" * (size - len(rom))
-    # (msx/sound.asm scc_pat on a MegaRAM holding this image: each value written at 9800h
-    # selects that bank at 8000h, so the byte read back is the bank's at 1800h: never all four)
-    if all(rom[(v % (len(rom) // BANK)) * BANK + 0x1800] == v for v in (0x5A, 0xBF, 0x24, 0x89)):
-        print("error: on a MegaRAM the SCC test would find an SCC (banks 5Ah, BFh, 24h, 89h at 1800h)",
-              file=sys.stderr)
+    # (msx/sound.asm scc_pat takes one value read back from 9800h of the cartridge's own slot
+    # for an SCC: on a MegaRAM or a Konami mapper holding this image each value written there
+    # selects that bank at 8000h, the byte read back being the bank's at 1800h; on a Konami SCC
+    # mapper without the chip it is bank 3Fh's: none may be a test value)
+    nb = len(rom) // BANK
+    tests = (0x5A, 0xBF, 0x24, 0x89)
+    hits = [v for v in tests if rom[(v % nb) * BANK + 0x1800] == v] + \
+        [v for v in tests if rom[(0x3F % nb) * BANK + 0x1800] == v]
+    if hits:
+        print(f"error: the SCC test would find an SCC in a cartridge without one (value(s) "
+              f"{', '.join(f'{v:02X}h' for v in hits)} at a bank's 1800h)", file=sys.stderr)
         return 1
     out.write_bytes(rom)
     print(f"{out}: {len(rom) // 1024} KiB ({len(rom) // BANK} banks); tiles in {bank_tiles}-{bank_map - 1}, "

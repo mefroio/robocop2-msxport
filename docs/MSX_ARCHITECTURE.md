@@ -645,9 +645,12 @@ which as sprites were striped, cut or left out.
   found (`snd_fm`). Then `music.asm` `mus_init` looks for an SCC: in the cartridge's own slot
   (its mapper's bank 3Fh at `8000h` shows the registers at `9800h`: a Konami SCC or flash
   cartridge; a MegaRAM has none) by four values written to the first waveform byte (`9800h`),
-  each read back after about 1 ms, in one of up to four tries (`sound.asm` `scc_pat`; on a
-  MegaRAM or a Konami mapper a write there selects the `8000h` bank, and `tools/mkrom.py`
-  checks that those banks' bytes at `1800h` cannot answer all four), else
+  each read back after about 1 ms, in up to eight tries: one value read back is enough in the
+  cartridge's own slot (`sound.asm` `scc_pat`; the MSX Pico+ on the user's SX-2 reads back 00
+  one time in four to two in four; on a MegaRAM or a Konami mapper a write there selects the
+  `8000h` bank, without the chip bank 3Fh shows there, and `tools/mkrom.py` checks that no such
+  byte of this image at `1800h` is a test value; in openMSX found with 90 % of the reads made
+  to fail), three different ones in another slot (an unknown cartridge), else
   (`sound.asm` `scc_scan`) in the other primary slots that are not expanded (an SCC or SCC+
   cartridge beside a MegaRAM: page 2 switched to it through port `A8h`), skipping any whose
   `8000h` is RAM, after 3Fh written to its `9000h` (an SCC+ starts in SCC mode). Every SCC
