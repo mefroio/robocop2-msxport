@@ -635,16 +635,28 @@ which as sprites were striped, cut or left out.
   11, "TOM" in its 8SVX header, on Amiga channel 2 and again on channel 0 nine ticks later; the
   user identified it): tones cannot say it, so every stream leaves its notes silent and the PSG
   plays it as PCM (`music.asm` `vm_play`; `tools/msxvoice.py`: the channels rendered as Paula
-  plays them, the A500's filter, 7990 samples a second, 1.68 s in 2 banks). With the PSG alone
+  plays them, the A500's filter, 11,117 samples a second, 1.68 s in 3 banks). With the PSG alone
   (the user's choice for the PSG) it plays when the player starts: the title music stops, then
   `vm_alone` plays the speech (`VOICE_BANK`). With an SCC or an OPLL it keeps its place in the
   music (the user's choice: "manter a originalidade"; below). Each sample byte indexes
-  `voice_tab`: the three voices' volumes (tone and noise off, a voice outputs its level) whose
-  summed levels come nearest to it on the AY's curve (1.5 % quantisation error, against about
-  30 % with one voice's 16 levels). The loop takes 448 T-states a sample (measured in openMSX:
-  13,364 of 13,417 samples, the others the 52 fire reads, 656-729) with the interrupts off;
-  every 256 samples it reads fire: pressed once released, it ends the speech. Recorded in
-  openMSX: the music up to the key, then the speech, then silence.
+  `voice_tab`: the three voices' volumes (tone and noise off, a voice outputs its level), whose
+  summed level on the AY's curve comes nearest to the sample. The loop writes C's volume, then
+  B's, then A's, 45 T-states apart, and until the third write the PSG mixes old and new volumes:
+  the first table (each level's nearest combination, 1.5 % quantisation error) jumped from one
+  level to the next (`(0, 12, 15)` beside `(6, 13, 14)`), so every sample left 13-25 µs of a
+  level far from both, a hiss the user heard under the speech in the music ("um chiado
+  horrível"; 2026-10-22): measured in openMSX 15-20 dB over the Amiga's highs (4-6 kHz: −10.9 dB
+  against the Amiga's −26.5, relative to 50-4000 Hz), simulated with the writes' timing as
+  closely, SNR against the Amiga's mix 6 dB. Now (`smooth_table`) B and A only grow with the
+  level, along a path of single-volume steps chosen by dynamic programming against those
+  transients, and C, written first, gives the fine levels within each step: in simulation the
+  writes' timing then costs 0.1 dB, SNR against the Amiga 17 dB in the music (16 dB alone),
+  quantisation 2.6-3.7 %; measured in openMSX 4-6 kHz −25.9 dB, 10-14 kHz −24.8 (was −9.5; the
+  rest above the Amiga is the PCM's own image near 11 kHz, which 322 T a sample put there
+  instead of 6-10 kHz at 448). The loop takes 322 T-states a sample (measured in openMSX:
+  18,602 of 18,675 samples, the others the fire reads, 530, and the bank changes, 603) with the
+  interrupts off; every 256 samples it reads fire: pressed once released, it ends the speech.
+  Recorded in openMSX: the music up to the key, then the speech, then silence.
 - The original's music and sound effects are tunes of the same player (MU1 at `$18000`):
   `tools/rc2music.py` models it exactly; `tools/msxsound.py` turns its output (per Amiga channel
   and tick: period, volume, instrument, key-ons) and the samples into PSG streams
@@ -714,7 +726,8 @@ which as sprites were striped, cut or left out.
   pitches, the SCC's channels on), `snd_stop` silences it at once (`mus_stop`).
 - **The speech in the music** (tick `VOICE_TICK`, 2880): the tick raises `mus_speak`; `front.asm`
   `front_fire` then calls `vm_music`, which mutes the chips (the SCC's volumes 0, the OPLL's
-  melodic volumes 15 with the keys as they are, its rhythm off) and plays `voice_mix.bin`: the
+  melodic volumes 15 with the keys as they are, its rhythm off) and plays `voice_mix.bin` (3
+  banks from `VOICE_MIX_BANK`): the
   Amiga's four channels for the speech's 84 ticks (the speech with the bass and the drums going
   on, rendered the same way, `MIX_GAIN` 0.57: measured in openMSX, the music around it as loud
   against the PCM as on the Amiga, within 1 dB in all three modes). Then the voices take the
@@ -723,7 +736,9 @@ which as sprites were striped, cut or left out.
   struck again) and the chips with it, in about 1 ms; the VBLANK the speech held off is
   dropped and the 60 Hz divider reset, so the next tick comes at its time (+2 ms at 60 Hz, +0
   at 50 Hz, measured). While the music plays, PSG voices A and B hold the PCM's middle level
-  (`VOICE_DC_A`, `VOICE_DC_B`: a DC, silent; ramped over 20 ms at the music's start and end),
+  (`VOICE_DC_A`, `VOICE_DC_B`: 14 and 13, the table's coarse level nearest 1.5 with C at 0; a
+  DC, silent; ramped along `voice_tab` over 20 ms at the music's start and end; read in openMSX:
+  R8 14, R9 13, their tone and noise off, C playing the drums),
   so the PCM starts and ends on it without a fade. (First tried: ticking the music from inside
   the PCM loop every 160 samples; each tick held the samples for 0.4-1 ms, measured, a buzz
   louder than the quantisation. Fire pressed once released during the speech ends the title.)

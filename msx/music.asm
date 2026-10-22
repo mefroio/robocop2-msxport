@@ -310,9 +310,10 @@ dcd_lp: call dc_set
         ld c,a
         jr nc,dcd_lp
         ld c,0
-; C = a voice_tab index: the three voices' volumes, then about 0.6 ms.
+; C = a voice_tab index: the three voices' volumes (C, B, A: the table's order), then about
+; 0.6 ms.
 dc_set: ld b,voice_tab / 256
-        ld a,8
+        ld a,10
         out (PSG_ADDR),a
         ld a,(bc)
         out (PSG_DATA),a
@@ -322,7 +323,7 @@ dc_set: ld b,voice_tab / 256
         ld a,(bc)
         out (PSG_DATA),a
         inc b
-        ld a,10
+        ld a,8
         out (PSG_ADDR),a
         ld a,(bc)
         out (PSG_DATA),a
@@ -770,10 +771,13 @@ mum_r:  ld a,(mus_mode)
 ; A = the bank of VOICE_BANK's or VOICE_MIX_BANK's PCM, DE = its samples: the speech as PCM on
 ; the PSG (tools/msxvoice.py: index bytes through the 8000h window, one every VOICE_RATE_T
 ; T-states): each sets the three voices' volumes (voice_tab), tone and noise off (a voice then
-; outputs its volume's level), so their summed levels follow the sample. The interrupts off (a
-; VBLANK would delay samples); every 256 samples fire is read (SPACE or trigger A): pressed once
-; released (vp_rel), it ends the speech, vm_hit = 1. Then the mixer as it was (the volumes as the
-; last sample left them), the 8000h window act_8000's again.
+; outputs its volume's level), so their summed levels follow the sample. C's volume is written
+; first, then B's, then A's: until the third write the PSG mixes old and new volumes, and the
+; table's B and A only grow with the level, C giving the fine steps (msxvoice.py smooth_table:
+; the nearest combinations of the first table jumped, and those mixes were a hiss). The
+; interrupts off (a VBLANK would delay samples); every 256 samples fire is read (SPACE or
+; trigger A): pressed once released (vp_rel), it ends the speech, vm_hit = 1. Then the mixer as
+; it was (the volumes as the last sample left them), the 8000h window act_8000's again.
 vm_play:
         ld (vm_bank),a
         ld (BANK_8000),a
@@ -789,20 +793,20 @@ vm_lp:  ld a,(hl)                   ; 8 (T-states, with the M1 wait)
         inc hl                      ; 7
         ld c,a                      ; 5
         ld b,voice_tab / 256        ; 8
-        ld a,8                      ; 8
+        ld a,10                     ; 8
         out (PSG_ADDR),a            ; 12
         ld a,(bc)                   ; 8
-        out (PSG_DATA),a            ; 12  voice A's volume
+        out (PSG_DATA),a            ; 12  voice C's volume
         inc b                       ; 5
         ld a,9                      ; 8
         out (PSG_ADDR),a            ; 12
         ld a,(bc)                   ; 8
         out (PSG_DATA),a            ; 12  B's
         inc b                       ; 5
-        ld a,10                     ; 8
+        ld a,8                      ; 8
         out (PSG_ADDR),a            ; 12
         ld a,(bc)                   ; 8
-        out (PSG_DATA),a            ; 12  C's
+        out (PSG_DATA),a            ; 12  A's
         ld a,h                      ; 5
         cp 0xA0                     ; 8
         jr z,vm_bnk                 ; 8
