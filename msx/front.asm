@@ -467,3 +467,175 @@ front_done:
         ld (front_mode),a
         ei
         ret
+
+        if DIAG
+; ----- test builds (tools/mkrom.py DIAG=1, music.asm dg_main) -----
+
+; dg_txt (32 x 24 characters) on the screen in the game's font (txt_glyphs: strokes colour 1,
+; their shadow colour 4): SCREEN 5 page 0, white on black, no sprites, the interrupts off.
+dg_show:
+        ld hl,dgv_regs
+dgsh_r: ld b,(hl)
+        inc hl
+        ld a,b
+        cp 0xFF
+        jr z,dgsh_9
+        ld a,(hl)
+        inc hl
+        call dgv_wr
+        jr dgsh_r
+dgsh_9: ld a,(RG9SAV)
+        and 2
+        or 0x80                     ; (212 lines, the machine's 50 or 60 Hz)
+        ld b,9
+        call dgv_wr
+        ld a,(vdp_id)
+        cp 2
+        jr nz,dgsh_p
+        xor a
+        ld b,25
+        call dgv_wr
+        xor a
+        ld b,26
+        call dgv_wr
+        xor a
+        ld b,27
+        call dgv_wr
+dgsh_p: xor a
+        ld b,16
+        call dgv_wr                 ; (palette from entry 0)
+        ld hl,dgv_pal
+        ld bc,32 * 256 + VDP_PAL
+        otir
+        xor a                       ; page 0 black (VRAM 0000h-7FFFh)
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a
+        xor a
+        out (VDP_CTRL),a
+        ld a,0x40
+        out (VDP_CTRL),a
+        ld de,0x8000
+dgsh_c: xor a
+        out (VDP_DATA),a
+        dec de
+        ld a,d
+        or e
+        jr nz,dgsh_c
+        ld b,0
+dgsh_w: push bc
+        call dg_row
+        pop bc
+        inc b
+        ld a,b
+        cp 24
+        jr nz,dgsh_w
+        ld a,0x40                   ; display on (no interrupts)
+        ld b,1
+        jp dgv_wr
+
+; A = a value for VDP register B (the interrupts off).
+dgv_wr: out (VDP_CTRL),a
+        ld a,b
+        or 0x80
+        out (VDP_CTRL),a
+        ret
+
+; B = a row of dg_txt: its 32 characters, 8 x 8 each, from line 4 + 8 B.
+dg_row: ld c,0
+dgr_c:  push bc
+        ld l,b
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld e,c
+        ld d,0
+        add hl,de
+        ld de,dg_txt
+        add hl,de
+        ld a,(hl)
+        call dg_gl
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,txt_glyphs
+        add hl,de
+        ex de,hl                    ; DE = the glyph's 8 lines of 4 bytes
+        pop bc
+        push bc
+        ld a,b
+        add a,a
+        add a,a
+        add a,a
+        add a,4
+        ld h,a
+        ld l,0
+        srl h
+        rr l                        ; HL = its first line x 128
+        ld a,c
+        add a,a
+        add a,a
+        or l
+        ld l,a                      ; + 4 x column (page 0)
+        ld b,8
+dgr_l:  push bc
+        ld a,h
+        rlca
+        rlca
+        and 3
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a            ; R#14
+        ld a,l
+        out (VDP_CTRL),a
+        ld a,h
+        and 0x3F
+        or 0x40
+        out (VDP_CTRL),a
+        ex de,hl
+        ld bc,4 * 256 + VDP_DATA
+        otir
+        ex de,hl
+        ld bc,128
+        add hl,bc
+        pop bc
+        djnz dgr_l
+        pop bc
+        inc c
+        ld a,c
+        cp 32
+        jr nz,dgr_c
+        ret
+
+; A = a character (20h-5Fh) -> A = its glyph in txt_glyphs (a space for the others).
+dg_gl:  sub 0x20
+        jr c,dgg_sp
+        cp 0x40
+        jr nc,dgg_sp
+        push hl
+        ld hl,dg_gtab
+        add a,l
+        ld l,a
+        jr nc,dgg_n
+        inc h
+dgg_n:  ld a,(hl)
+        pop hl
+        ret
+dgg_sp: ld a,41
+        ret
+
+dg_gtab:    db 41, 40, 39, 41, 41, 43, 41, 41, 41, 41, 41, 41, 37, 41, 36, 41  ; space ! " # $ % ... , - . /
+            db 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 41, 41, 41, 41, 41, 38  ; 0-9 : ; < = > ?
+            db 41, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14             ; @ A-O
+            db 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 41, 41, 41, 41, 41   ; P-Z [ \ ] ^ _
+dgv_regs:   db 0, 0x06, 1, 0x00, 2, 0x1F, 7, 0x00, 8, R8_SPR_OFF, 15, 0, 18, 0, 23, 0, 0xFF
+dgv_pal:    db 0x00, 0x00, 0x77, 0x07, 0x00, 0x00, 0x00, 0x00, 0x24, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        endif

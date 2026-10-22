@@ -742,7 +742,13 @@ which as sprites were striped, cut or left out.
   channels 0-2); with an SCC alone the drums ride PSG voice C; with neither, the PSG player's
   title as before. The in-game effects stay on the PSG player in every mode. Test builds:
   `NO_SCC=1`, `NO_FM=1`, `NO_SCC_INT=1` (only another slot's SCC), `FORCE_SCC=1` (the
-  cartridge's SCC, not tested for: hardware whose SCC the test misses).
+  cartridge's SCC, not tested for: hardware whose SCC the test misses), `DIAG=1` (`msx/diag.asm`:
+  after the sound detection, at its place in the start, a screen of what this machine showed it
+  — the BIOS's slot tables, A8h, the mapper's banks at `8000h`, whether a store at `9800h` switches
+  the bank, every value the SCC test read, 64 stores and loads at `9800h` by instruction form, the
+  CPU's speed — then SCC test tones in turn: the engine's stores with bank 3Fh held, `(hl)` stores,
+  bank 02h at `8000h` meanwhile, the window switched every frame; no game; the other builds are
+  byte for byte the same).
 - **The data**: `tools/msxscc.py` (`scc.bin`: three SCC voice streams, the PSG drum stream in
   `sndplay.asm`'s format, nine 32-byte waveforms; 25.8 KiB) and `tools/msxfm.py` (`fm.bin`:
   three OPLL voice streams, the rhythm stream, the custom instrument and the rhythm's pitches;

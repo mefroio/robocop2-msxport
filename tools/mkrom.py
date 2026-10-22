@@ -81,6 +81,9 @@ OPTIONS = {
     "NO_SCC_INT": (0, "1 = the title music and the sound effects ignore the cartridge's own SCC: only another slot's (test: KonamiSCC + -ext scc+)"),
     "FORCE_SCC": (0, "1 = test build: the title music and the sound effects on the cartridge's SCC without testing for it"
                      " (hardware whose SCC the detection misses)"),
+    "DIAG": (0, "1 = test build: after the sound detection, at its place, a screen of what this machine showed it"
+                " (slots, the mapper, every SCC read, stores and loads by instruction form, the CPU's speed), then SCC"
+                " test tones; no game (music.asm dg_main)"),
     "DAMAGE_X": (3, "1-3: the enemies' damage to RoboCop multiplied (their bullets, touching them): 3 = the user's choice"
                     " for the fewer enemies (ENEMY_CAP), 1 = the original, for trace tests; the missile (enemy bullet"
                     " types 1 and 2, damage 40h) at most 2, the user's choice (msx/hits.asm)"),

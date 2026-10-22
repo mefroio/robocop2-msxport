@@ -17,7 +17,14 @@
 
 init:   di
         ld sp,0xF380
+        if DIAG
+        in a,(PPI_SLOT)
+        ld (dg_a8b),a               ; (test build: A8h as the BIOS left it)
+        endif
         ld a,(MSXVER)
+        if DIAG
+        ld (dg_msxv),a
+        endif
         or a
         jp z,no_msx2                ; (an MSX1)
         ld a,(MODE)
@@ -36,8 +43,16 @@ init:   di
         call front_call             ; page 0: RAM from now on (no more BIOS calls; cold.asm)
         jp c,no_ram                 ; (cold.asm: BANK_FRONT still at 8000h)
         call snd_init               ; the PSG (and the OPLL) silent (cold.asm: BANK_FRONT at 8000h)
+        if DIAG
+        ld hl,dg_log
+        ld (dg_ptr),hl              ; (test build: the SCC tests' reads logged)
+        endif
         ld hl,mus_init
         call mus_call               ; an SCC: the title music's chips (music.asm)
+        if DIAG
+        ld hl,dg_main
+        call mus_call               ; (test build: what this machine showed, then test tones; no game)
+        endif
         ld hl,sq_init
         call snd_bank               ; the player idle, its queue empty (the interrupts still off)
         ld hl,AC_VARS               ; the variables of the Amiga's code area at the power-on
@@ -457,6 +472,9 @@ field_end:
 ; calls: mus_call, snd_frame) -----
         org 0xA000
         include "music.asm"
+        if DIAG
+        include "diag.asm"          ; (test builds: what this machine showed the sound detection)
+        endif
         include "music.inc"         ; the streams' banks, the SCC's waveforms, the OPLL's patch (tools/mkrom.py)
 music_tab:
         ds (0x100 - (music_tab & 0xFF)) & 0xFF, 0xFF  ; (voice_tab: 256-byte aligned)

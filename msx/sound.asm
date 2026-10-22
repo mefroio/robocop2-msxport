@@ -184,7 +184,14 @@ scc_scan:
         and 0x30
         ld e,a                      ; E = the cartridge's page 2 (its slot in bits 4-5),
         ld c,0                      ; C = the slot tried (bits 4-5)
-ssc_lp: ld a,c
+ssc_lp:
+        if DIAG
+        ld a,0xFD                   ; (test build: FDh, the slot, then E expanded, R RAM, or the
+        call dg_rec                 ;  test's FEh)
+        ld a,c
+        call dg_rec
+        endif
+        ld a,c
         cp e
         jr z,ssc_n
         rrca
@@ -195,7 +202,15 @@ ssc_lp: ld a,c
         ld l,a
         ld h,EXPTBL / 256
         bit 7,(hl)
+        if DIAG
+        jr z,ssc_ne
+        ld a,'E'
+        call dg_rec
+        jr ssc_n
+ssc_ne:
+        else
         jr nz,ssc_n                 ; (expanded: its page 2 would need its secondary register)
+        endif
         ld a,d
         and 0xCF
         or c
@@ -207,7 +222,15 @@ ssc_lp: ld a,c
         ld (hl),a
         cp (hl)
         ld (hl),b
+        if DIAG
+        jr nz,ssc_nr
+        ld a,'R'
+        call dg_rec
+        jr ssc_r
+ssc_nr:
+        else
         jr z,ssc_r                  ; (RAM: written back)
+        endif
         ld a,0x3F
         ld (0x9000),a
         ld a,3                      ; (three of the four values: an unknown cartridge)
@@ -235,6 +258,14 @@ ssc_n:  ld a,c
 ; always landed (their test cartridges, 2026-10-22). ROM there, an empty slot, a MegaRAM or a
 ; Konami mapper (a write there selects the 8000h bank) answer none of them in ours. Uses AF, B.
 scc_pat:
+        if DIAG
+        push af
+        ld a,0xFE                   ; (test build: FEh, C, then every value read)
+        call dg_rec
+        ld a,c
+        call dg_rec
+        pop af
+        endif
         ld (scp_need),a
         xor a
         ld (scp_mask),a
@@ -246,6 +277,9 @@ scp_lp: ld (0x9800),a               ; (fixed addresses: see scc_pv)
 scp_w:  djnz scp_w                  ; (3300 T-states)
         ld b,a
         ld a,(0x9800)
+        if DIAG
+        call dg_rec
+        endif
         cp b
         jr nz,scp_nx
         ld a,b                      ; (read back: its bit, 1 << (value & 3), in scp_mask)
@@ -285,6 +319,17 @@ scp_c0: or a
         ret
 scp_ok: xor a                       ; (Z)
         ret
+
+        if DIAG
+; (Test build: A = a byte for dg_log. Keeps every register and flag.)
+dg_rec: push hl
+        ld hl,(dg_ptr)
+        ld (hl),a
+        inc hl
+        ld (dg_ptr),hl
+        pop hl
+        ret
+        endif
 
 ; ----- the players (sndplay.asm in BANK_INPUT, music.asm in BANK_MUSIC) -----
 

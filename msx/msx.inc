@@ -548,6 +548,16 @@ spawn_ram:  equ 0xDD80              ; DD80h-DFFFh: the level's spawn list ($B0E;
                                     ; words little-endian), copied from the level bank at its start
 objl_ram:   equ 0xEE00              ; EE00h-F0FFh: the level's object list ($9C18; 12-byte records)
 SP_RAM:     equ 0xE900              ; E900h-E9FFh: the level's special objects' records ($8B32)
+dg_msxv:    equ 0xE900              ; DIAG test builds (tools/mkrom.py, music.asm dg_main; before any level):
+dg_a8b:     equ 0xE901              ;   the BIOS's MSX version and A8h at the start (rc2.asm init),
+dg_ptr:     equ 0xE902              ;   2: the next byte of dg_log,
+dg_cur:     equ 0xE904              ;   2: the text cursor in dg_txt,
+dg_n:       equ 0xE906              ;   counts,
+dg_v:       equ 0xE907              ;   a test's value,
+dg_bad:     equ 0xE908              ;   4: a test's first wrong values read,
+dg_src:     equ 0xE90C              ;   the byte an ldi stores,
+dg_log:     equ 0xE910              ;   176: the SCC tests' reads (sound.asm scc_pat, scc_scan),
+dg_txt:     equ 0xEE00              ;   32 x 24: the screen's text (objl_ram, before the level)
 sp_ptrs:    equ 0xEA00              ; their list as MSX pointers (0 after the last; up to 16)
 lk_over:    equ 0xF168              ; LOCKSTEP test builds: frames that started late
 sat_ph:     equ 0xF169              ; sat_out: the tick of the VBLANK its SAT is for (its half)
