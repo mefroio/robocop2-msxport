@@ -14,6 +14,8 @@
         db "AB"
         dw init
         ds 12, 0
+        db "ROM_KON5"               ; (4010h: the mapper's tag, Konami SCC: the MSX Pico+ firmware
+                                    ;  starts the ROM with it as a sure detection)
 
 init:   di
         ld sp,0xF380

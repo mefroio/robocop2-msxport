@@ -428,6 +428,12 @@ def main(argv: list[str]) -> int:
         print(f"error: the SCC test would find an SCC in a cartridge without one (value(s) "
               f"{', '.join(f'{v:02X}h' for v in hits)} at a bank's 1800h)", file=sys.stderr)
         return 1
+    # (the MSX Pico+ firmware starts a Konami SCC ROM holding "OPLL" and an ld hl/de,4018h as an
+    # FM-PAC game, without its SCC: msx/cold.asm keeps its FM texts complemented)
+    if b"OPLL" in rom:
+        print(f"error: \"OPLL\" at {rom.index(b'OPLL'):05X}h: the MSX Pico+ would start the ROM "
+              f"without its SCC", file=sys.stderr)
+        return 1
     out.write_bytes(rom)
     print(f"{out}: {len(rom) // 1024} KiB ({len(rom) // BANK} banks); tiles in {bank_tiles}-{bank_map - 1}, "
           f"map in {bank_map}-{bank_spr - 1} ({rows} rows), RoboCop sprites in {bank_spr}-"

@@ -641,7 +641,8 @@ which as sprites were striped, cut or left out.
 
 - At power-on, with the BIOS still in page 0, every slot's page 1 is searched for an OPLL BIOS
   ("APRLOPLL": MSX-MUSIC built in; "PAC2OPLL": an FM-PAC, whose I/O ports are switched on with
-  bit 0 of `7FF6h` in its slot). The PSG is always used; the OPLL (ports `7Ch`/`7Dh`) when
+  bit 0 of `7FF6h` in its slot; `cold.asm` keeps these texts complemented, see the MSX Pico+
+  below). The PSG is always used; the OPLL (ports `7Ch`/`7Dh`) when
   found (`snd_fm`). Then `music.asm` `mus_init` looks for an SCC: in the cartridge's own slot
   (its mapper's bank 3Fh at `8000h` shows the registers at `9800h`: a Konami SCC or flash
   cartridge; a MegaRAM has none) by four values written to the first waveform byte (`9800h`),
@@ -660,12 +661,29 @@ which as sprites were striped, cut or left out.
 - **Stores to the SCC, as Konami's games make them** (2026-10-22): every register store is to a
   fixed address (`ld (nn),a`), per channel (`scc_pvs`), and the channels' enable is written
   again with every record (1-3 for the title music, 0-3 for the effects); the waveforms go with
-  `ldir` (each store right after a load). On the user's SX-2 (an MSX2+ on an FPGA) with an MSX
-  Pico+ (SCC+ emulation in the cartridge), the music and effects were silent: their test
-  cartridges showed one store or load through `(hl)`/`(de)` in four lost (the bus cycle right
-  after the instruction's own fetch), none through `(nn)` (12 of 12), and a single lost store of
-  the channels' enable had kept every channel off. Byte for byte the same writes on every
-  other machine: the title music and the effects stay register-exact in openMSX.
+  `ldir` (each store right after a load). Byte for byte the same writes on every machine: the
+  title music and the effects stay register-exact in openMSX. (Made while the MSX Pico+ was
+  silent; the cause turned out to be the next point, not the stores.)
+- **The MSX Pico+** (the user's SX-2, an MSX2+ on an FPGA, with Jeroen Taverne's RP2350
+  cartridge). Verified in its firmware v2.12 (`msxpico_noroms_v212.uf2` from msxpico.com,
+  decompiled with REA/Ghidra as Cortex-M33 Thumb code at `10000000h`; addresses of that image):
+  - The mapper is sure (`1000DA6Ch`) only for an 8-byte tag at the ROM's offset 10h (`ROM_ASC8`,
+    `ROM_AS16`, `ROM_KON4`, `ROM_KON5`, `ROM_NEO8`, `ROM_NE16`, ...) or a ROM in its SHA1
+    database; any other ROM gets "Not 100% sure about mapper type" with a guess from its
+    `ld (nn),a` targets (`1000DC74h`: 7000h, 9000h and B000h give Konami SCC). `rc2.asm` puts
+    `ROM_KON5` at `4010h` (the BIOS reads the header only up to `400Fh`).
+  - Starting a Konami SCC ROM (`1000A6C0h`, mapper 2), it searches the whole image for "OPLL"
+    and then for `21 18 40` or `11 18 40` (`ld hl,4018h` / `ld de,4018h`): with both it takes
+    the ROM for an FM-PAC game (release notes v1.28 "FM-PAC sound in Konami5 mapper", v1.33 the
+    `4018h` condition) and starts it with an FM-PAC in its subslot 1 and a Konami5 mapper
+    without the SCC, otherwise with the SCC. This image had both (the OPLL search's texts and
+    its `ld hl,4018h`): `cold.asm` now keeps the texts complemented (compared after a `cpl`)
+    and loads `4018h` as `ld l,18h`, and `tools/mkrom.py` refuses an image holding "OPLL".
+  - Observed on the user's machine before the fix (the DIAG build): the cartridge's slot 1
+    expanded, game in subslot 1-0, and with 3Fh at `9000h` every read of `9800h` the ROM's own
+    byte (bank 63 at `1800h`) from the first probe on; three test cartridges without that pair
+    of patterns had the SCC (a tone; the waveform read back right in one try in four to all
+    four, else 00 — hence `scc_pat`'s tries).
 - `snd_frame` runs from the VBLANK interrupt (the music keeps its tempo while the game catches
   up); the PSG's address latch is shared with the joystick reads, so outside the interrupt
   every PSG access runs with interrupts disabled and R7 keeps port A as input.

@@ -353,12 +353,12 @@ sdt_try:
         ld b,4
         call sdt_cmp
         ret nz
-        ld hl,0x4018
+        ld l,0x18                   ; (H = 40h: 4018h; no ld hl,4018h in the image, see sdt_opll)
         ld de,sdt_aprl
         ld b,4
         call sdt_cmp
         jr z,sdt_yes
-        ld hl,0x4018
+        ld l,0x18
         ld de,sdt_pac2
         ld b,4
         call sdt_cmp
@@ -380,6 +380,7 @@ sdt_cmp:
         push hl
         ld a,(snd_slot)
         call RDSLT
+        cpl                         ; (the texts are stored complemented)
         pop hl
         pop de
         pop bc
@@ -392,9 +393,12 @@ sdt_cmp:
         djnz sdt_cmp
         ret
 
-sdt_opll:   db "OPLL"
-sdt_aprl:   db "APRL"
-sdt_pac2:   db "PAC2"
+; The texts complemented, so that "OPLL" is nowhere in the image: the MSX Pico+ firmware starts
+; a Konami SCC ROM holding "OPLL" and an ld hl,4018h or ld de,4018h as an FM-PAC game, its
+; mapper without the SCC (seen in its v2.12 code; tools/mkrom.py checks the image).
+sdt_opll:   db 0xFF - 'O', 0xFF - 'P', 0xFF - 'L', 0xFF - 'L'
+sdt_aprl:   db 0xFF - 'A', 0xFF - 'P', 0xFF - 'R', 0xFF - 'L'
+sdt_pac2:   db 0xFF - 'P', 0xFF - 'A', 0xFF - 'C', 0xFF - '2'
 
 ; (vdp.asm) At power-on (rc2.asm init, through front_call): SCREEN 5, 212 lines, VDP ID, IM 2,
 ; palette, tiles (pages 2-3), HUD and sprite tables. Returns with the display off and no VDP
