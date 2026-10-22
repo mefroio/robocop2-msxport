@@ -169,8 +169,30 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   RoboCop's zone, or its own run when the size is the same) and replaces the version shown in
   the next published frame. An object never shows half of a change nor another object's
   frame. When no hole fits but the free entries would, the BOB runs are packed against
-  entry 31 (`sat_pack`, once a plan): fragmented holes once kept the vehicle invisible for
-  seconds.
+  entry 31 (`sat_pack`, once a plan, once more for each part a group shows): fragmented holes
+  once kept the vehicle invisible for seconds. Runs in RoboCop's zone move above it in the
+  pack too, and when his new version takes entries a BOB's run holds, that run moves above his
+  zone (`pr_clear`); dropped instead, an enemy's legs vanished for up to 10 pictures whenever
+  his next frame took more sprites. His zone is worked out again once his new version is shown
+  (`rc_zone`): the entries only the old one took serve the BOBs in that plan already.
+- **Parts of one character** (the BOB objects of one owner and category, `obj_key`: an enemy's
+  legs, torso and arm) always show versions prepared in one plan, so of one tick, and change
+  together: shown one by one, a walking enemy's torso stood on legs of another tick for 7–17
+  pictures, or one part was missing (the user, 2026-10-22). A part prepares no version while
+  another prepares one of an earlier plan (`pgc_old`); one that shows nothing yet does not wait:
+  the others' versions of earlier plans go and are prepared again with its own (`pgc_new`); a
+  part back on the frame it shows keeps the version it prepares while another prepares one
+  (the plan's first look); one that finds no slots makes the others drop those of the plan
+  (`pgc_drop`). Complete versions wait for the other parts' (`pw_ready`, state 1) and the plan
+  ends showing them together (`pl_groups`), in three passes: those that take fewer entries
+  first (within their own run: they free entries), then those that take more or show nothing
+  yet (when no run fits, their parts wait with them), then those that keep their run; a part
+  whose smaller new version waited for another that had no room, while its larger old one held
+  the entries, had kept the other out for good. Only enemies, lifts, the vehicle and explosions
+  have parts: the other objects skip the search. Measured on the coverage drive (2,500 ticks,
+  what the list on screen shows: `pub_spr`), pictures of a character from two ticks went from
+  11.4 % to 0.8 % (MSX2) and from 8.2 % to 0 (MSX2+); parts missing 1.0–1.3 %, single plans
+  while a new part loads in busy scenes; the game 2 % slower there.
 - **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work, while the background
   queue holds fewer than 4 loads): the patterns of his state's next record (the one before when
   the animation runs backwards; same aim) go into free slots (`slot_warm`: `slot_ref` 0, as
@@ -406,6 +428,11 @@ which as sprites were striped, cut or left out.
   (counted, it took the only slot and the level could never end), and 44, the ride's pickup
   dropper; nor 45, the hostage, drawn into the play field (the user's choice, 2026-10-22: a
   hostage shows together with an enemy).
+- **Harder hits** (`tools/mkrom.py` `DAMAGE_X`, 3 in the product): the enemies' bullets take
+  their damage (`$FA63`) times `DAMAGE_X` and touching an enemy costs `DAMAGE_X` instead of 1
+  (`hits.asm`), but the missile, enemy bullet types 1 and 2 (damage 40h, fired only by the
+  enemies of types 3 and 27: REA, the 28 calls of `ebullet_add` `$F5BC`), at most twice its
+  damage: 192 of the 258 energy points was too much (the user's choice, 2026-10-22).
 - **The cracked wall** (map object 25 of level 1, type 5Ch, activator `obj_relocate` `$9FC4`,
   `mapobj.asm` `act_10`): after 80 ticks of "up" in front of it RoboCop and the camera go to
   the level header's +20/+22 (`$15D6`/`$15D8`, set by `level1.asm` `l1i_hdr` as `level_init`
@@ -424,7 +451,9 @@ which as sprites were striped, cut or left out.
 - **Where**: fixed code (`4000h-7FFFh`): `player.asm`, `logic.asm` (helpers), `bob.asm`; module
   1 (`BANK_LC1` at `8000h` during the tick: `objects.asm`, `shots.asm`, `hits.asm`), module 2
   (`BANK_LC2`, mapped around `activate_objects`: `mapobj.asm`), module 3 (`BANK_LC3`, mapped
-  around `$8B32`, `$9150` and the frame's end: `special.asm`, `frame.asm`), the level's bank
+  around `$8B32`, `$9150`, the frame's end and `player_move`: `special.asm`, `frame.asm`,
+  `plmove.asm`, which reaches `shots.asm` `pl_punch` through `player.asm` `pm_punch`: out of
+  the fixed code, the 1.2 KiB the sprite engine needed), the level's bank
   (`BANK_L1` at `A000h`: `level1.asm`, starting with the type handler table, `lv_init`,
   `lv_tick`, `lv_hz`). The variables keep the Amiga's meaning and values: the mirror
   `AM`/`AG` (every Amiga word little-endian at its own address, a byte at A ^ 1), the code
@@ -553,9 +582,16 @@ which as sprites were striped, cut or left out.
   overwritten, so the game redraws them when it starts again (`new_game` / `display_on` set
   SCREEN 5 back). While a picture shows, `front_mode` makes the VBLANK interrupt count frames
   and run the sound only.
-- Flow: power-on → title (fire) → level 1; game over → PIC9 for 128 frames → title; the level's
+- Text added at build time (`tools/msxtext.py`, in the game's own 8 × 8 font: capitals only;
+  the strokes in the logo's light grey-blue, their shadow dark blue): the port's credit on the
+  title, over the dark band below RoboCop's chin ("2026 PORT BY RODRIGO G.M. GARCIA", "ORIGINAL
+  GAME BY", "OCEAN SOFTWARE LTD"; 32 characters a line at most), and GAME OVER at twice the
+  size in 16 lines below PIC9 (192 lines: the 6 banks PIC9 took). The user's choice,
+  2026-10-22: the original has neither.
+- Flow: power-on → title (fire) → level 1; game over → PIC9 for 30 seconds or until fire is
+  pressed once released (the original: 128 frames; the user's choice) → title; the level's
   end → the level's statistics → title (the bonus stages and level 2 come later). Test builds
-  with a script skip the title and the game over picture.
+  with a script skip the title.
 - **The level's statistics** (`front_stats`, `show_level_stats` `$85D8`: script `$1132F` through
   `$10762`): the henchmen killed (`$16C2`), the nukes collected (`$16C0`) and the hostages
   rescued (`$16BE`) typed into the play area of page 0 (a register list of its own: page 0

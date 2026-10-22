@@ -14,8 +14,17 @@ high scores").
 - Statistics script ($1132F, show_level_stats $85D8 fills its three number fields with $11DC6
   and runs it through $10762): its bytes up to its FF 07 (the interpreter's format in
   rc2front.py), with the offsets of the three 8-character fields.
+- The port's credit on the title picture (with TITLE.sc8 and OUT.sc8: the SCREEN 8 picture of
+  tools/msxpic.py): CREDIT's lines in the same font (capitals only), centred over the dark band
+  below RoboCop's chin, the strokes in the logo's light grey-blue and their shadow in dark blue
+  (G7 bytes: the text screens' green and blue are too dark over the picture); the pixels between
+  them keep the picture. OUT.png is its preview.
+- GAME OVER under the game over picture (with OVER.sc8 and OUT2.sc8, the user's choice: PIC9
+  has no text): a black band of BAND lines below it with the words in the same font and colours
+  at twice the size, centred (front.asm pic_show centres the taller picture).
 
-usage: msxtext.py [RAM_IMAGE] [OUT.inc]   (defaults: build/ram/level1_full.bin, build/msx/text.inc)
+usage: msxtext.py [RAM_IMAGE] [OUT.inc] [TITLE.sc8 OUT.sc8 [OVER.sc8 OUT2.sc8]]
+       (defaults: build/ram/level1_full.bin, build/msx/text.inc)
 """
 from __future__ import annotations
 
@@ -25,10 +34,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rc2front  # noqa: E402
+from planar import write_png  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 STATS = 0x1132F                     # show_level_stats' script
 STATS_FIELDS = (0x1135A, 0x11379, 0x11398)  # henchmen ($16C2), nukes ($16C0), hostages ($16BE)
+CREDIT = ((158, "2026 PORT BY RODRIGO G.M. GARCIA"),   # (picture line, text): the user's credit
+          (168, "ORIGINAL GAME BY"),                    # (32 characters a line at most)
+          (178, "OCEAN SOFTWARE LTD"))
+CREDIT_INK = 0xDB                   # G7 (GGGRRRBB): the strokes (glyph colour 1),
+CREDIT_SHADE = 0x21                 #   their shadow (colour 4)
+OVER_TEXT = "GAME OVER"
+BAND = 16                           # lines below the game over picture (the text: 192 lines, 6 banks as PIC9)
 
 
 def glyph_sc5(ram: bytes, g: int) -> bytes:
@@ -71,6 +88,48 @@ def stats_script(ram: bytes) -> bytes:
             assert cmd == 2, f"command {cmd} in the statistics script"
 
 
+def draw_text(ram: bytes, out: bytearray, top: int, text: str, scale: int = 1) -> None:
+    """text in the font into the SCREEN 8 picture out (256 bytes a line), centred, from line top,
+    each glyph pixel scale x scale; the pixels between the strokes and the shadow are kept."""
+    x0 = (256 - 8 * scale * len(text)) // 2
+    for i, ch in enumerate(text):
+        a = rc2front.BITMAP_FONT + 24 * rc2front.GLYPH_NAMES.index(ch)
+        for y in range(8 * scale):
+            p0, p2 = ram[a + y // scale], ram[a + 16 + y // scale]
+            for x in range(8 * scale):
+                o = (top + y) * 256 + x0 + 8 * scale * i + x
+                if p0 & (0x80 >> x // scale):
+                    out[o] = CREDIT_INK
+                elif p2 & (0x80 >> x // scale):
+                    out[o] = CREDIT_SHADE
+
+
+def credit_sc8(ram: bytes, pic: bytes) -> bytes:
+    """The title picture with CREDIT drawn into it."""
+    out = bytearray(pic)
+    for top, text in CREDIT:
+        draw_text(ram, out, top, text)
+    return bytes(out)
+
+
+def over_sc8(ram: bytes, pic: bytes) -> bytes:
+    """The game over picture with a band below it: GAME OVER at twice the size."""
+    out = bytearray(pic) + bytes(256 * BAND)
+    draw_text(ram, out, len(pic) // 256 + (BAND - 16) // 2, OVER_TEXT, 2)
+    return bytes(out)
+
+
+def write_sc8(path: Path, pic: bytes) -> None:
+    """The SCREEN 8 picture and its preview (.png)."""
+    path.write_bytes(pic)
+    write_png(path.with_suffix(".png"), 256, len(pic) // 256,
+              [b"".join(g7_rgb(v) for v in pic[y * 256:y * 256 + 256]) for y in range(len(pic) // 256)])
+
+
+def g7_rgb(v: int) -> bytes:
+    return bytes((round((v >> 2 & 7) * 255 / 7), round((v >> 5) * 255 / 7), round((v & 3) * 255 / 3)))
+
+
 def db_lines(data: bytes, per: int = 16) -> str:
     return "".join("        db " + ", ".join(f"0x{v:02X}" for v in data[i:i + per]) + "\n"
                    for i in range(0, len(data), per))
@@ -91,6 +150,12 @@ def main(argv: list[str]) -> int:
                       for g in range(rc2front.BITMAP_GLYPHS)))
     out.write_text(text)
     print(f"{out}: {rc2front.BITMAP_GLYPHS} glyphs, statistics script {len(script)} bytes")
+    if len(argv) > 4:
+        write_sc8(Path(argv[4]), credit_sc8(ram, Path(argv[3]).read_bytes()))
+        print(f"{argv[4]}: the title with the credit ({len(CREDIT)} lines)")
+    if len(argv) > 6:
+        write_sc8(Path(argv[6]), over_sc8(ram, Path(argv[5]).read_bytes()))
+        print(f"{argv[6]}: the game over picture with {OVER_TEXT} below it")
     return 0
 
 

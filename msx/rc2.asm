@@ -35,7 +35,7 @@ init:   di
         ld hl,ram_page0
         call front_call             ; page 0: RAM from now on (no more BIOS calls; cold.asm)
         jp c,no_ram                 ; (cold.asm: BANK_FRONT still at 8000h)
-        call snd_init               ; the PSG (and the OPLL) silent
+        call snd_init               ; the PSG (and the OPLL) silent (cold.asm: BANK_FRONT at 8000h)
         ld hl,sq_init
         call snd_bank               ; the player idle, its queue empty (the interrupts still off)
         ld hl,AC_VARS               ; the variables of the Amiga's code area at the power-on
@@ -66,7 +66,7 @@ new_game:
         call wrreg
 ng_go:  ld hl,tiles_init
         call front_call             ; the tile cache and the map patches (cold.asm)
-        call atr_load               ; the map attributes into page-0 RAM
+        call atr_load               ; the map attributes into page-0 RAM (cold.asm: BANK_FRONT at 8000h)
         ld hl,AG + 0x8000           ; the game's globals ($8000-$80FF): level 0, score 0
         ld bc,256
         xor a
@@ -262,7 +262,8 @@ title:
         ld hl,front_done
         call front_call
         ld e,4
-        jp tiles_upload             ; (the pictures' G7 overwrote the start of the tiles)
+        jp tiles_upload             ; (cold.asm, BANK_FRONT still at 8000h: the pictures' G7
+                                    ; overwrote the start of the tiles)
         endif
 
 ; HL = a routine of the play-field BOB module (BANK_FIELD at A000h around it; the bank that was
@@ -420,6 +421,7 @@ l1_end:
         org 0x8000
         include "special.asm"
         include "frame.asm"
+        include "plmove.asm"        ; RoboCop's player_move (player.asm game_tick)
         include "at_c3.inc"
 lc3_end:
         ds 0xA000 - lc3_end, 0xFF

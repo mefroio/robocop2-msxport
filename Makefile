@@ -62,7 +62,8 @@ msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)
 	$(PYTHON) -I tools/msxhud.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud --black 4
 	$(PYTHON) -I tools/msxhudrt.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud_rt
 	$(PYTHON) -I tools/player.py --inc $(BUILD)/msx/player.inc
-	$(PYTHON) -I tools/msxtext.py $(BUILD)/ram/level1_full.bin $(BUILD)/msx/text.inc
+	$(PYTHON) -I tools/msxtext.py $(BUILD)/ram/level1_full.bin $(BUILD)/msx/text.inc \
+		$(BUILD)/msx/title.sc8 $(BUILD)/msx/title_credit.sc8 $(BUILD)/msx/gameover.sc8 $(BUILD)/msx/gameover_text.sc8
 	$(VPYTHON) -I tools/msxsound.py --out $(BUILD)/msx/sound.inc --budget 7680
 
 rom: msx

@@ -15,41 +15,6 @@ PSG_MIX:    equ 0xBF                ; R7: no tone, no noise; port A input, port 
 
 ; ----- the chips -----
 
-; Everything silent: the PSG's volumes 0 and its mixer (PSG_MIX); with an OPLL, its 9 channels
-; keyed off at volume 15 (the quietest) and its rhythm off.
-snd_init:
-        di
-        ld a,7
-        ld e,PSG_MIX
-        call psg_w
-        ld a,8
-        ld e,0
-        call psg_w
-        ld a,9
-        call psg_w
-        ld a,10
-        call psg_w
-        ei
-        ld a,(snd_fm)
-        or a
-        ret z
-        ld a,0x0E
-        ld e,0
-        call opll_w                 ; rhythm off
-        ld b,9
-        ld c,0
-sin_ch: ld a,0x20
-        add a,c
-        ld e,0
-        call opll_w                 ; key off, block 0, F-number 0
-        ld a,0x30
-        add a,c
-        ld e,0x0F
-        call opll_w                 ; instrument 0, volume 15
-        inc c
-        djnz sin_ch
-        ret
-
 ; A = PSG register, E = value (interrupts disabled outside the interrupt). Keeps BC, DE, HL.
 psg_w:  out (PSG_ADDR),a
         ld a,e

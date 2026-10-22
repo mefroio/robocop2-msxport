@@ -479,6 +479,11 @@ fs_wait:    equ 0xCFBC              ; 2: calls left of a wait
 fs_n:       equ 0xCFBE              ; 2: ticks so far
 fs_done:    equ 0xCFC0              ; 1: the script ended ($16D1)
 fs_div:     equ 0xCFC1              ; VBLANKs into the sixth one (60 Hz: skipped)
+pl_gs:      equ 0xCFD0              ; 16: sprite plan: per object its parts' state (sprites.asm pw_gs)
+pg_or:      equ 0xCFE0              ; sprite plan: pg_each's result
+pl_seq:     equ 0xCFE1              ; sprite plan: plans so far (low byte: pl_stamp)
+pg_fn:      equ 0xCFE2              ; 2: pg_each's test
+pl_stamp:   equ 0xCFE4              ; 16: per object the plan its pend was prepared in (pl_seq)
 ; enemy bullets ($F5BC, objects.asm ebullet_add)
 eb_x:       equ 0xCEB4              ; 2: D0
 eb_y:       equ 0xCEB6              ; 2: D1

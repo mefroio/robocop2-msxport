@@ -15,28 +15,6 @@ TC_SLOTS:   equ 256                 ; (page 2: 432 until the play-field BOBs too
                                     ; the view and a margin use 129 tiles at most, a 40x24-cell window
                                     ; 209)
 
-; At the level's start: the packed map attributes (bank ATR_BANK: 80 bytes per row, 4-bit
-; codes, then the codes' 16 values) into page-0 RAM - rows 0-47 at ATR_RAM0, the others at
-; ATR_RAM1 (atr_rows: each row's address) - and the values into atr_lut. atr_rc reads them
-; there: no bank switching for the game logic's many attribute reads.
-atr_load:
-        ld a,(act_8000)
-        push af
-        ld a,ATR_BANK
-        call bank_8000
-        ld hl,0x8000
-        ld de,ATR_RAM0
-        ld bc,48*80
-        ldir
-        ld de,ATR_RAM1
-        ld bc,(MAP_ROWS - 48)*80
-        ldir
-        ld de,atr_lut
-        ld bc,16
-        ldir
-        pop af
-        jp bank_8000
-
 ; ----- map reads -----
 
 ; get_tile: A = row, E = column -> HL = tile. Preserves BC and DE (and the A000h window's bank).

@@ -439,7 +439,7 @@ vdp_setup:
         ld bc,32*256 + VDP_PAL
         otir
         ld e,8
-        call tiles_upf              ; (vdp.asm: the tiles' banks pass through 8000h)
+        call tiles_upload
         ld hl,field_upload
         call field_call             ; the play-field BOBs' atlas over the last tile slots
         call hud_upload
@@ -547,3 +547,112 @@ rp_none:
         ei
         scf
         ret
+
+; (sound.asm) At power-on (rc2.asm init, BANK_FRONT at 8000h).
+; Everything silent: the PSG's volumes 0 and its mixer (PSG_MIX); with an OPLL, its 9 channels
+; keyed off at volume 15 (the quietest) and its rhythm off.
+snd_init:
+        di
+        ld a,7
+        ld e,PSG_MIX
+        call psg_w
+        ld a,8
+        ld e,0
+        call psg_w
+        ld a,9
+        call psg_w
+        ld a,10
+        call psg_w
+        ei
+        ld a,(snd_fm)
+        or a
+        ret z
+        ld a,0x0E
+        ld e,0
+        call opll_w                 ; rhythm off
+        ld b,9
+        ld c,0
+sin_ch: ld a,0x20
+        add a,c
+        ld e,0
+        call opll_w                 ; key off, block 0, F-number 0
+        ld a,0x30
+        add a,c
+        ld e,0x0F
+        call opll_w                 ; instrument 0, volume 15
+        inc c
+        djnz sin_ch
+        ret
+
+; (tiles.asm) At the level's start (rc2.asm new_game, BANK_FRONT at 8000h): the packed map
+; attributes (bank ATR_BANK, through the A000h window: 80 bytes per row, 4-bit codes, then the
+; codes' 16 values) into page-0 RAM - rows 0-47 at ATR_RAM0, the others at ATR_RAM1 (atr_rows:
+; each row's address) - and the values into atr_lut. atr_rc reads them there: no bank switching
+; for the game logic's many attribute reads.
+atr_load:
+        ld a,(act_a000)
+        push af
+        ld a,ATR_BANK
+        call bank_a000
+        ld hl,0xA000
+        ld de,ATR_RAM0
+        ld bc,48*80
+        ldir
+        ld de,ATR_RAM1
+        ld bc,(MAP_ROWS - 48)*80
+        ldir
+        ld de,atr_lut
+        ld bc,16
+        ldir
+        pop af
+        jp bank_a000
+
+; (vdp.asm) E = banks of 8 KiB: the tiles from the ROM (through the A000h window) -> VRAM from
+; 10000h (8 at the start: 10000h-1FFFFh, the HUD and the sprite tables follow; 4 after a SCREEN 8
+; picture: G7 interleaves its bytes over both halves of VRAM, so a picture overwrites
+; 10000h-16A00h).
+tiles_upload:
+        ld a,(act_a000)
+        push af
+        push de
+        ld e,1
+        ld hl,0
+        call vram_write
+        pop de
+        ld d,BANK_TILES
+ut_bank:
+        ld a,d
+        call bank_a000
+        ld hl,0xA000
+        ld b,32
+        push de
+        call vram_blocks
+        pop de
+        inc d
+        dec e
+        jr nz,ut_bank
+        call vram_done
+        pop af
+        jp bank_a000
+
+; (vdp.asm) The HUD's empty panel (HUD_IMG_BANK through the A000h window): page 3 from line
+; HUD_VRAM_LINE (after the tiles, which cover pages 2-3); also at each new game (hud_init: the
+; last game's digits and message go).
+hud_upload:
+        ld a,(act_a000)
+        push af
+        ld e,1
+        ld hl,VRAM_HUD & 0xFFFF
+        call vram_write
+        ld a,HUD_IMG_BANK
+        call bank_a000
+        ld hl,0xA000
+        ld b,HUD_LINES/2            ; 128 bytes per line: 256 per pair of lines
+        call vram_blocks
+        if HUD_LINES & 1
+        ld bc,128*256 + VDP_DATA
+        otir                        ; the odd last line
+        endif
+        call vram_done
+        pop af
+        jp bank_a000

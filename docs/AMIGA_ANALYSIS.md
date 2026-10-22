@@ -343,6 +343,13 @@ over (PIC9)**, called from `main_loop` when the lives counter `$8034` goes negat
   rising, box (x − 8, y − 8, 15 × 15): the first is taken (message `$FC12`[type] = HUD
   messages 11–20, sound `$FC0B`[type / 4], the vehicle's vy + 6.0 when riding `$16D8`) and its
   effect runs through `$FBE0 + type` (one per frame).
+- Enemy bullet types by their callers (REA, the 28 calls of `ebullet_add` `$F5BC` with the D6
+  set before each; 2026-10-22): the missile, types 1 and 2 (damage 40h, `$FA63`; 32 × 16,
+  animated: frames `$54596`.. and `$50E46`..), comes only from `FUN_cc4a` (`$CD4A`: the kneeling
+  of type 3, `$CCFA`) and `obj27_update` (`$D9F8`), D6 = 1 then + 1 facing the other way. The
+  others: 3 (types 4, 12, 13, 15, 34-37, 41, 50, 51), 4 (14, 28), 5/6 (1, 2, 16, 21, 24, 26),
+  7 and 17h (`FUN_dbea`, type 25's machine), 8 (29), 9/10 (22), 11h (40, never hits: width
+  negative), 0Bh-0Eh (the helper `$C398` of the switch at `$C42A`, no damage) and 16h (33).
 - Pickup effects: 4 scatter gun (weapon 3), 8 rapid fire (1), 12 time − 1 minute (00:00 at
   the bottom), 16 time + 1 minute, 20 reversed controls (100h frames, or off), 24 shield
   (`$16AA` = 100h), 28 energy full (102h), 32 three-way gun (2), 36/40 nuke retrieved (energy

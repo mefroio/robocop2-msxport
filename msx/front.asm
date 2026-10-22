@@ -21,15 +21,33 @@ front_title:
 
 ; ----- the game over -----
 
-; PIC9 for 128 frames (main_loop $82A8: show_picture D0 = 8, then 128 VBLs).
+; PIC9 with GAME OVER below it (tools/msxtext.py) for 30 seconds, or until fire is pressed once
+; released (the fire held as RoboCop fell does not skip it); then the title. (The original:
+; 128 VBLs, main_loop $82A8: show_picture D0 = 8; the user's choice: longer, and a way out.)
+FO_TICKS:   equ 30 * 50             ; 50 Hz ticks (fs_tick: the same time at 60 Hz)
 front_over:
         call snd_stop               ; (show_picture $11E06: $FE14)
         ld a,PIC_GAMEOVER_BANK
         ld b,PIC_GAMEOVER_LINES
         call pic_show
-        ld b,128
-fo_lp:  halt
-        djnz fo_lp
+        ld hl,FO_TICKS
+        ld c,0                      ; (fire not released yet)
+fo_lp:  push hl
+        push bc
+        call fs_tick
+        call ff_bits
+        pop bc
+        pop hl
+        jr z,fo_rel
+        dec c
+        inc c
+        ret nz                      ; (pressed after a release)
+        jr fo_n
+fo_rel: ld c,1
+fo_n:   dec hl
+        ld a,h
+        or l
+        jr nz,fo_lp
         ret
 
 ; ----- the level's statistics -----

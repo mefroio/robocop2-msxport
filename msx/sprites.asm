@@ -1667,6 +1667,8 @@ pu_n:   pop hl
 ; queue (bq: patterns of versions still being prepared) are filled; the objects whose new
 ; versions are complete then show them in this frame.
 spr_plan:
+        ld hl,pl_seq
+        inc (hl)                    ; (pl_stamp)
         xor a
         ld (pl_pack),a              ; (no packing yet in this plan)
         call slots_free
@@ -1674,24 +1676,7 @@ spr_plan:
         ld (pq_left),hl
         ld hl,pq_buf
         ld (pq_wr),hl
-        ld ix,obj_tab               ; RoboCop's zone: the most entries his versions shown, under
-        ld a,(ix+O_NSPR)            ; way and wanted take; no BOB run goes there (he would have
-        sub (ix+O_GONE)             ; to push it away)
-        ld c,a
-        ld a,(disp + V_N)
-        cp c
-        jr c,pz_1
-        ld c,a
-pz_1:   ld a,(pend + V_ON)
-        or a
-        jr z,pz_2
-        ld a,(pend + V_N)
-        cp c
-        jr c,pz_2
-        ld c,a
-pz_2:   ld a,c
-        add a,(ent_own + RC_RUN) & 0xFF
-        ld (pl_rcz),a
+        call rc_zone
         ld hl,pl_wa                 ; one look at every object: one not shown drops its
         ld (pl_pa),hl               ; versions, one shown as it wants is left alone, the others
         ld hl,pl_wb                 ; go into the work lists: first those showing nothing yet
@@ -1714,7 +1699,18 @@ pc_lp:  ld (pl_obj),a
         call ver_same
         ld c,2
         jr nz,pc_st
-        ld c,0                      ; shown as it wants: a version prepared meanwhile goes
+        ld c,0                      ; shown as it wants: a version prepared meanwhile goes, unless
+        push iy                     ; another part of its owner prepares one too: they were
+        pop hl                      ; prepared for one tick and show it together (pl_work; this
+        inc h                       ; one dropped, theirs would show beside this one's later
+        ld a,(hl)                   ; frame)
+        or a
+        jr z,pc_st                  ; (none prepared)
+        ld hl,pgc_pend
+        call pg_each
+        ld c,2
+        jr nz,pc_st
+        ld c,0
         jr pc_pd
 pc_not: ld a,(iy+V_ON)
         or a
@@ -1738,6 +1734,12 @@ pc_st:  ld a,(pl_obj)
         ld l,a
         ld h,pl_st / 256
         ld (hl),c
+        call pw_gs                  ; its parts' state (pl_groups): 2 changing, 0 not
+        ld a,c
+        or a
+        jr z,pc_gs
+        ld a,2
+pc_gs:  ld (hl),a
         ld de,OBJ_SIZE
         add ix,de
         ld de,LAY_SIZE
@@ -1781,7 +1783,33 @@ pc_rn:  inc l
         call pl_list
         ld hl,pl_wb
         call pl_list
+        call pl_groups
         jp rc_prefetch
+
+; RoboCop's zone (pl_rcz): the most entries his versions shown, under way and wanted take; no
+; BOB run goes there (he would have to push it away). Again once his new version is shown
+; (pend_commit): the entries only his old one took are the BOBs' in that plan already (with
+; the SAT full, a BOB's new part waited a plan more, 10 pictures in a busy scene).
+rc_zone:
+        ld ix,obj_tab
+        ld a,(ix+O_NSPR)
+        sub (ix+O_GONE)
+        ld c,a
+        ld a,(disp + V_N)
+        cp c
+        jr c,pz_1
+        ld c,a
+pz_1:   ld a,(pend + V_ON)
+        or a
+        jr z,pz_2
+        ld a,(pend + V_N)
+        cp c
+        jr c,pz_2
+        ld c,a
+pz_2:   ld a,c
+        add a,(ent_own + RC_RUN) & 0xFF
+        ld (pl_rcz),a
+        ret
 
 ; RoboCop's next animation step (the same state's next record, the one before when its
 ; animation runs backwards, the same aim) gets its patterns into free slots before the logic
@@ -1995,7 +2023,11 @@ pl_list:
 
 ; A = object that wants another version than it shows: the one it prepares goes on (once shown,
 ; the next one it wants is prepared: dropping a version under way each time an animation moved
-; on showed nothing new at all), or the one it wants is prepared now.
+; on showed nothing new at all), or the one it wants is prepared now. An owner's parts (a walking
+; enemy's legs and torso) show versions prepared in one plan, so of one tick: a part prepares
+; none while another prepares one of an earlier plan (pgc_old), keeps its own while another
+; prepares one (spr_plan), and they are shown together (pw_ready, pl_groups); when one finds no
+; slots, the others drop those of this plan (pgc_drop).
 pl_work:
         ld (pl_obj),a
         call obj_ix
@@ -2003,16 +2035,322 @@ pl_work:
         ld a,(iy+V_ON)
         or a
         jr nz,pw_load
+        push iy
+        pop hl
+        dec h                       ; (its disp)
+        ld a,(hl)
+        or a
+        ld hl,pgc_old               ; a part whose other parts prepare the versions of an earlier
+        jr nz,pw_gate               ; tick (or found no slots in this plan) waits: shown with
+        ld hl,pgc_new               ; theirs, its version would be of another tick; one that
+pw_gate:                            ; shows nothing yet does not wait: theirs go, and are
+        call pg_each                ; prepared again with its own (the first list comes first)
+        jr nz,pw_wait
         call pend_build
-        ret c                       ; (no slots)
+        jr c,pw_fail                ; (no slots)
+        ld a,(pl_obj)
+        add a,pl_stamp & 0xFF
+        ld l,a
+        ld h,pl_stamp / 256
+        ld a,(pl_seq)
+        ld (hl),a                   ; (the plan it was prepared in)
         ld a,(pl_unl)               ; (counted while it was built)
         ld c,a
         call pld_n
-        jp z,pend_commit
+        jr z,pw_ready
         ret                         ; (its patterns on their way)
 pw_load:
         call pend_load
+        jr z,pw_ready
+        ret
+pw_fail:
+        call pw_gs                  ; no slots: its parts show nothing new in this plan either
+        ld (hl),4                   ; (those prepared in it go: pgc_drop; the others wait:
+        ld hl,pgc_drop              ; pgc_old)
+        jp pg_each
+pw_wait:
+        call pw_gs                  ; (not on its way: its parts do not wait for it)
+        ld (hl),0
+        ret
+
+; The object's version complete: shown now, unless another part of its owner (the same owner
+; and category: bob.asm obj_key) changes in this plan too: a walking enemy's legs and torso are
+; two objects, and one shown a frame before the other split the character (or showed half of
+; it, the other still loading). Then they change together at the plan's end (pl_groups).
+pw_ready:
+        ld a,(pl_obj)
+        or a
+        jp z,pend_commit            ; (RoboCop, the spark: no parts)
+        cp SPARK_OBJ
         jp z,pend_commit
+        call pg_part
+        call pw_gs
+        jr nz,pwr_def
+        ld (hl),3
+        jp pend_commit
+pwr_def:
+        ld (hl),1
+        ret
+
+; HL = pl_gs's byte of object pl_obj (0 no change, 1 complete and waiting for its parts, 2
+; changing, 3 shown in this plan, 4 no slots for it in this plan). Keeps BC, DE, IX, IY; flags
+; kept.
+pw_gs:  push af
+        ld a,(pl_obj)
+        add a,pl_gs & 0xFF
+        ld l,a
+        ld h,pl_gs / 256
+        pop af
+        ret
+
+; Object pl_obj's parts (the other BOB objects of its owner and category) -> A = the OR of their
+; states 1 and 2 (NZ: one changes in this plan). Keeps IX, IY.
+pg_part:
+        ld hl,pgc_state
+
+; HL = a test: called for each of object pl_obj's parts (the other BOB objects of its owner and
+; category: a walking enemy's legs and torso) with A = that part; it ORs its answer into pg_or
+; (pg_set). -> A = pg_or (NZ: some). Keeps IX, IY.
+pg_each:
+        ld (pg_fn),hl
+        ld a,(pl_obj)
+        add a,a
+        add a,a
+        add a,(obj_key + 1) & 0xFF
+        ld l,a
+        ld h,obj_key / 256
+        ld e,(hl)                   ; owner
+        inc l
+        ld d,(hl)
+        inc l
+        ld c,(hl)                   ; category + 1
+        xor a
+        ld (pg_or),a
+        or c
+        ret z                       ; (no identity: RoboCop, the spark)
+        cp BC_SPECIAL + 1
+        jr nc,pge_ok                ; (lifts, the vehicle, explosions)
+        cp BC_ENEMY + 1
+        jr z,pge_ok
+        xor a                       ; (bullets, pickups, RoboCop's shots: never in parts, and
+        ret                         ; the most of the objects)
+pge_ok: ld b,1
+pge_lp: ld a,(pl_obj)
+        cp b
+        jr z,pge_n
+        ld a,b
+        add a,a
+        add a,a
+        add a,(obj_key + 1) & 0xFF
+        ld l,a
+        ld h,obj_key / 256
+        ld a,(hl)
+        cp e
+        jr nz,pge_n
+        inc l
+        ld a,(hl)
+        cp d
+        jr nz,pge_n
+        inc l
+        ld a,(hl)
+        cp c
+        jr nz,pge_n
+        push bc
+        push de
+        ld a,b
+        call pge_go
+        pop de
+        pop bc
+pge_n:  inc b
+        ld a,b
+        cp SPARK_OBJ
+        jr c,pge_lp
+        ld a,(pg_or)
+        or a
+        ret
+pge_go: ld hl,(pg_fn)
+        jp (hl)
+
+; pg_each's tests: A = a part.
+; Its state 1 or 2 (changing in this plan).
+pgc_state:
+        add a,pl_gs & 0xFF
+        ld l,a
+        ld h,pl_gs / 256
+        ld a,(hl)
+        cp 3
+        ret nc
+pg_set: ld hl,pg_or
+        or (hl)
+        ld (hl),a
+        ret
+; It prepares a version.
+pgc_pend:
+        call pd_on
+        ret z
+        ld a,1
+        jr pg_set
+; It prepares a version of an earlier plan, or found no slots in this one.
+pgc_old:
+        ld c,a
+        add a,pl_gs & 0xFF
+        ld l,a
+        ld h,pl_gs / 256
+        ld a,(hl)
+        cp 4
+        jr z,pgo_y
+        ld a,c
+        call pd_on
+        ret z
+        ld a,c
+        call pd_stamp
+        ret z                       ; (of this plan)
+pgo_y:  ld a,1
+        jr pg_set
+; It found no slots in this plan; else it drops a version of an earlier plan (still changing: it
+; prepares the one it wants later in this plan).
+pgc_new:
+        ld c,a
+        add a,pl_gs & 0xFF
+        ld l,a
+        ld h,pl_gs / 256
+        ld a,(hl)
+        cp 4
+        jr z,pgo_y
+        ld a,c
+        call pd_on
+        ret z
+        ld a,c
+        call pd_stamp
+        ret z                       ; (of this plan)
+        jr pgd_go
+; It drops a version prepared in this plan (not on its way: state 0).
+pgc_drop:
+        ld c,a
+        call pd_on
+        ret z
+        ld a,c
+        call pd_stamp
+        ret nz                      ; (of an earlier plan)
+        ld b,0
+pgd_go: ld a,(pl_obj)
+        push af
+        ld a,c
+        ld (pl_obj),a
+        push iy
+        call pend_iy
+        call pend_unref
+        pop iy
+        inc b
+        dec b
+        call z,pw_gs
+        jr nz,pgd_s
+        ld (hl),0
+pgd_s:  pop af
+        ld (pl_obj),a
+        ret
+
+; A = object -> HL = its pend record, A = its V_ON (Z: it prepares nothing).
+pd_on:  add a,a
+        add a,a
+        add a,a
+        add a,a
+        ld l,a
+        ld h,pend / 256
+        ld a,(hl)
+        or a
+        ret
+
+; A = object -> Z when its pend was prepared in this plan (pl_stamp).
+pd_stamp:
+        add a,pl_stamp & 0xFF
+        ld l,a
+        ld h,pl_stamp / 256
+        ld a,(pl_seq)
+        cp (hl)
+        ret
+
+; At the plan's end: the parts that waited for the other parts of their owner (pl_gs 1) are shown
+; now, together, unless one of those is still on its way (2: its patterns not all in their slots;
+; one that found no slots does not hold them, 0). In three passes: those that take fewer SAT
+; entries than they show (within their own run: they free entries), those that take more or
+; show nothing yet (pc_run may find no run: then their parts wait with them), then those that
+; keep their run. (A part whose new version waited for another that had no run, while its own
+; old one held the entries, kept the other out for good.)
+pl_groups:
+        ld hl,pl_gs + 1
+        ld bc,SPARK_OBJ - 1
+        ld a,1
+        cpir
+        ret nz                      ; (none waits: most plans; the passes cost 2 ms)
+        ld c,0
+pgr_ps: ld b,1
+pgr_lp: push bc
+        ld a,b
+        ld (pl_obj),a
+        call pw_gs
+        ld a,(hl)
+        cp 1
+        jr nz,pgr_n
+        call pg_part
+        and 2
+        jr nz,pgr_n
+        ld a,(pl_obj)
+        call obj_ix
+        call pend_iy
+        push iy
+        pop hl
+        dec h                       ; (its disp)
+        ld a,(hl)
+        or a
+        ld e,1                      ; (no run yet)
+        jr z,pgr_k
+        ld a,l
+        add a,V_N
+        ld l,a
+        ld a,(iy+V_N)
+        cp (hl)
+        ld e,2                      ; (as large: it keeps its run)
+        jr z,pgr_k
+        ld e,0                      ; (smaller)
+        jr c,pgr_k
+        inc e                       ; (larger)
+pgr_k:  pop bc
+        push bc
+        ld a,c
+        cp e
+        jr nz,pgr_n                 ; (another pass's)
+        xor a                       ; (each may pack the runs: two parts that take more entries
+        ld (pl_pack),a              ; may both need it)
+        call pend_commit
+        call pw_gs
+        ld a,(iy+V_ON)
+        or a
+        ld (hl),3                   ; (shown)
+        jr z,pgr_n
+        ld (hl),0                   ; no run free now: its parts wait with it
+        ld hl,pgc_hold
+        call pg_each
+pgr_n:  pop bc
+        inc b
+        ld a,b
+        cp SPARK_OBJ
+        jr c,pgr_lp
+        inc c
+        ld a,c
+        cp 3
+        jr c,pgr_ps
+        ret
+
+; pg_each's test: a part waiting to be shown (state 1) waits on (0).
+pgc_hold:
+        add a,pl_gs & 0xFF
+        ld l,a
+        ld h,pl_gs / 256
+        ld a,(hl)
+        dec a
+        ret nz
+        ld (hl),a
         ret
 
 ; IX = object, IY = its pend record (empty): the version it wants, prepared: its entries (from
@@ -2356,7 +2694,7 @@ pend_commit:
         jr nz,pcm_o
         ld a,RC_RUN                 ; RoboCop: his run from RC_RUN, whatever is there
         ld (pc_start),a
-        call pr_clear               ; (a BOB in his way goes: it comes back above him)
+        call pr_clear               ; (a BOB in his way moves above his zone)
         jr pcm_c
 pcm_o:  call pc_run
         ret c                       ; (no run free now)
@@ -2386,6 +2724,12 @@ pc_own: ld (hl),a
         ld (iy+V_ON),0              ; (pend empty; its slots are the shown version's now)
         ld a,1
         ld (sat_dirty),a
+        ld a,(pl_obj)
+        or a
+        ret nz
+        push ix
+        call rc_zone                ; (RoboCop: the zone of his new version)
+        pop ix
         ret
 
 ; IY = a complete pend record of object pl_obj -> A = the first SAT entry of its run (C: none
@@ -2503,10 +2847,11 @@ prf_x:  ld a,c
         ret
 
 ; The BOBs' runs packed against entry 31, in their order, the run of object pl_obj last (lowest:
-; beside the hole), so that the entries free above RoboCop's zone become one hole next to it. A
-; run that moves only has another place in the SAT being built (the set on screen is never
-; written): rows_sync gives that set the colour rows there, sat_build the entries. Nothing moves
-; while a BOB's run still reaches into RoboCop's zone (his next version clears it). Keeps IY.
+; beside the hole), so that the entries free above RoboCop's zone become one hole next to it;
+; the runs in his zone (his next version takes more entries) move above it too. A run that moves
+; only has another place in the SAT being built (the set on screen is never written): rows_sync
+; gives that set the colour rows there, sat_build the entries. Nothing moves when they do not all
+; fit above his zone. Keeps IY.
 sat_pack:
         push iy
         ld a,1
@@ -2514,10 +2859,9 @@ sat_pack:
         ld de,sp_list               ; the objects of the runs from the top (sp_list within a page)
         ld hl,ent_own + SAT_MAX - 1
         ld c,0xFF                   ; (the owner seen last)
-spk_lp: ld a,(pl_rcz)
-        dec a
-        cp l
-        jr nc,spk_e
+spk_lp: ld a,l
+        cp (ent_own + RC_RUN) & 0xFF
+        jr c,spk_e                  ; (down to RoboCop's run)
         ld a,(hl)
         cp c
         jr z,spk_n                  ; (the same run)
@@ -2533,8 +2877,8 @@ spk_lp: ld a,(pl_rcz)
         cp b
         jr z,spk_n                  ; (pl_obj's goes last)
         ld a,b
-        call spk_put
-        jr c,spk_x
+        ld (de),a
+        inc e
 spk_n:  dec l
         jr spk_lp
 spk_e:  ld a,(pl_obj)               ; then pl_obj's, when it shows a version
@@ -2543,11 +2887,27 @@ spk_e:  ld a,(pl_obj)               ; then pl_obj's, when it shows a version
         or a
         jr z,spk_w
         ld a,(pl_obj)
-        call spk_put
-        jr c,spk_x
+        ld (de),a
+        inc e
 spk_w:  ld a,0xFF
         ld (de),a
-        ld a,1
+        ld de,sp_list               ; do they all fit above RoboCop's zone?
+        ld c,SAT_MAX
+spk_t:  ld a,(de)
+        inc e
+        cp 0xFF
+        jr z,spk_go
+        call ver_iy
+        ld a,c
+        sub (iy+V_N)
+        jr c,spk_x
+        ld c,a
+        add a,ent_own & 0xFF
+        ld hl,pl_rcz
+        cp (hl)
+        jr c,spk_x                  ; (the lowest would reach into it: nothing moves)
+        jr spk_t
+spk_go: ld a,1
         ld (sat_dirty),a
         ld de,sp_list               ; their entries freed
 spk_c:  ld a,(de)
@@ -2588,22 +2948,11 @@ spk_rf: ld (hl),a
 spk_x:  pop iy
         ret
 
-; A = object (its run above RoboCop's zone): the next sp_list entry (DE); C when its run reaches
-; into the zone (then nothing is packed). Keeps BC, HL.
-spk_put:
-        push hl
-        ld (de),a
-        inc e
-        call ver_iy
-        ld a,(iy+V_RUN)
-        add a,ent_own & 0xFF
-        ld hl,pl_rcz
-        cp (hl)
-        pop hl
-        ret
-
-; IY = RoboCop's pend record: the BOBs whose runs are on his new run's entries are shown no more
-; (their next versions get runs above his zone).
+; IY = RoboCop's pend record: the BOBs whose runs are on his new run's entries move to runs above
+; his zone (holes as pc_run finds them; their colour rows and entries follow there, rows_sync and
+; sat_build: the picture is the same), or, when none fits, are shown no more (their next
+; versions get runs there). Dropped, a walking enemy's legs vanished for up to 10 pictures
+; whenever RoboCop's next frame took more sprites.
 pr_clear:
         ld b,(iy+V_N)
         ld hl,ent_own + RC_RUN
@@ -2617,14 +2966,48 @@ prc_lp: ld a,(hl)
         push iy
         ld (pl_obj),a
         call disp_iy
+        call pr_find
+        jr c,prc_drop
+        call prc_move
+        jr prc_d
+prc_drop:
         call disp_unref
-        xor a
+prc_d:  xor a
         ld (pl_obj),a
         pop iy
         pop hl
         pop bc
 prc_n:  inc l
         djnz prc_lp
+        ret
+
+; IY = the disp record of object pl_obj, A = the first entry of a free run of its size above
+; RoboCop's zone (pr_find): its run moves there.
+prc_move:
+        push af
+        ld a,(iy+V_RUN)
+        add a,ent_own & 0xFF
+        ld l,a
+        ld h,ent_own / 256
+        ld b,(iy+V_N)
+        ld a,(pl_obj)
+        ld c,a
+prm_f:  ld a,(hl)                   ; its old entries free
+        cp c
+        jr nz,prm_fn
+        ld (hl),0xFF
+prm_fn: inc l
+        djnz prm_f
+        pop af
+        ld (iy+V_RUN),a
+        add a,ent_own & 0xFF
+        ld l,a
+        ld b,(iy+V_N)
+prm_o:  ld (hl),c                   ; and its new ones
+        inc l
+        djnz prm_o
+        ld a,1
+        ld (sat_dirty),a
         ret
 
 ; The sprite set the next list shows (spr_set, after sprites_frame switched it): the colour row of
