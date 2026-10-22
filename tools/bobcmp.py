@@ -32,6 +32,10 @@ def bench_frames(path: Path) -> dict[int, Counter]:
     return out
 
 
+BOB_REC = 15                        # msx/bob.asm: A2 (3), D4 (2), x (2), y (2), mode | category << 4,
+                                    # the category's record before it (2), owner (2), part
+
+
 def msx_flushes(path: Path) -> list[tuple[int, Counter]]:
     out = []
     for line in path.read_text().splitlines():
@@ -40,7 +44,7 @@ def msx_flushes(path: Path) -> list[tuple[int, Counter]]:
         raw = bytes.fromhex(parts[2]) if n else b""
         recs = Counter()
         for k in range(n):
-            r = raw[12 * k:12 * k + 12]
+            r = raw[BOB_REC * k:BOB_REC * (k + 1)]
             a2 = r[0] | r[1] << 8 | r[2] << 16
             d4, x, y = struct.unpack_from("<Hhh", r, 3)
             recs[(a2, d4, x, y, r[9] & 15)] += 1

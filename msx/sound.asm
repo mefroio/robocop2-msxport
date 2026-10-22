@@ -13,93 +13,6 @@ OPLL_ADDR:  equ 0x7C
 OPLL_DATA:  equ 0x7D
 PSG_MIX:    equ 0xBF                ; R7: no tone, no noise; port A input, port B output
 
-; ----- at the start, with the BIOS in page 0 -----
-
-; An OPLL: every slot's page 1 is searched for "OPLL" at 401Ch after "APRL" (MSX-MUSIC) or
-; "PAC2" (FM-PAC, whose I/O ports are then switched on: bit 0 of 7FF6h in its slot).
-; snd_fm = 1 when found. Uses the BIOS (RDSLT, WRSLT); interrupts end up disabled.
-snd_detect:
-        xor a
-        ld (snd_fm),a
-        ld c,0                      ; primary slot
-sdt_p:  ld hl,EXPTBL
-        ld e,c
-        ld d,0
-        add hl,de
-        ld a,(hl)
-        and 0x80
-        or c
-        ld b,a                      ; slot id (expanded: secondary 0 first)
-sdt_s:  push bc
-        ld a,b
-        call sdt_try
-        pop bc
-        ret z                       ; found
-        bit 7,b
-        jr z,sdt_np                 ; not expanded: the next primary slot
-        ld a,b
-        add a,4
-        ld b,a
-        and 0x0C
-        jr nz,sdt_s                 ; secondary 1-3
-sdt_np: inc c
-        ld a,c
-        cp 4
-        jr c,sdt_p
-        or 1                        ; (NZ: none)
-        ret
-
-; A = slot id: Z when its page 1 holds an OPLL BIOS (then snd_fm = 1, the FM-PAC's ports on).
-sdt_try:
-        ld (snd_slot),a
-        ld hl,0x401C
-        ld de,sdt_opll
-        ld b,4
-        call sdt_cmp
-        ret nz
-        ld hl,0x4018
-        ld de,sdt_aprl
-        ld b,4
-        call sdt_cmp
-        jr z,sdt_yes
-        ld hl,0x4018
-        ld de,sdt_pac2
-        ld b,4
-        call sdt_cmp
-        ret nz
-        ld a,(snd_slot)             ; an FM-PAC: its I/O ports on
-        ld hl,0x7FF6
-        ld e,1
-        call WRSLT
-sdt_yes:
-        ld a,1
-        ld (snd_fm),a
-        xor a                       ; (Z)
-        ret
-
-; HL = address in the slot snd_slot, DE = text, B = length: Z when they match.
-sdt_cmp:
-        push bc
-        push de
-        push hl
-        ld a,(snd_slot)
-        call RDSLT
-        pop hl
-        pop de
-        pop bc
-        ex de,hl
-        cp (hl)
-        ex de,hl
-        ret nz
-        inc hl
-        inc de
-        djnz sdt_cmp
-        ret
-
-sdt_opll:   db "OPLL"
-sdt_aprl:   db "APRL"
-sdt_pac2:   db "PAC2"
-
 ; ----- the chips -----
 
 ; Everything silent: the PSG's volumes 0 and its mixer (PSG_MIX); with an OPLL, its 9 channels
@@ -160,13 +73,47 @@ opll_w: out (OPLL_ADDR),a
         pop af
         ret
 
-; ----- per frame (the VBLANK interrupt) -----
+; ----- the player (sndplay.asm, BANK_INPUT) -----
 
-; The music and the sound effects advance one frame (the player comes with the converted
-; tunes). Keeps the banks of both windows.
+; From the VBLANK interrupt: the requests queued since, then the music and the effects advance.
 snd_frame:
+        ld hl,sq_frame
+; HL = a routine of the player, A its argument: called with BANK_INPUT at A000h (the window's
+; bank back after; act_a000 kept: the interrupts disabled, or the VBLANK interrupt itself).
+; Keeps DE, IX, IY.
+snd_bank:
+        push de
+        push ix
+        ld c,a
+        ld a,BANK_INPUT
+        ld (BANK_A000),a
+        ld a,c
+        call fc_hl
+        ld a,(act_a000)
+        ld (BANK_A000),a
+        pop ix
+        pop de
         ret
 
-; A = sound (the game's tune number), C = request slot ($18014 with D0, D2): the effect starts.
+; The title's music from its start (queued: the VBLANK interrupt starts it).
+snd_music:
+        ld a,SQ_MUSIC
+        jr snd_play
+
+; Everything silent ($18004): the PSG at once, the voices at the next VBLANK. (At power-on
+; rc2.asm calls sq_init through snd_bank: the interrupts stay off.)
+snd_stop:
+        ld a,SQ_STOP
+; A = sound (the game's tune number; $18014 with D0): queued for the VBLANK interrupt, which
+; starts it (the main program never keeps the interrupts off for it: the HUD's split).
 snd_play:
-        ret
+        ld hl,sq_put
+        ld c,a
+        ld a,(act_a000)
+        push af
+        ld a,BANK_INPUT
+        call bank_a000
+        ld a,c
+        call fc_hl
+        pop af
+        jp bank_a000

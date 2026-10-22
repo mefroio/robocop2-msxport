@@ -35,8 +35,13 @@ vdp_wait:
         jr nz,vdp_wait
         ret
 
-; Sends the 15 bytes at HL to R#32..R#46 (starts the command).
+; Sends the 15 bytes at HL to R#32..R#46 (starts the command). cmd_lock keeps the split
+; interrupt's play-field copy (isr.asm) off the registers; one it started just before is waited
+; for.
 vdp_cmd:
+        ld a,1
+        ld (cmd_lock),a
+        call vdp_wait
         di
         ld a,32
         out (VDP_CTRL),a
@@ -45,6 +50,8 @@ vdp_cmd:
         ei
         ld bc,15*256 + VDP_IND
         otir
+        xor a
+        ld (cmd_lock),a
         ret
 
 ; vdp_cmd for a command drawing into lines the screen shows (HL = its 15 bytes, the VDP idle):
@@ -55,6 +62,10 @@ vdp_cmd_q:
         ld a,(split_armed)
         or a
         ret nz
+        ld a,1
+        ld (cmd_lock),a
+        call vdp_busy
+        jr nz,vcq_no                ; (the split interrupt started a play-field copy)
         di
         ld a,32
         out (VDP_CTRL),a
@@ -74,9 +85,13 @@ vdp_cmd_q:
         out (VDP_CTRL),a            ; R#46: it starts
         ei
         xor a
+        ld (cmd_lock),a
         ret
 vcq_late:
         ei
+vcq_no: xor a
+        ld (cmd_lock),a
+        inc a
         ret
 
 ; Sets the VRAM write address E:HL (E = bit 16) for port 98h; the stream that follows ends
@@ -156,7 +171,7 @@ ut_bank:
         jp vram_done
 
 ; The HUD's empty panel: page 3 from line HUD_VRAM_LINE (after the tiles, which cover pages 2-3);
-; also at each new game (hud.asm hud_init: the last game's digits and message go). Keeps the
+; also at each new game (cold.asm hud_init: the last game's digits and message go). Keeps the
 ; 8000h window.
 hud_upload:
         ld a,(act_8000)
@@ -177,79 +192,8 @@ hud_upload:
         pop af
         jp bank_8000
 
-; SCREEN 5, 212 lines, VDP ID, IM 2, palette, tiles (pages 2-3), HUD and sprite tables.
-; Returns with the display off and no VDP interrupt enabled.
-vdp_setup:
-        ld a,5
-        call CHGMOD
-        di
-        ld a,0x02                   ; display off, no VBLANK interrupt, 16x16 sprites
-        out (VDP_CTRL),a
-        ld a,0x81
-        out (VDP_CTRL),a
-        ld a,R0_IE1_OFF
-        out (VDP_CTRL),a
-        ld a,0x80
-        out (VDP_CTRL),a
-        call isr_init               ; no VDP interrupt source is enabled yet
-        ld a,1
-        ld b,15
-        call wrreg
-        in a,(VDP_CTRL)             ; S#1: ID in bits 5..1
-        rrca
-        and 0x1F
-        ld (vdp_id),a
-        xor a
-        ld b,15
-        call wrreg
-        xor a
-        ld b,7
-        call wrreg                  ; border colour = 0
-        ld a,R8_SPR_OFF
-        ld b,8
-        call wrreg
-        ld a,(RG9SAV)
-        or 0x80
-        ld b,9
-        call wrreg                  ; 212 lines (keeps the 50/60 Hz setting)
-        xor a
-        ld b,16
-        call wrreg
-        ld hl,palette
-        ld bc,32*256 + VDP_PAL
-        otir
-        ld e,8
+; (cold.asm vdp_setup) tiles_upload with the front end's bank back at 8000h.
+tiles_upf:
         call tiles_upload
-        call hud_upload
-        ; sprite tables: both SATs end at sprite 0 (Y = 216)
-        ld e,1
-        ld hl,(SPR_COL_A + 0x200) & 0xFFFF
-        call vram_write
-        ld a,216
-        out (VDP_DATA),a
-        ld e,1
-        ld hl,(SPR_COL_B + 0x200) & 0xFFFF
-        call vram_write
-        ld a,216
-        out (VDP_DATA),a
-        call vram_done
-        ld a,R5_SET_A
-        ld (spr_set),a
-        ld b,5
-        call wrreg
-        ld a,R11_SPR
-        ld b,11
-        call wrreg
-        ld a,R6_PAT
-        ld b,6
-        call wrreg
-        ; fixed parameters of the tile HMMM
-        ld hl,16
-        ld (cmdbuf+8),hl
-        ld (cmdbuf+10),hl
-        xor a
-        ld (cmdbuf+12),a
-        ld (cmdbuf+13),a
-        ld a,0xD0
-        ld (cmdbuf+14),a
-        ret
+        ld a,BANK_FRONT
+        jp bank_8000

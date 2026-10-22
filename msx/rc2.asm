@@ -27,12 +27,17 @@ init:   di
         ld hl,2 + 3 * 256           ;  sprite tables need pages 2-3)           ; the mapper's banks at power-on in the 8000h and A000h windows
         ld (act_8000),hl            ; (act_8000, act_a000: the interrupts put act_a000 back)
         call slot_page2             ; cartridge also in page 2 (8000h-BFFFh)
-        call snd_detect             ; an OPLL (with the BIOS: before page 0 becomes RAM)
+        ld hl,snd_detect
+        call front_call             ; an OPLL (with the BIOS: before page 0 becomes RAM; cold.asm)
         di
-        call vdp_setup              ; SCREEN 5, VDP ID, IM 2, palette, tiles, HUD, sprite tables
-        call ram_page0              ; page 0: RAM from now on (no more BIOS calls)
-        jp c,no_ram
+        ld hl,vdp_setup
+        call front_call             ; SCREEN 5, VDP ID, IM 2, palette, tiles, HUD, sprite tables
+        ld hl,ram_page0
+        call front_call             ; page 0: RAM from now on (no more BIOS calls; cold.asm)
+        jp c,no_ram                 ; (cold.asm: BANK_FRONT still at 8000h)
         call snd_init               ; the PSG (and the OPLL) silent
+        ld hl,sq_init
+        call snd_bank               ; the player idle, its queue empty (the interrupts still off)
         ld hl,AC_VARS               ; the variables of the Amiga's code area at the power-on
         ld bc,AC_VARS_END - AC_VARS ; (they live on across levels and games: the code is never
         xor a                       ; loaded again: ac_mkstep $C44A...)
@@ -59,7 +64,8 @@ new_game:
         ld a,0x02
         ld b,1
         call wrreg
-ng_go:  call tiles_init             ; the tile cache and the map patches
+ng_go:  ld hl,tiles_init
+        call front_call             ; the tile cache and the map patches (cold.asm)
         call atr_load               ; the map attributes into page-0 RAM
         ld hl,AG + 0x8000           ; the game's globals ($8000-$80FF): level 0, score 0
         ld bc,256
@@ -67,7 +73,8 @@ ng_go:  call tiles_init             ; the tile cache and the map patches
         call fill
         ld a,2
         ld (AG + 0x8034),a          ; two lives ($FFD8; hud_init draws their heads)
-        call pl_init                ; the start of the level: RoboCop, the camera, the cadence
+        ld hl,pl_init
+        call front_call             ; the start of the level: RoboCop, the camera, the cadence
         ld a,BANK_L1
         ld (lvl_bank),a
         ld a,0xFF
@@ -78,11 +85,14 @@ ng_go:  call tiles_init             ; the tile cache and the map patches
         call bank_8000
         call ao_start               ; the map objects and their first pass over the whole map
         call logic_map
-        call engines_init
+        ld hl,engines_init
+        call field_call             ; (field.asm)
         if DEMO_ACTORS
         call spr_demo_init
         endif
-        call hud_init
+        ld hl,hud_init
+        call front_call             ; (cold.asm)
+        call logic_map
         if DEMO_HUD
         call demo_init
         endif
@@ -111,7 +121,9 @@ mainloop:
 ml_frame:
         call do_update              ; (no tick: versions on their way may still go on screen)
         call cam_follow             ; (the view caught up without a tick: the objects follow it)
-ml_spr: call sprites_frame          ; upload slice, SAT, R#5 for the list
+ml_spr: ld hl,fb_frame
+        call field_call             ; the play-field BOBs (field.asm): what changed
+        call sprites_frame          ; upload slice, SAT, R#5 for the list
         if DEMO_HUD
         call hud_demo               ; demo of the game's HUD events
         endif
@@ -136,16 +148,24 @@ ml_tkd: ld hl,fl_pend
 ml_flc: ld (hl),0                   ; (held hit flashes: shown now or never)
         inc hl
         djnz ml_flc
-        ld a,(g_event)
+        ld a,(jump_pend)            ; the cracked wall moved RoboCop and the camera (mapobj.asm
+        or a                        ; act_10): the new view drawn at once
+        jr z,ml_ev
+        xor a
+        ld (jump_pend),a
+        ld hl,engines_jump
+        call field_call
+ml_ev:  ld a,(g_event)
         or a
         jp z,mainloop
         cp FE_RESTART
         jr z,ml_rst
         cp FE_OVER
-        jr nz,ml_ng                 ; the next level: (for now) the title and a new game
         ld hl,front_over            ; game over: PIC9
-        call front_call
-ml_ng:  call title
+        jr z,ml_fe
+        ld hl,front_stats           ; the next level: its statistics ($85D8), then (for now) the
+ml_fe:  call front_call             ; title and a new game
+        call title
         jp new_game
 ml_rst: call level_restart
         xor a
@@ -199,34 +219,6 @@ stk_out:
         ret
         endif
 
-; The scroll engine of the VDP found (vdp_id; FORCE_V9938) on the camera's view, the split, the
-; sprite engine.
-engines_init:
-        ld a,(vdp_id)
-        cp 2
-        jr nz,init38
-        if FORCE_V9938
-        jr init38
-        endif
-        call split_init             ; A = 2: V9958 engine
-        call scroll_init            ; V9958 engine
-        ld hl,scroll_publish
-        ld (pub_vec),hl
-        ld hl,scroll_update
-        ld de,scroll_work
-        jr init_go
-init38: xor a
-        call split_init
-        call s38_init               ; V9938 engine
-        ld hl,s38_publish
-        ld (pub_vec),hl
-        ld hl,s38_update
-        ld de,s38_work
-init_go:
-        ld (update_vec),hl
-        ld (idle_vec),de
-        jp sprites_init
-
 display_on:
         ld a,R0_IE1_ON
         ld b,0
@@ -246,7 +238,8 @@ level_restart:
         ld a,0x02                   ; display off, no VBLANK interrupt
         ld b,1
         call wrreg
-        call pl_init
+        ld hl,pl_init
+        call front_call             ; (cold.asm)
         call logic_map
         call obj_start              ; (lv_fresh clear: the header's values only)
         ld a,BANK_LC2
@@ -255,7 +248,8 @@ level_restart:
         call logic_map
         xor a
         call set_weapon             ; ($8844)
-        call engines_init
+        ld hl,engines_init
+        call field_call
         jp display_on
 
 ; The title (front end) before a new game; test builds with a script start the game at once.
@@ -271,13 +265,24 @@ title:
         jp tiles_upload             ; (the pictures' G7 overwrote the start of the tiles)
         endif
 
+; HL = a routine of the play-field BOB module (BANK_FIELD at A000h around it; the bank that was
+; there comes back). Keeps nothing but what the routine returns in BC, DE, HL.
+field_call:
+        ld a,(act_a000)
+        push af
+        ld a,BANK_FIELD
+        call bank_a000
+        call fc_hl
+        pop af
+        jp bank_a000
+fc_hl:  jp (hl)
+
 ; HL = a routine of the front end (BANK_FRONT at 8000h around it).
 front_call:
         ld a,BANK_FRONT
         call bank_8000
         jp (hl)
 
-; No RAM in page 0 (the main RAM is not in page 3's slot): a red screen.
 ; An MSX1, or an MSX2 with less than 128 KiB of VRAM: the game cannot run there; a message in
 ; SCREEN 0 (the BIOS still serves page 0) and the machine stays on it.
 no_msx2:
@@ -292,26 +297,10 @@ nm_lp:  ld a,(hl)
         jr nm_lp
 nm_x:   jr nm_x
 no2_msg:
-        db "ROBOCOP 2 needs an MSX2 or MSX2+"
+        db "ROBOCOP 2 needs an MSX2"
         db 13, 10
         db "with 128 KB of VRAM."
         db 0
-
-no_ram: xor a
-        ld b,16
-        call wrreg                  ; palette entry 0
-        ld a,0x70
-        out (VDP_PAL),a
-        xor a
-        out (VDP_PAL),a             ; red
-        xor a
-        ld b,7
-        call wrreg                  ; border colour 0
-        ld a,0x02
-        ld b,1
-        call wrreg                  ; display off, no interrupt
-        di
-        halt
 
 do_update:
         ld hl,(update_vec)
@@ -319,11 +308,38 @@ do_update:
 
 do_publish:
         ld hl,(pub_vec)
-        jp (hl)
+        call fc_hl
+        ld hl,fb_tick               ; (field.asm: this picture's play-field copies may start now,
+        inc (hl)                    ; the next one's items wait for it)
+        ret
 
 idle_work:
-        ld hl,(idle_vec)
-        jp (hl)
+        ld a,(fb_busy)              ; the play-field BOBs (field.asm) first while they have work: a
+        or a                        ; picture waits for them (isr.asm)
+        jr z,iw_scr
+        ld a,(fb_cq)                ; (their copy waiting, its picture published and uploaded:
+        rra                         ; nothing else may take the VDP before the interrupts start it,
+        jr nc,iw_fb                 ; or fb_wait in the blank)
+        ld a,(fb_tick)
+        ld hl,fb_cur + 11
+        cp (hl)
+        jr z,iw_scr
+        ld a,(pk_state)
+        dec a
+        jr z,iw_scr
+        ld a,(split_armed)
+        or a
+        ret nz
+        call vdp_busy
+        ret nz
+        ld hl,fb_work
+        jp field_call
+iw_fb:  call vdp_busy
+        ret nz
+        ld hl,fb_work
+        call field_call
+iw_scr: ld hl,(idle_vec)
+        jp (hl)                     ; the scroll engine's step (a command when the VDP is idle)
 
 ; Selects in page 2 the same slot (primary/secondary) as page 1.
 slot_page2:
@@ -408,9 +424,12 @@ l1_end:
 lc3_end:
         ds 0xA000 - lc3_end, 0xFF
 
-; ----- the joystick script of test builds (BANK_INPUT at A000h around its reads) -----
+; ----- the joystick script of test builds and the sound player (BANK_INPUT at A000h around
+; their calls) -----
         org 0xA000
         include "input.inc"         ; (tools/mkrom.py JOY=..., TELE=...)
+        include "sndplay.asm"
+        include "sound.inc"         ; the streams (tools/msxsound.py)
 input_end:
         ds 0xC000 - input_end, 0xFF
 
@@ -418,5 +437,13 @@ input_end:
         org 0x8000
         include "front.asm"
         include "cold.asm"          ; init routines of the fixed code (cold.asm)
+        include "text.inc"          ; the text screens' font and the statistics (tools/msxtext.py)
 front_end:
         ds 0xA000 - front_end, 0xFF
+
+; ----- the play-field BOBs and the scroll engines' set-up (BANK_FIELD at A000h around its calls:
+; field_call) -----
+        org 0xA000
+        include "field.asm"
+field_end:
+        ds 0xC000 - field_end, 0xFF

@@ -8,127 +8,12 @@
 ; redraw it where it is shown (rd_q).
 ;
 ; Tile cache: the level's tile sheet (up to 512 tiles, most used first, tools/msxconv.py) is
-; in the ROM; the 432 VRAM slots start with tiles 0-431 (vdp_setup) and a tile that is not in
+; in the ROM; the TC_SLOTS VRAM slots start with tiles 0..TC_SLOTS-1 (vdp_setup) and a tile that is not in
 ; VRAM is copied into the slot the clock hand finds unused since it last passed (tile_src).
 
-TC_SLOTS:   equ 432
-
-; Page 0 (0000h-3FFFh) switched to the main RAM (the slot of page 3) once the BIOS is not
-; needed any more: the game never calls it after its start and IM 2 does not use page 0.
-; Carry on return when there is no RAM there.
-ram_page0:
-        di
-        in a,(0xA8)
-        ld b,a                      ; B = primary slot register
-        rlca
-        rlca
-        and 3
-        ld c,a                      ; C = page 3's primary slot
-        ld e,a
-        ld d,0
-        ld hl,EXPTBL
-        add hl,de
-        bit 7,(hl)
-        jr z,rp_prim
-        ld a,(0xFFFF)
-        cpl                         ; its secondary slot register
-        ld d,a
-        and 0xFC
-        ld e,a
-        ld a,d
-        rlca
-        rlca
-        and 3                       ; page 3's secondary slot
-        or e
-        ld (0xFFFF),a
-rp_prim:
-        ld a,b
-        and 0xFC
-        or c
-        out (0xA8),a
-        ld hl,0x0000                ; is it RAM?
-        ld a,0x5A
-        ld (hl),a
-        cp (hl)
-        jr nz,rp_none
-        cpl
-        ld (hl),a
-        cp (hl)
-        jr nz,rp_none
-        ld hl,0x3FFF
-        ld (hl),a
-        cp (hl)
-        jr nz,rp_none
-        ei
-        or a
-        ret
-rp_none:
-        ei
-        scf
-        ret
-
-; The tile cache and the map patches at the start of a level: slots 0-431 hold tiles 0-431
-; (uploaded by vdp_setup), no patch, nothing to redraw.
-tiles_init:
-        ld hl,TC_SLOT
-        ld de,1
-        ld b,TC_SLOTS/2
-ti_s:   ld (hl),e                   ; tile t: slot t + 1
-        inc hl
-        ld (hl),d
-        inc hl
-        inc de
-        ld (hl),e
-        inc hl
-        ld (hl),d
-        inc hl
-        inc de
-        djnz ti_s
-        ld bc,(512 - TC_SLOTS)*2
-        xor a
-        call fill                   ; tiles 432-511: not in VRAM
-        ld hl,TC_TILE
-        ld de,0
-        ld b,TC_SLOTS/2
-ti_t:   ld (hl),e                   ; slot s: tile s
-        inc hl
-        ld (hl),d
-        inc hl
-        inc de
-        ld (hl),e
-        inc hl
-        ld (hl),d
-        inc hl
-        inc de
-        djnz ti_t
-        ld hl,TC_REF
-        ld bc,TC_SLOTS
-        xor a
-        call fill
-        ld hl,0
-        ld (tc_hand),hl
-        ld hl,MP_ROW
-        ld bc,256
-        ld a,0xFF
-        call fill                   ; no patch in any row
-        ld hl,MP_NEXT               ; every patch free, chained
-        xor a
-mi_f:   inc a
-        ld (hl),a
-        inc l
-        jr nz,mi_f
-        dec l
-        ld (hl),0xFF
-        xor a
-        ld (mp_free),a
-        ld (mp_used),a
-        ld (mp_lost),a
-        ld (rd_head),a
-        ld (rd_tail),a
-        ld (rd_phase),a
-        ld (rd_lost),a
-        ld (tc_loads),a
-        ret
+TC_SLOTS:   equ 256                 ; (page 2: 432 until the play-field BOBs took page 3 lines 0-175;
+                                    ; the view and a margin use 129 tiles at most, a 40x24-cell window
+                                    ; 209)
 
 ; At the level's start: the packed map attributes (bank ATR_BANK: 80 bytes per row, 4-bit
 ; codes, then the codes' 16 values) into page-0 RAM - rows 0-47 at ATR_RAM0, the others at
@@ -379,6 +264,7 @@ mw_upd: ld h,MP_ATR/256             ; the cell has a patch: updated
         jr z,mw_done
 mw_redraw:
         pop de
+        call fb_invf
         jp rd_queue
 mw_new: push bc                     ; no patch: nothing to do when the ROM map has the same
         ld a,d                      ; tile and attributes
@@ -422,6 +308,7 @@ mw_new1:
         ld hl,mp_used
         inc (hl)
         pop de
+        call fb_invf
         jp rd_queue
 mw_full:
         ld hl,mp_lost               ; (more patches than the table holds: counted)
@@ -431,7 +318,9 @@ mw_done:
         ret
 
 ; D = row, E = column: the cell is redrawn where the scroll engine shows it, when it is near
-; the view (a full queue drops the request: counted in rd_lost). Keeps DE.
+; the view; once only while it waits (rd_bits: its redraw reads the map then; the level's
+; beams rewrite their cells every tick), but again when it is the oldest, drawn on the V9938's
+; first page only. A full queue drops the request (counted in rd_lost). Keeps DE.
 rd_queue:
         call cam_cells              ; B = cx, C = cy
         ld a,d
@@ -444,7 +333,28 @@ rd_queue:
         inc a
         cp 20
         ret nc
-        ld a,(rd_tail)
+        call rd_bit
+        ld c,a
+        and (hl)
+        jr z,rq_new
+        ld a,(rd_phase)
+        or a
+        ret z
+        ld a,(rd_head)
+        ld l,a
+        ld h,RD_Q/256
+        ld a,(hl)
+        cp d
+        ret nz
+        inc l
+        ld a,(hl)
+        cp e
+        ret nz
+        jr rq_add
+rq_new: ld a,c
+        or (hl)
+        ld (hl),a
+rq_add: ld a,(rd_tail)
         ld l,a
         add a,2
         and RD_Q_SIZE*2 - 1
@@ -479,13 +389,231 @@ rd_peek:
         or 1
         ret
 
-; The oldest request is done.
+; The oldest request is done (no longer waiting: rd_bits). Keeps BC, DE.
 rd_pop: ld a,(rd_head)
+        ld l,a
+        ld h,RD_Q/256
+        push de
+        ld d,(hl)
+        inc l
+        ld e,(hl)
+        call rd_bit
+        cpl
+        and (hl)
+        ld (hl),a
+        pop de
+        ld a,(rd_head)
         add a,2
         and RD_Q_SIZE*2 - 1
         ld (rd_head),a
         xor a
         ld (rd_phase),a
+        ret
+
+; D = row, E = column -> HL = its byte of rd_bits, A = its bit: (row & 15) * 20 + column % 20,
+; one bit for each cell of the window rd_queue keeps (16 rows, 20 columns). Keeps BC, DE.
+rd_bit: push bc
+        push de
+        ld a,e
+rbt_m:  sub 20
+        jr nc,rbt_m
+        add a,20
+        ld e,a
+        ld a,d
+        and 15
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld c,l
+        ld b,h
+        add hl,hl
+        add hl,hl
+        add hl,bc                   ; row * 20
+        ld d,0
+        add hl,de
+        ld a,l
+        and 7
+        ld b,a
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        ld de,rd_bits
+        add hl,de
+        ld a,1
+        inc b
+rbt_s:  dec b
+        jr z,rbt_x
+        add a,a
+        jr rbt_s
+rbt_x:  pop de
+        pop bc
+        ret
+
+; A = row, E = column of a tile drawn into the V9958's ring: when it meets a play-field BOB (or the
+; field engine's work there), field.asm composes the cell again with the BOBs over it
+; (fb_redraw). Keeps all.
+fb_mark:
+        push af
+        push de
+        ld d,a
+        xor a
+        call fb_meetq
+        pop de
+        pop af
+        ret
+
+; B = row, E = column, D = V9938 page of a tile drawn: on the page shown, or on the page being
+; built once it holds the BOBs (fb_bsync), the same; before, where it meets a BOB the sync composes
+; it (field.asm fb_bbcell). Keeps BC, DE, HL.
+fb_mark38:
+        ld a,(s38_vis_page)
+        cp d
+        jr z,fm38_go
+        ld a,(s38_back_c0)
+        push hl
+        ld hl,fb_bsync
+        cp (hl)
+        pop hl
+        jr nz,fm38_bb
+fm38_go:
+        push de
+        ld a,d
+        ld d,b
+        call fb_meetq
+        pop de
+        ret
+fm38_bb:
+        push bc
+        push de
+        push hl
+        ld d,b
+        ld hl,fb_bbcell
+        call field_call
+        pop hl
+        pop de
+        pop bc
+        ret
+
+; D = row, E = column of a cell whose tile changed: the play-field caches holding it copy it
+; again when they need it (field.asm fb_inval). Keeps DE.
+fb_invf:
+        push de
+        ld hl,fb_inval
+        call field_call
+        pop de
+        ret
+
+; (isr.asm isr_vblank) -> NZ when the play-field BOBs still have work of a published picture for
+; the page the published list shows (field.asm: the item being composed or one waiting, for
+; s38_vis_page; page 0 on the V9958). Changes AF, BC (C: not VDP_CTRL any more), HL.
+fb_pend:
+        ld a,(fb_qlk)               ; (field.asm moving an item between its queue and its work)
+        or a
+        ret nz
+        ld c,0
+        ld a,(fb_eng)
+        or a
+        jr z,fpd_p
+        ld a,(s38_vis_page)
+        ld c,a
+fpd_p:  ld a,(fb_ph)
+        or a
+        jr z,fpd_q
+        ld a,(fb_cq)
+        cp 4
+        jr nz,fpd_c
+        ld a,(fb_c2)
+        dec a
+        jr nz,fpd_q                 ; (its last copy runs)
+fpd_c:
+        ld hl,fb_cur
+        call fpd_it
+        ret nz
+fpd_q:  ld a,(fb_qn)
+        or a
+        ret z
+        ld b,a
+        ld hl,fb_q
+fpd_lp: call fpd_it
+        ret nz
+        ld a,l
+        add a,FB_QSZ
+        ld l,a
+        jr nc,fpd_nc
+        inc h
+fpd_nc: djnz fpd_lp
+        xor a
+        ret
+; HL = an item -> NZ when it is page C's and of a picture published (its stamp not fb_tick), but
+; an explosion's (its owner a slot of expl_update: high byte 0), which the picture never waits for:
+; a step drawn late shows the next one (field.asm takes the others first).
+fpd_it: ld a,(hl)
+        cp c
+        jr nz,fpi_n
+        push hl
+        inc hl
+        inc hl
+        ld a,(hl)
+        pop hl
+        or a
+        jr z,fpi_n
+        push hl
+        ld a,l
+        add a,11
+        ld l,a
+        jr nc,fpi_c
+        inc h
+fpi_c:  ld a,(fb_tick)
+        cp (hl)
+        pop hl
+        jr z,fpi_n
+        or 1
+        ret
+fpi_n:  xor a
+        ret
+
+
+; D = row, E = column of a cell the game changed, about to be drawn on page A (the scroll
+; engines' redraws), or of a tile drawn there (fb_mark, fb_mark38): when it meets the play-field
+; BOBs' work or a BOB of that page, they compose it (field.asm fb_cellq: with the BOBs over it,
+; never a hole in one) -> NZ; else Z (the scroll engine draws it). Keeps BC, DE, HL.
+fb_redraw:
+fb_meetq:
+        push hl
+        push bc
+        ld c,a
+        ld a,(fb_ph)
+        ld hl,fb_qn
+        or (hl)
+        jr nz,frd_c
+        ld a,c
+        or a
+        ld hl,fb_dn0
+        jr z,frd_l
+        ld hl,fb_dn1
+frd_l:  ld a,(hl)
+        inc a
+        jr z,frd_z                  ; (unknown: nothing known there)
+        dec a
+        jr z,frd_z
+frd_c:  ld a,c
+        ld (fb_cqp),a
+        push de
+        ld hl,fb_cellq
+        call field_call
+        pop de
+        pop bc
+        pop hl
+        ld a,(fb_cqr)
+        or a
+        ret
+frd_z:  pop bc
+        pop hl
+        xor a
         ret
 
 ; ----- the tile cache -----

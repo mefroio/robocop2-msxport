@@ -83,6 +83,10 @@ l1i_hdr:
         ld (ac_objlA),hl
         ld hl,spawn_ram
         ld (AM + 0x0B0E),hl         ; ($B0E: the spawn list)
+        ld hl,(l1_hdr + 20)         ; (header +20, +22: where the cracked wall sends RoboCop,
+        ld (AM + 0x15D6),hl         ; $87A4: obj_relocate $9FC4, mapobj.asm act_10)
+        ld hl,(l1_hdr + 22)
+        ld (AM + 0x15D8),hl
         ld hl,(l1_hdr + 26)         ; (header +24: the marker table, $C598 and $C692)
         ld de,mk_tab - 0xC59C
         add hl,de

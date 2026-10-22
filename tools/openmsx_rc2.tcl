@@ -405,7 +405,7 @@ proc rc2_bobs_rom {rom labels file n script} {
 
 proc rc2_bobs_hit {} {
 	set n [peek 0xCE8A]
-	binary scan [debug read_block memory 0xEA60 [expr {12 * $n}]] H* recs
+	binary scan [debug read_block memory 0xEA60 [expr {15 * $n}]] H* recs   ;# (msx/bob.asm BOB_REC)
 	puts $::rb_out "[rc2_w 0xCEE0] $n $recs"
 	incr ::rb_left -1
 	if {$::rb_left == 0} {

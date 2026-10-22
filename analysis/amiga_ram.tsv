@@ -18,6 +18,8 @@
 15ce 2 player_hot_y
 15d0 2 player_x
 15d4 2 player_y
+15d6 2 reloc_x (the cracked wall's destination: level header +20)
+15d8 2 reloc_y (header +22)
 15da 2 player_aim
 15dc 2 player_anim
 15de 2 player_15de

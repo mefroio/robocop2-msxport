@@ -17,11 +17,12 @@ PK_VY:      equ AM + 0x0DA4
 ; - the first 6 enemy bullets (of 8; $C34 + 4k: x, y at +20h, type at +40h) whose box, per type
 ;   ($FA35 width: negative, the type never hits; $FA4C height; both unsigned), overlaps it:
 ;   unless the death sequence's counter has its high byte ($16BC) set, the bullet is gone, the
-;   energy ($169A) loses the type's damage ($FA63), the palette flashes (PAL_SHOT) and, when
+;   energy ($169A) loses the type's damage ($FA63; times DAMAGE_X), the palette flashes
+;   (PAL_SHOT) and, when
 ;   the bullet was less than 50 pixels right of him, the hit spark runs 7 frames ($16A0) at
 ;   ($16A2, $16A4) = y + 3Ch - his y, 0..32h, twice (the x written first is overwritten);
 ; - the first of the 5 enemies whose box (obj_desc width, height; no -8 margins here) overlaps
-;   it: its touch byte (+23h) set, the palette flashes (PAL_ENEMYHIT), energy - 1;
+;   it: its touch byte (+23h) set, the palette flashes (PAL_ENEMYHIT), energy - 1 (DAMAGE_X);
 ; - the pickups (slot 3 to 0) no longer rising whose box (x - 8, y - 8, 15 x 15) overlaps it:
 ;   the first one is taken: its message, its sound ($FC0B), the vehicle's vy + 6 when he rides it
 ;   ($16D8, $D7C), and its effect ($FBE0 + type) - nothing more this frame.
@@ -155,6 +156,15 @@ phb_sp: ld (AM + 0x16A2),hl
 phb_en: ld a,(ph_dmg)
         ld e,a
         ld d,0
+        if DAMAGE_X > 1             ; (the port, tools/mkrom.py DAMAGE_X: fewer enemies, harder
+        ld l,e                      ; hits)
+        ld h,d
+        add hl,de
+        if DAMAGE_X > 2
+        add hl,de
+        endif
+        ex de,hl
+        endif
         ld hl,(AM + 0x169A)
         or a
         sbc hl,de
@@ -219,7 +229,8 @@ pht_lp: ld a,(ix+OS_TYPE)
         ld a,PAL_ENEMYHIT
         call pal_flash
         ld hl,(AM + 0x169A)
-        dec hl
+        ld de,0 - DAMAGE_X          ; (the original: 1)
+        add hl,de
         ld (AM + 0x169A),hl
         jr php_go
 pht_nx: ld de,4

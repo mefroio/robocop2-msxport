@@ -27,6 +27,7 @@ dt_prep:
         cp MAP_COLS
         ret nc
         ld a,c
+        call fb_mark                ; (field.asm: the play-field BOBs over it again)
         call tile_src
         ld a,c                      ; (tile_src keeps BC, not A)
         add a,a
@@ -54,50 +55,6 @@ dt_prep:
         ld (cmdbuf+10),hl
         scf
         ret
-
-; Fills the initial ring and clears the queues.
-scroll_init:
-        ld a,R25_PLAY
-        ld b,25
-        call wrreg                  ; R#25 = SP2 (512 px ring) + MSK (hides the left 8 px)
-        ld hl,0                     ; (the camera: set by the game, pl_init)
-        ld (frame),hl
-        ld (late),hl
-        ld (stall),hl
-        ld (vstall),hl
-        ld (tiles_drawn),hl
-        ld a,0xFF
-        ld (q_col),a
-        ld (q_row),a
-        call cam_cells              ; B = cx, C = cy
-        ld a,b
-        ld (prev_cx),a
-        ld a,c
-        ld (prev_cy),a
-        ; rows cy-1 .. cy+12, columns cx-1 .. cx+17
-        ld a,c
-        dec a
-        ld d,a                      ; current row
-si_row: ld a,b
-        dec a
-        ld e,a
-si_col: push bc
-        push de
-        ld a,d
-        call draw_tile
-        pop de
-        pop bc
-        inc e
-        ld a,b
-        add a,18
-        cp e
-        jr nz,si_col
-        inc d
-        ld a,c
-        add a,VIEW_ROWS-1
-        cp d
-        jr nz,si_row
-        jp scroll_publish
 
 ; Once per frame: one column/row step at a time (the camera waits at the cell edge while
 ; the previous one is pending), one tile of work, then the registers of the next frame. It works
@@ -277,6 +234,9 @@ swr_one:
         sub b
         cp 19
         jr nc,swr_drop
+        xor a
+        call fb_redraw
+        jr nz,swr_drop              ; (the play-field BOBs compose it: tiles.asm)
         ld a,(split_armed)
         or a
         jr nz,swr_late

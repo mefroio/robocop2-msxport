@@ -37,52 +37,7 @@ hud_map:
         ld a,HUD_BANK + 1
         jp bank_a000
 
-; State of the static HUD: timer 09:58, ammo 000, score 0000000, full can, two RoboCop heads,
-; the icon of weapon 0, empty message line.
-hud_init:
-        call hud_upload             ; the panel as the game starts (no last game's digits)
-        ld hl,hud_timer
-        ld (hl),0x09
-        inc hl
-        ld (hl),0x58
-        ld hl,hud_ammo
-        ld b,6
-        xor a
-hi_z:   ld (hl),a
-        inc hl
-        djnz hi_z                   ; ammo and score
-        ld hl,hi_shown
-        ld de,hud_shown
-        ld bc,14
-        ldir
-        ld hl,0x100
-        ld (en_target),hl
-        ld (en_shown),hl
-        ld hl,msg_queue
-        ld b,8 + 4
-        xor a
-hi_q:   ld (hl),a
-        inc hl
-        djnz hi_q                   ; queue, indices, column, count
-        ld hl,hud_chars
-        ld b,TEXT_CELLS
-        ld a,SPACE
-hi_c:   ld (hl),a
-        inc hl
-        djnz hi_c
-        xor a
-        ld (heads_g),a
-        ld (heads_g+1),a
-        ld (job_lines),a
-        ld (jobq_n),a
-        ld (weapon),a
-        ld a,3
-        ld (icon_shown),a           ; (weapon 0's icon, see set_weapon $FD30)
-        ld a,2
-        ld (lives),a
-        ret
-hi_shown:
-        db 0, 9, 5, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+; (The HUD's state at a new game: cold.asm hud_init.)
 
 ; Once per frame, right after the VBLANK: the ticker, then one other piece of work: a job
 ; slice, else an energy step, else a digit cell.

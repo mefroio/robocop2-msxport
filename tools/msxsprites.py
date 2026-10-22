@@ -20,6 +20,17 @@ its band's OR layer (BOBs only), so dropping a layer never leaves holes. In the 
 [A, B, A, B, ...]: on every line the B that covers it directly follows its A, which is what the
 VDP needs for the OR.
 
+The start-of-level arm poses (the gun drawn across his body, spun and held: start_layouts) are
+converted together, group by group (START_GROUPS), so that a pixel two poses shown in a row share
+keeps its colour where the original keeps the pixels around it (Converter.coherent; one by one a
+gun pixel in a box line changed his chest's colours on that line: a stroke across his body from
+one pose to the next), and add detail sprites for the gun's greys (GUN_GREYS): the OR-closed
+colours have no grey or white, so the gun's highlights showed as two cyan stripes across his
+black thigh and, while it spins, across his chest. A detail sprite is a box of its own placed
+first in its band (in front, CC = 0, no B): one colour per line from the whole palette, set
+only on the gun's pixels it brings closer to the original (chroma weighted: a grey stays grey),
+while the band stays within RC_CAP; no other pixel changes.
+
 Enemies and the other BOBs of the level (tools/bobcatalog.py's catalogue, with --bobs) go the
 same way, with OR pairs over the whole palette (their colours are the background's, not
 OR-closed), bands ending on their lowest pixel line (a band keeps its place from frame to
@@ -31,6 +42,10 @@ every frame of an animation (the most gain summed over its frames; <out>.json "p
 ROM data (<out>.bin, 8 KiB banks, see FORMAT below) and <out>.inc (equates), plus <out>.pal
 (joint palette, V9938 format), <out>.remap (16 bytes: Amiga background index -> joint index),
 <out>.json (statistics) and <out>.png (every composition: software | full | fallback).
+
+The BOBs drawn into the play field instead (FIELD_PROCS, msx/field.asm): their atlas for the ROM
+(<out>_field.bin, field_frames; the dynamic frames: <out>_fdyn.bin), its place table (<out>_field.inc) and the atlas as VRAM holds it
+(<out>_field_vram.bin, for the checks).
 
 Run time (msx/sprites.asm): the budget counts every line's sprites from the band tables and,
 where a line passes 8, drops the OR layer of a band of a BOB (its B sprites go, its A sprites
@@ -82,6 +97,42 @@ FLASHES = (0x100B0, 0x10092, 0x100CE, 0x100EC, 0x10074, 0x1010A)  # $F80E's pale
 RC_CAP = 5        # RoboCop: the most sprites on a line (msx/sprites.asm never drops his OR layers)
 BOB_CAP = 3       # the BOBs: the most on a line, beside RoboCop's RC_CAP (a look that never changes)
 SPARK_GFX, SPARK_OFFSETS = 0x65230, 0xB4DA  # the hit spark: draw_player ($BB78) cuts frame $65230 + word k
+GUN_GREYS = (9, 10, 11, 12)  # the gun's greys (Amiga sprite colours #333, #777, #AAA, #EEE)
+GUN_CHROMA = 2.5             # chroma weight of their detail sprites' colours (a grey stays grey)
+CALM_R, CALM_MOVE = 2, 0.3   # Converter.coherent: a pixel two poses in a row share keeps its colour
+                             # where under CALM_MOVE of the 5 x 5 around it change
+START_GROUPS = ((8, 15), (16, 25))  # start-of-level arm poses converted together (start_layouts):
+                                    # the gun drawn, the gun spun
+SKIP = 1                            # poses the display may skip in a row (a busy picture)
+FIELD_PROCS = ("obj45_update", "obj26_update", "obj28_update", "FUN_00008de6",  # drawn into the
+               "special_vehicle_l0")                                            # play field
+FIELD_RIDDEN = ("FUN_00008de6", "special_vehicle_l0")   # the lifts and the vehicle: RoboCop rides
+                                                        # them (msx/field.asm copies them last)
+FIELD_FLASH = ("obj26_update", "obj28_update")  # the gunners that stay put (48 x 40: as sprites one
+                                                # colour a line): their sprite frames stay for the
+                                                # hit flash's silhouette, shown over the play field
+FIELD_DYN = (0x45250, 0x45610, 0x45C28, 0x46420, 0x46CCC, 0x478FC,    # the explosion ($F266: 9 steps
+             0x4857C, 0x487AC, 0x4898C, 0x4910C,                    # of one or two parts) and the
+             0x67940, 0x67FD0, 0x68660, 0x68CF0, 0x69380, 0x69A10)  # smoke ($F080's frames 24-29):
+                                                    # drawn into the play field from the ROM, a step
+                                                    # at a time (the dynamic slot, msx/field.asm fb_dyn)
+DYN_GROUPS = ((0x45250,), (0x45C28,), (0x46CCC,), (0x4857C, 0x4898C), (0x487AC, 0x4910C),
+              (0x67940,), (0x68660,), (0x69380,))   # the frames shown together: side by side there
+FIELD_HALF = {"45610:48:52": ["45250:48:32", 20, 0],  # (the user's choice, 2026-10-21: half the
+              "46420:48:74": ["45c28:48:68", 6, 0],   # explosion's and the smoke's steps, the same
+              "478fc:64:80": ["46ccc:64:78", 2, 0],   # time in all: each other step shows the one
+              "67fd0:48:56": ["67940:48:56", 0, 0],   # before, where that one is drawn; the game's
+              "68cf0:48:56": ["68660:48:56", 0, 0],   # logic is unchanged)
+              "69a10:48:56": ["69380:48:56", 0, 0]}
+FIELD_W, FIELD_H = 256, 112    # their atlas: page 3 lines FIELD_Y0.. (msx/field.asm)
+FIELD_Y0 = 0                   # (tile slots 256-431 freed: the atlas; lines 112-175 the caches and
+                               # the scratch, msx/field.asm)
+DYN_H = 24                     # the dynamic slot: the atlas's last DYN_H lines, a frame's lines in
+                               # strips of DYN_H side by side
+FIELD_ID0 = 0xC8               # their BOBHASH ids: FIELD_ID0 + index (the sprite frames' stay below:
+                               # 200 ids, the hit spark's four last)
+FIELD_ROM = 0x2000             # the atlas in the ROM: one bank (upload table, then the frames)
+DYN_ROM = 2 * 0x2000           # the dynamic frames in the ROM: two banks (none across a bank's end)
 
 
 def amiga_rgb(c12: int) -> np.ndarray:
@@ -246,12 +297,13 @@ def order_palette(pal: np.ndarray, comps: list[np.ndarray], sppal: np.ndarray) -
 
 
 def flash_palettes(main: bytes, comps: list[np.ndarray], shown: list[np.ndarray], remap: list[int],
-                   bg_count: np.ndarray) -> tuple[list[int], list[list[np.ndarray]]]:
+                   bg_count: np.ndarray, field: np.ndarray | None = None) -> tuple[list[int], list[list[np.ndarray]]]:
     """RoboCop's palette flashes ($F80E: COLOR17-31 from one of FLASHES for 5 game frames) on the
-    joint palette. The entries tinted are RoboCop's (1..7) that the background never uses, so that
-    only the sprites change colour as on the Amiga; each takes the mean of the flash colours of
-    the Amiga colours shown with it over every composition. -> (entries, per flash their 3-bit
-    RGB colours)."""
+    joint palette. The entries tinted are RoboCop's (1..7) that the background never uses, nor
+    the BOBs drawn into the play field ('field': their pixels per entry; their black is RoboCop's,
+    which flashed their outlines), so that only the sprites change colour as on the Amiga; each
+    takes the mean of the flash colours of the Amiga colours shown with it over every composition.
+    -> (entries, per flash their 3-bit RGB colours)."""
     count = np.zeros((16, 16))
     for img, full in zip(comps, shown):
         m = (img > 0) & (full > 0)
@@ -259,6 +311,8 @@ def flash_palettes(main: bytes, comps: list[np.ndarray], shown: list[np.ndarray]
     bg_use = np.zeros(16)
     for c, k in enumerate(remap):
         bg_use[k] += bg_count[c]
+    if field is not None:
+        bg_use += field
     idx = [k for k in range(1, 8) if bg_use[k] == 0 and count[:, k].sum() > 0]
     out = []
     for addr in FLASHES:
@@ -291,6 +345,7 @@ class Converter:
     def __init__(self, pal: np.ndarray, pairs: list[tuple[int, int]] = PAIRS, cap: int | None = None,
                  align: str = "best"):
         P = lab(pal)
+        self.P = P
         self.D = ((P[:, None, :] - P[None, :, :]) ** 2).sum(-1)
         self.pairs = pairs
         self.cap = cap
@@ -401,6 +456,335 @@ class Converter:
             if best is None or key < best[0]:
                 best = (key, lay)
         return best[1]
+
+    def coherent(self, tgts: list[np.ndarray], links: list[tuple[int, int]],
+                 fixed: list[tuple[int, np.ndarray, np.ndarray]], y_first: int,
+                 extra: list[tuple[int, int]] = ()) -> list[list[tuple[int, list[dict]]]]:
+        """Layouts of compositions shown one after another (the start of a level: his body still
+        while his arm and the gun move) such that a pixel two of them shown in a row share shows
+        the same in both, else each as close to the original as it can be on its own (converted
+        one by one, a gun pixel in a box line changed his chest's colours on that line from one
+        step to the next: a stroke across his body). links: the pairs (i, j) of 'tgts' shown in a
+        row; fixed: (i, target, look) a composition shown next to i whose look (joint palette
+        indices, 0 transparent) cannot change. The boxes are the same for all (over the pixels of
+        all, bands from y_first); each keeps the OR layer of its boxes that gain most within cap;
+        per box line every composition takes the colour or OR pair that minimises its error
+        while no shared pixel shows two colours (the fewest mismatches with a fixed look where it
+        cannot match): an exact min-sum over the links, a tree once one end of each loop's
+        closing link is enumerated; extra: pairs also shown in a row now and then (a pose the
+        display skips when the game is busy): with them, a branch and bound over every link,
+        bounded by that solution improved one composition at a time."""
+        n = len(tgts)
+        h, w = tgts[0].shape
+        union = np.zeros((h, w), bool)
+        for t in tgts:
+            union |= t > 0
+        bottom = int(np.nonzero(union.any(1))[0][-1])
+        opts: list[tuple[int, ...]] = [(c,) for c in range(1, len(self.P))] + [tuple(p) for p in self.pairs]
+        n_single = len(self.P) - 1
+        shown = np.array([[o[0], o[0], o[0]] if len(o) == 1 else [o[0], o[1], o[0] | o[1]] for o in opts])
+        edges = sorted({(min(i, j), max(i, j)) for i, j in links if i != j})
+        nb: list[set[int]] = [set() for _ in range(n)]
+        for i, j in edges:
+            nb[i].add(j)
+            nb[j].add(i)
+        parent = [-1] * n
+        seen = [False] * n
+        order: list[int] = []
+        for r in range(n):
+            if seen[r]:
+                continue
+            seen[r] = True
+            queue = [r]
+            while queue:
+                u = queue.pop(0)
+                order.append(u)
+                for v in sorted(nb[u]):
+                    if not seen[v]:
+                        seen[v] = True
+                        parent[v] = u
+                        queue.append(v)
+        tree = {(min(v, parent[v]), max(v, parent[v])) for v in range(n) if parent[v] >= 0}
+        loops = [e for e in edges if e not in tree]
+        cuts = sorted({j for _, j in loops})
+        children = [[c for c in range(n) if parent[c] == u] for u in range(n)]
+
+        def calm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+            """The pixels a and b share whose surroundings stay still (fewer than CALM_MOVE of the
+            (2 CALM_R + 1)^2 around change): there a pixel changing colour shows as a stroke; in
+            a part that changes anyway (a black hip becoming a blue thigh) it goes unseen."""
+            moved = ((a > 0) | (b > 0)) & (a != b)
+            r = CALM_R
+            pad = np.pad(moved, r)
+            near = sum(pad[r + dy:r + dy + h, r + dx:r + dx + w].astype(int)
+                       for dy in range(-r, r + 1) for dx in range(-r, r + 1))
+            return (a > 0) & (a == b) & (near < CALM_MOVE * (2 * r + 1) ** 2)
+        every = sorted(set(edges) | {(min(i, j), max(i, j)) for i, j in extra if i != j})
+        static = {(i, j): calm(tgts[i], tgts[j]) for i, j in every}
+        nb_all: list[list[int]] = [[] for _ in range(n)]
+        for i, j in every:
+            nb_all[i].append(j)
+            nb_all[j].append(i)
+        MISS = 1e7                                          # a shared pixel showing two colours
+
+        def row(a: np.ndarray, y: int, x0: int) -> np.ndarray:
+            return np.array([a[y, x] if 0 <= y < h and 0 <= x < w else 0 for x in range(x0, x0 + 16)])
+
+        def solve_line(y: int, x0: int, allowed: np.ndarray) -> list[int]:
+            """Per composition its option for one box line ('allowed': which options it may use)."""
+            K, C = [], []
+            for i in range(n):
+                r = row(tgts[i], y, x0)
+                m = r > 0
+                d = self.D[r[:, None, None], shown[None, :, :]]          # (16, opts, 3)
+                k = np.take_along_axis(shown[None, :, :].repeat(16, 0), d.argmin(2)[:, :, None], 2)[:, :, 0]
+                k = np.where(m[:, None], k, 0).T                          # (opts, 16)
+                c = (d.min(2) * m[:, None]).sum(0)
+                for ti, tt, look in fixed:
+                    if ti == i:
+                        fl = row(look, y, x0)
+                        same = m & (row(calm(tgts[i], tt).astype(np.int64), y, x0) > 0) & (fl > 0)
+                        c = c + MISS * ((k != fl[None, :]) & same[None, :]).sum(1)
+                C.append(np.where(allowed[i], c, np.inf))
+                K.append(k)
+            P = {}
+            for i, j in every:
+                s = row(static[(i, j)].astype(np.int64), y, x0) > 0
+                P[(i, j)] = MISS * ((K[i][:, None, :] != K[j][None, :, :]) & s[None, None, :]).sum(2)
+
+            def link(u: int, v: int) -> np.ndarray:                      # [option of u, option of v]
+                return P[(u, v)] if u < v else P[(v, u)].T
+
+            best = None
+            for cut_opts in itertools.product(*[np.nonzero(allowed[c])[0].tolist() for c in cuts]):
+                fix = dict(zip(cuts, cut_opts))
+                msg, arg = {}, {}
+                vals = {}
+                for u in reversed(order):
+                    v = C[u].copy()
+                    if u in fix:
+                        keep_only = np.full(len(opts), np.inf)
+                        keep_only[fix[u]] = 0.0
+                        v = v + keep_only
+                    for a, b in loops:
+                        if u == a and b in fix:
+                            v = v + link(u, b)[:, fix[b]]
+                        elif u == b and a in fix and a not in (u,) and u not in fix:
+                            v = v + link(u, a)[:, fix[a]]
+                    for ch in children[u]:
+                        v = v + msg[ch]
+                    vals[u] = v
+                    if parent[u] >= 0:
+                        tot = v[:, None] + link(u, parent[u])
+                        arg[u] = tot.argmin(0)
+                        msg[u] = tot.min(0)
+                choice = {}
+                total = 0.0
+                for u in order:
+                    if parent[u] < 0:
+                        choice[u] = int(vals[u].argmin())
+                        total += float(vals[u][choice[u]])
+                    else:
+                        choice[u] = int(arg[u][choice[parent[u]]])
+                if best is None or total < best[0]:
+                    best = (total, [choice[i] for i in range(n)])
+            pick = best[1]
+            if every == edges:
+                return pick
+            # the extra links: an exact branch and bound over all of them, bounded by that
+            # solution improved one composition at a time
+            for _ in range(4 * n):
+                moved = False
+                for i in range(n):
+                    tot = C[i] + sum(link(i, j)[:, pick[j]] for j in nb_all[i])
+                    o = int(tot.argmin())
+                    if tot[o] < tot[pick[i]]:
+                        pick[i] = o
+                        moved = True
+                if not moved:
+                    break
+            seq_ = sorted(range(n), key=lambda i: -len(nb_all[i]))
+            cand = [[int(o) for o in np.argsort(C[i]) if np.isfinite(C[i][o])] for i in range(n)]
+            low = [0.0] * (n + 1)
+            for d in range(n - 1, -1, -1):
+                low[d] = low[d + 1] + float(C[seq_[d]].min())
+            bound = [float(sum(C[i][pick[i]] for i in range(n)) +
+                           sum(link(i, j)[pick[i], pick[j]] for i, j in every)), list(pick)]
+            assign: dict[int, int] = {}
+
+            def search(d: int, run: float) -> None:
+                if d == n:
+                    if run < bound[0]:
+                        bound[0], bound[1] = run, [assign[i] for i in range(n)]
+                    return
+                i = seq_[d]
+                for o in cand[i]:
+                    c = run + float(C[i][o])
+                    if c + low[d + 1] >= bound[0]:
+                        break
+                    for j in nb_all[i]:
+                        if j in assign:
+                            c += float(link(i, j)[o, assign[j]])
+                    if c + low[d + 1] >= bound[0]:
+                        continue
+                    assign[i] = o
+                    search(d + 1, c)
+                    del assign[i]
+            search(0, 0.0)
+            return bound[1]
+
+        out: list[list[tuple[int, list[dict]]]] = [[] for _ in range(n)]
+        for y0 in range(y_first, bottom + 1, 16):
+            xs = np.nonzero(union[max(0, y0):max(0, y0 + 16)].any(0))[0]
+            places, i = [], 0
+            while i < len(xs):
+                places.append(int(xs[i]))
+                while i < len(xs) and xs[i] < places[-1] + 16:
+                    i += 1
+            if not places:
+                continue
+            # per composition, the boxes that keep an OR layer: within cap for the boxes it shows in
+            # the band, those whose pairs gain most first (as one by one)
+            gains = np.zeros((n, len(places)))
+            for i, t in enumerate(tgts):
+                for kb, x0 in enumerate(places):
+                    for k in range(16):
+                        r = row(t, y0 + k, x0)
+                        if (r > 0).any():
+                            _, e1, pr, e2 = self.line_choice(r[r > 0])
+                            if pr is not None and e2 < e1:
+                                gains[i, kb] += e1 - e2
+            two = []
+            for i, t in enumerate(tgts):
+                has = [kb for kb, x0 in enumerate(places)
+                       if (t[max(0, y0):max(0, y0 + 16), max(0, x0):x0 + 16] > 0).any()]
+                keep = (self.cap - len(has)) if self.cap is not None else len(has)
+                two.append(set(sorted((kb for kb in has if gains[i, kb] > 0), key=lambda kb: -gains[i, kb])[:max(0, keep)]))
+            boxes: list[list[dict]] = [[] for _ in range(n)]
+            for kb, x0 in enumerate(places):
+                allowed = np.array([[o < n_single or kb in two[i] for o in range(len(opts))] for i in range(n)])
+                A, B, A1, full, fb = ([np.zeros((16, 16), np.uint8) for _ in range(n)] for _ in range(5))
+                cA, cB, cA1 = ([np.zeros(16, np.uint8) for _ in range(n)] for _ in range(3))
+                pairs = [0] * n
+                for kk in range(16):
+                    y = y0 + kk
+                    rows = [row(t, y, x0) for t in tgts]
+                    if not any((r > 0).any() for r in rows):
+                        continue
+                    pick = solve_line(y, x0, allowed)
+                    for i in range(n):
+                        r = rows[i]
+                        m = r > 0
+                        if not m.any():
+                            continue
+                        c1 = self.line_choice(r[m])[0]
+                        A1[i][kk, m] = 1
+                        cA1[i][kk] = c1
+                        fb[i][kk, m] = c1
+                        o = opts[pick[i]]
+                        if len(o) == 1:
+                            A[i][kk, m] = 1
+                            cA[i][kk] = o[0]
+                            full[i][kk, m] = o[0]
+                            continue
+                        p, q = o
+                        pairs[i] += 1
+                        cA[i][kk], cB[i][kk] = p, q
+                        for xx in np.nonzero(m)[0]:
+                            kc = min((p, q, p | q), key=lambda t: self.D[r[xx], t])
+                            full[i][kk, xx] = kc
+                            A[i][kk, xx] = kc in (p, p | q)
+                            B[i][kk, xx] = kc in (q, p | q)
+                for i in range(n):
+                    if A1[i].any():
+                        boxes[i].append({"x": x0, "A": A[i], "A1": A1[i], "B": B[i], "cA": cA[i], "cA1": cA1[i],
+                                         "cB": cB[i], "full": full[i], "fallback": fb[i], "has_b": pairs[i] > 0,
+                                         "gain": float(gains[i, kb]), "err": 0.0})
+            for i in range(n):
+                out[i].append((y0, boxes[i]))
+        return out
+
+    def details(self, lays: list[list[tuple[int, list[dict]]]], srcs: list[np.ndarray],
+                sppal: np.ndarray, keep: tuple[int, ...], chroma: float) -> list[list[tuple[int, list[dict]]]]:
+        """Detail sprites for the pixels of colours 'keep' of the compositions 'srcs' (Amiga
+        indices, colours 'sppal') over their layouts 'lays' (the same bands, as coherent() gives
+        them): while a band has fewer than cap sprites on a line (in the layout that has most), a
+        box in front of it (first in the band: CC = 0, no B) with one colour per line from the
+        whole palette, placed and coloured for all of them at once (the gain summed; colours in
+        CIELAB, the chroma weighted by 'chroma'), each setting only its own pixels that colour
+        brings closer to the original, so that a pixel they share keeps its detail colour from
+        one to the next."""
+        w3 = np.array([1.0, chroma, chroma])
+        E = (((lab(sppal)[:, None, :] - self.P[None, :, :]) * w3) ** 2).sum(-1)
+        h, w = srcs[0].shape
+        n = len(lays)
+        out: list[list] = [[] for _ in range(n)]
+        for bi in range(len(lays[0])):
+            y0 = lays[0][bi][0]
+            bands = [list(lay[bi][1]) for lay in lays]
+            # the band's sprites on a line: the most of any of them (their boxes are the joint ones)
+            used = max(len(bx) + sum(b["has_b"] for b in bx) for bx in bands)
+            while used < self.cap:
+                shown = [band_look(bands[j], y0, h, w) for j in range(n)]
+                best = None
+                for x0 in range(w):
+                    gain = 0.0
+                    As = [np.zeros((16, 16), np.uint8) for _ in range(n)]
+                    cA = np.zeros(16, np.uint8)
+                    for k in range(16):
+                        y = y0 + k
+                        if not 0 <= y < h:
+                            continue
+                        gs, sets = [], []
+                        for j in range(n):
+                            xs = [x for x in range(x0, min(w, x0 + 16)) if srcs[j][y, x] in keep]
+                            if xs:
+                                s = srcs[j][y, xs]
+                                gs.append(np.maximum(0.0, E[s, shown[j][y, xs]][:, None] - E[s][:, 1:]))
+                                sets.append((j, xs))
+                        if not gs:
+                            continue
+                        tot = sum(g.sum(0) for g in gs)
+                        c = int(tot.argmax()) + 1
+                        if tot[c - 1] <= 0:
+                            continue
+                        gain += float(tot[c - 1])
+                        cA[k] = c
+                        for g, (j, xs) in zip(gs, sets):
+                            As[j][k, [x - x0 for x, gx in zip(xs, g[:, c - 1]) if gx > 0]] = 1
+                    if best is None or gain > best[0]:
+                        best = (gain, x0, As, cA.copy())
+                if best is None or best[0] <= 0:
+                    break
+                _, x0, As, cA = best
+                for j in range(n):
+                    if not As[j].any():
+                        continue
+                    full = np.where(As[j] > 0, cA[:, None], 0).astype(np.uint8)
+                    bands[j].insert(0, {"x": x0, "A": As[j], "A1": As[j].copy(), "B": np.zeros_like(As[j]),
+                                        "cA": cA, "cA1": cA.copy(), "cB": np.zeros_like(cA), "full": full,
+                                        "fallback": full.copy(), "has_b": False, "gain": 0.0, "err": 0.0,
+                                        "detail": True})
+                used += 1
+            for j in range(n):
+                out[j].append((y0, bands[j]))
+        return out
+
+
+def band_look(boxes: list[dict], y0: int, h: int, w: int) -> np.ndarray:
+    """What a band's boxes show (joint palette indices, h x w; only its lines): the first box of
+    a band in front, as the VDP draws the earlier SAT entries."""
+    out = np.zeros((h, w), np.uint8)
+    for b in reversed(boxes):
+        for k in range(16):
+            y = y0 + k
+            if not 0 <= y < h:
+                continue
+            for i in range(16):
+                x = b["x"] + i
+                if 0 <= x < w and b["full"][k, i]:
+                    out[y, x] = b["full"][k, i]
+    return out
 
 
 # Facing left (odd states) the original keeps drawings of its own: most are the right ones mirrored
@@ -566,9 +950,12 @@ def move_layout(lay: list[tuple[int, list[dict]]], dy: int, dx: int) -> list[tup
 
 def rc_layouts(conv: "Converter", comps: list[np.ndarray], targets: list[np.ndarray],
                pairs: dict[int, tuple[int, int, int]],
-               moves: dict[int, tuple[int, int, int]]) -> list[list[tuple[int, list[dict]]]]:
+               moves: dict[int, tuple[int, int, int]], sppal: np.ndarray | None = None,
+               start: tuple[list[int], int] | None = None) -> list[list[tuple[int, list[dict]]]]:
     """RoboCop's layouts: converted, the left side the right one mirrored (mirror_pairs), the
-    compositions repeat_steps added another one moved."""
+    compositions repeat_steps added another one moved; start = (the start-of-level arm poses'
+    compositions in their order, the one shown after them): those from start_layouts (colours
+    'sppal' for the gun's detail sprites)."""
     lays: dict[int, list] = {}
 
     def lay(c: int) -> list:
@@ -583,7 +970,88 @@ def rc_layouts(conv: "Converter", comps: list[np.ndarray], targets: list[np.ndar
                 lays[c] = conv.composition(targets[c])
         return lays[c]
 
+    if start is not None:
+        lays.update(start_layouts(conv, comps, targets, start[0], start[1], sppal, lay))
     return [lay(c) for c in range(len(comps))]
+
+
+def layout_look(lay: list[tuple[int, list[dict]]], shape: tuple[int, int]) -> np.ndarray:
+    """What a layout shows (joint palette indices, 0 transparent): the first box of a band in front."""
+    h, w = shape
+    out = np.zeros((h, w), np.int64)
+    for y0, boxes in lay:
+        k0, k1 = max(0, -y0), min(16, h - y0)
+        if k1 > k0:
+            out[y0 + k0:y0 + k1] = np.where(out[y0 + k0:y0 + k1] > 0, out[y0 + k0:y0 + k1],
+                                           band_look(boxes, y0, h, w)[y0 + k0:y0 + k1])
+    return out
+
+
+def linked_pixels(comps: list[np.ndarray], order: list[int], ends: list[int], skip: int = 0) -> dict[int, np.ndarray]:
+    """Per composition of 'order' (shown one after another, up to 'skip' of them skipped now and
+    then) other than 'ends': the pixels linked to the same pixel of one of 'ends' by equal pixels
+    from one composition shown to the next."""
+    cs = list(dict.fromkeys(order))
+    pos = {c: i for i, c in enumerate(cs)}
+    h, w = comps[cs[0]].shape
+    stack = np.stack([comps[c] for c in cs])
+    out = {c: np.zeros((h, w), bool) for c in cs if c not in ends}
+    pairs = [(pos[order[k]], pos[order[k + d]]) for k in range(len(order)) for d in range(1, skip + 2)
+             if k + d < len(order) and order[k] != order[k + d]]
+    for y in range(h):
+        for x in range(w):
+            par = list(range(len(cs)))
+
+            def root(i: int) -> int:
+                while par[i] != i:
+                    par[i] = par[par[i]]
+                    i = par[i]
+                return i
+            for u, v in pairs:
+                if stack[u, y, x] and stack[u, y, x] == stack[v, y, x]:
+                    par[root(u)] = root(v)
+            ends_r = {root(pos[e]) for e in ends}
+            for c in out:
+                if stack[pos[c], y, x] and root(pos[c]) in ends_r:
+                    out[c][y, x] = True
+    return out
+
+
+def start_layouts(conv: "Converter", comps: list[np.ndarray], targets: list[np.ndarray], arms: list[int],
+                  after: int, sppal: np.ndarray, lay) -> dict[int, list]:
+    """The start-of-level arm poses (arms: their compositions in the order shown, ARM_POSES; after:
+    the composition shown next, a frame of the game whose layout 'lay' gives and stays): one by
+    one, a gun pixel in a box line changed his chest's colours on that line from one pose to the
+    next (the user saw a stroke across his chest, arm and back while the gun spins). The groups
+    START_GROUPS are converted together (Converter.coherent, the bands where 'after' has them),
+    the last first, each pinned to the composition shown after it; the gun's grey detail sprites
+    of a group are placed together (Converter.details) and never on a pixel linked to a
+    neighbour group's or to 'after' (those the OR layers draw, the same on both sides)."""
+    out: dict[int, list] = {}
+    look = {after: layout_look(lay(after), comps[after].shape)}
+    y_first = lay(after)[0][0]
+    poses = list(player.ARM_POSES)
+    shown = arms + [after]                              # (the display may skip a pose: SKIP)
+    spans = [[k for k, a in enumerate(poses) if lo <= a <= hi] for lo, hi in START_GROUPS]
+    for gi in reversed(range(len(spans))):
+        ks = spans[gi]
+        order = [shown[k] for k in ks]
+        g = list(dict.fromkeys(order))
+        pos = {c: i for i, c in enumerate(g)}
+        links = [(pos[a], pos[b]) for a, b in zip(order, order[1:]) if a != b]
+        extra = [(pos[shown[k]], pos[shown[k + d]]) for k in ks for d in range(2, SKIP + 2)
+                 if k + d <= ks[-1] and shown[k] != shown[k + d]]
+        fixed = [(pos[shown[k]], targets[shown[k + d]], look[shown[k + d]]) for k in ks for d in range(1, SKIP + 2)
+                 if ks[-1] < k + d < len(shown) and shown[k + d] in look]
+        lays = conv.coherent([targets[c] for c in g], links, fixed, y_first, extra)
+        lo, hi = max(0, ks[0] - SKIP - 1), min(len(shown), ks[-1] + SKIP + 2)
+        ends = [shown[k] for k in range(lo, hi) if not ks[0] <= k <= ks[-1]]
+        linked = linked_pixels(comps, shown[lo:hi], ends, SKIP)
+        lays = conv.details(lays, [np.where(linked[c], 0, comps[c]) for c in g], sppal, GUN_GREYS, GUN_CHROMA)
+        for c, lc in zip(g, lays):
+            out[c] = [(y, bx) for y, bx in lc if bx]
+            look[c] = layout_look(out[c], comps[c].shape)
+    return out
 
 
 def layout_sprites(lay: list[tuple[int, list[dict]]], use_b: bool = True) -> int:
@@ -653,7 +1121,7 @@ def preview(lay: list[tuple[int, list[dict]]], tgt: np.ndarray) -> tuple[np.ndar
     fb = np.zeros_like(tgt)
     h, w = tgt.shape
     for y0, boxes in lay:
-        for b in boxes:
+        for b in reversed(boxes):                       # (the first box of a band in front)
             for k in range(16):
                 y = y0 + k
                 if not 0 <= y < h:
@@ -682,6 +1150,113 @@ def bob_frames(catalog: Path, level: str) -> list[dict]:
                 seen.add(key)
                 out.append({"proc": r["proc_name"], "addr": f, "w": r["width"], "h": r["height"]})
     return out
+
+
+def field_frames(ram: bytes, near: np.ndarray, frames: list[dict], removed: dict) -> dict:
+    """The play-field BOB frames (FIELD_PROCS, FIELD_DYN): their atlas (FIELD_H x FIELD_W
+    joint-palette indices, 0 transparent: opaque black takes another black, as near[] starts at
+    entry 1) and per frame its place there, the size drawn ("sw", "sh"; "w", "h" stay the game's,
+    BOBHASH's key) and its draw offset. A removed frame (removed: "addr:w:h" -> [the frame shown
+    instead, dy, dx]) shows that one moved by (dx, dy). The others are packed in shelves by height
+    (even x: two pixels a byte) above the dynamic slot, the atlas's last DYN_H lines: the frames of
+    FIELD_DYN, too big to stay in VRAM, each group of DYN_GROUPS side by side from its left, each
+    frame's lines in strips of DYN_H side by side, copied there from the ROM when shown
+    (msx/field.asm fb_dyn). The rest of the atlas goes into the ROM frame by frame (FIELD_ROM: no
+    room for its empty parts), a frame that is another's exact mirror as a reference to that one's
+    pixels (msx/field.asm field_upload mirrors them):
+      db n; n x [db atlas line, db x / 2, db bytes a line, db lines, db 1 when mirrored,
+      dw offset of the pixels in the image]; the pixels (two a byte, the left one high).
+    The dynamic frames' pixels (a line of the slot after another: its strips' lines side by side,
+    as VRAM holds them; none across a bank's end) go into their own banks
+    ("dyn_rom"), per frame ("dyn_tab") its bit, the frames whose place in the slot it takes,
+    its bank and its address in the 8000h window."""
+    key = lambda f: f"{f['addr']:x}:{f['w']}:{f['h']}"      # noqa: E731
+    rank = {p: i for i, p in enumerate(FIELD_PROCS)}
+    late = min(rank[p] for p in FIELD_RIDDEN)               # (the dynamic frames before the lifts)
+    frames = sorted(frames, key=lambda f: (late - 0.5 if f["addr"] in FIELD_DYN else rank[f["proc"]], f["addr"]))
+    imgs = {}
+    for f in frames:
+        src = bob_image(ram, f["addr"], f["w"], f["h"])
+        if (src >= 0).sum() and key(f) not in removed:
+            imgs[key(f)] = np.where(src >= 0, near[np.clip(src, 0, 15)], 0)
+    dyn = {key(f) for f in frames if f["addr"] in FIELD_DYN and key(f) in imgs}
+    dyn_y = FIELD_H - DYN_H
+    atlas = np.zeros((FIELD_H, FIELD_W), np.uint8)
+    place, x, y, shelf = {}, 0, 0, 0
+    table, pixels, stored = [], bytearray(), {}
+    for k in sorted((k for k in imgs if k not in dyn), key=lambda k: (-imgs[k].shape[0], -imgs[k].shape[1], k)):
+        h, w = imgs[k].shape
+        assert w % 2 == 0, "a play-field frame of an odd width"
+        if x + w > FIELD_W:
+            x, y, shelf = 0, y + shelf, 0
+        assert y + h <= dyn_y, "the play-field frames do not fit their atlas"
+        atlas[y:y + h, x:x + w] = imgs[k]
+        place[k] = (x, y)
+        src = next((j for j in stored if imgs[j].shape == (h, w) and np.array_equal(imgs[j][:, ::-1], imgs[k])),
+                   None)
+        if src is None:
+            stored[k] = len(pixels)
+            pixels += bytes(int(imgs[k][r, c]) << 4 | int(imgs[k][r, c + 1]) for r in range(h) for c in range(0, w, 2))
+        table.append((y, x // 2, w // 2, h, int(src is not None), stored[src if src is not None else k]))
+        x += w
+        shelf = max(shelf, h)
+    lines = y + shelf
+    head = 1 + 7 * len(table)
+    rom = bytes([len(table)]) + b"".join(struct.pack("<BBBBBH", ty, tx, bpl, h, m, head + off)
+                                         for ty, tx, bpl, h, m, off in table) + bytes(pixels)
+    assert len(table) < 256 and len(rom) <= FIELD_ROM, f"the play-field atlas takes {len(rom)} bytes of the ROM"
+    dyn_list, span = [], {}                                 # the dynamic slot
+    for group in DYN_GROUPS:
+        x = 0
+        for a in group:
+            k = next(k for k in dyn if int(k.split(":")[0], 16) == a)
+            h, w = imgs[k].shape
+            n = -(-h // DYN_H)
+            place[k], span[k] = (x, dyn_y), (x, x + n * w)
+            for s in range(n):                              # (the atlas image: the last group's)
+                strip = imgs[k][s * DYN_H:(s + 1) * DYN_H]
+                atlas[dyn_y:dyn_y + len(strip), x + s * w:x + (s + 1) * w] = strip
+            x += n * w
+            assert x <= FIELD_W, "a group of dynamic frames wider than the slot"
+            dyn_list.append(k)
+    assert set(dyn_list) == dyn and len(dyn_list) <= 16, "the dynamic frames and DYN_GROUPS differ"
+    dyn_rom, dyn_tab = bytearray(), []
+    for i, k in enumerate(dyn_list):
+        h, w = imgs[k].shape
+        rows = [r + DYN_H * st for r in range(min(h, DYN_H)) for st in range(-(-h // DYN_H)) if r + DYN_H * st < h]
+        data = bytes(int(imgs[k][r, c]) << 4 | int(imgs[k][r, c + 1]) for r in rows for c in range(0, w, 2))
+        if len(dyn_rom) // BANK != (len(dyn_rom) + len(data) - 1) // BANK:
+            dyn_rom += b"\xff" * (-len(dyn_rom) % BANK)
+        evict = sum(1 << j for j, k2 in enumerate(dyn_list)
+                    if j != i and span[k2][0] < span[k][1] and span[k][0] < span[k2][1])
+        dyn_tab.append((1 << i, evict, len(dyn_rom) // BANK, 0x8000 + len(dyn_rom) % BANK))
+        dyn_rom += data
+    assert len(dyn_rom) <= DYN_ROM, f"the dynamic frames take {len(dyn_rom)} bytes of the ROM"
+    out = []
+    for f in frames:
+        k = key(f)
+        if k in imgs:
+            src, ox, oy = k, 0, 0
+        elif k in removed and removed[k] and removed[k][0] in place:
+            src, oy, ox = removed[k]
+        else:
+            continue                                        # (no pixel: never drawn)
+        (x, y), (sh, sw) = place[src], imgs[src].shape
+        e = {"proc": f["proc"], "addr": f["addr"], "w": f["w"], "h": f["h"], "fid": len(out),
+             "x": x, "y": y, "sw": sw, "sh": sh, "ox": ox, "oy": oy, "src": src}
+        if src in dyn:
+            e["dyn"] = dyn_list.index(src)
+        out.append(e)
+    fid = {e["src"]: e["fid"] for e in out if key(e) == e["src"]}
+    for e in out:                                           # (the frame of the look it draws: a
+        e["look"] = fid[e["src"]]                           # removed frame where the frame shown is
+                                                            # drawn changes nothing, msx/field.asm)
+    assert len(out) <= 0xFF - FIELD_ID0, "too many play-field frames for their BOBHASH ids"
+    fd = [e["fid"] for e in out if "dyn" in e]
+    assert fd == list(range(fd[0], fd[-1] + 1)) if fd else True, "the dynamic frames' ids not in a row"
+    used = sum(np.bincount(img.ravel(), minlength=16) for img in imgs.values())
+    return {"frames": out, "atlas": atlas, "lines": lines, "rom": rom, "dyn_rom": bytes(dyn_rom),
+            "dyn_tab": dyn_tab, "dyn_y": dyn_y, "used": used}
 
 
 def bob_image(ram: bytes, addr: int, w: int, h: int) -> np.ndarray:
@@ -764,10 +1339,15 @@ def main() -> int:
                                for k, v in removed.get("rc", {}).items()}))
     stats["compositions"] = len(comps)
     targets = [np.where(img > 0, nearest(level.sppal[img], pal, 1), 0) for img in comps]
-    layouts = rc_layouts(conv, comps, targets, pairs, moves)
+    n0 = 4 * len(level.records)
+    arms = [index[n0 + k] for k in range(len(player.ARM_POSES))]
+    after = index[player.arm_record(level.game.records()) * 4 + player.ARM_AIM]
+    assert not set(arms) & set(index[:n0]), "an arm pose shared with a frame record would change its look"
+    layouts = rc_layouts(conv, comps, targets, pairs, moves, level.sppal, (arms, after))
     assert len(targets) == len(layouts) == len(comps)
     stats.update({"rc_index": index, "rc_moves": {str(c): list(v) for c, v in sorted(moves.items())},
-                  "rc_mirrors": {str(c): list(v) for c, v in sorted(pairs.items())}})
+                  "rc_mirrors": {str(c): list(v) for c, v in sorted(pairs.items())},
+                  "rc_start": {"arms": arms, "after": after}})
     used = set(index)                                   # (no longer shown: not in the ROM)
     for ci, (tgt, columns) in enumerate(zip(targets, layouts)):
         previews.append(preview(columns, tgt))
@@ -784,6 +1364,7 @@ def main() -> int:
         stats["max_line_fallback"].append(max_per_line(columns, False))
     # the level's BOBs (enemies, shots, explosions...): opaque pixels take entries 1..15
     bobs, bob_blobs, bob_previews = [], [], []
+    field = None
     if a.bobs:
         ram = a.ram.read_bytes()
         bconv = Converter(pal, PAIRS_ALL, align="bottom")             # (full colour: the gains)
@@ -801,6 +1382,13 @@ def main() -> int:
         frames = [f for f in frames if removed.get("bob", {}).get(bob_key(f), 0) is not None]
                                                         # (null: a frame the level never draws)
         near = nearest(level.bgpal, pal, 1)
+        # the hostage, the gunners that stay put, the explosion, the smoke, the lifts and the vehicle
+        # are drawn into the play field (decision 13): no sprite data for them but the gunners' (their
+        # hit flash's silhouette)
+        field = field_frames(ram, near, [f for f in frames if f["proc"] in FIELD_PROCS or f["addr"] in FIELD_DYN],
+                             dict(removed.get("bob", {}), **FIELD_HALF))
+        frames = [f for f in frames if (f["proc"] not in FIELD_PROCS or f["proc"] in FIELD_FLASH)
+                  and f["addr"] not in FIELD_DYN]
         targets = []
         for fr in frames:
             src = bob_image(ram, fr["addr"], fr["w"], fr["h"])
@@ -929,16 +1517,57 @@ def main() -> int:
     q = np.round(pal * 7).astype(int)
     a.out.with_suffix(".pal").write_bytes(bytes(b for r, g, bl in q for b in ((r << 4) | bl, g)))
     a.out.with_suffix(".remap").write_bytes(bytes(remap))
-    fidx, fpals = flash_palettes(a.main.read_bytes(), comps, [p[1] for p in previews], remap, level.bg_count)
+    fidx, fpals = flash_palettes(a.main.read_bytes(), comps, [p[1] for p in previews], remap, level.bg_count,
+                                 field["used"] if field else None)
     a.out.with_name(a.out.name + "_flash.inc").write_text(
         "; generated by tools/msxsprites.py: RoboCop's palette flashes ($F80E) on the joint palette\n"
-        f"FLASH_N: equ {len(fidx)}                  ; entries tinted (RoboCop's that the background never uses)\n"
+        f"FLASH_N: equ {len(fidx)}                  ; entries tinted (RoboCop's that the background and the play-field BOBs never use)\n"
         "flash_idx:\n        db " + ", ".join(map(str, fidx)) + "\n"
         "flash_pals:                         ; PAL_ENEMYHIT, PAL_SHOT, PAL_ELECTRIC, PAL_REFILL, PAL_BEAM, PAL_REVERSE\n"
         + "".join("        db " + ", ".join(f"0x{(r << 4) | b:02X}, 0x{g:02X}" for r, g, b in row) + "\n"
                   for row in fpals))
+    for f in field["frames"] if field else []:          # the gunners' play-field frames: their sprite
+        f["sil"] = 0xFF                                 # frames show only their hit flash (BOBHASH
+        if f["proc"] in FIELD_FLASH:                    # gives the play-field one, and "sil")
+            b = next(b for b in bobs if (b["addr"], b["w"], b["h"]) == (f["addr"], f["w"], f["h"]))
+            b["field"] = f["fid"]
+            f["sil"] = b["id"]
     stats.update({"palette": ["%d%d%d" % tuple(c) for c in q], "remap": remap, "patterns": len(pats.items),
-                  "colour_rows": len(cols_pool.items), "bytes": len(data), "bobs": bobs})
+                  "colour_rows": len(cols_pool.items), "bytes": len(data), "bobs": bobs,
+                  "field": field["frames"] if field else []})
+    if field:                                           # the play-field BOBs: atlas and table
+        at = field["atlas"]
+        a.out.with_name(a.out.name + "_field.bin").write_bytes(field["rom"])
+        a.out.with_name(a.out.name + "_fdyn.bin").write_bytes(field["dyn_rom"])
+        a.out.with_name(a.out.name + "_field_vram.bin").write_bytes(     # (the atlas as VRAM holds it:
+            bytes(int(at[y, x]) << 4 | int(at[y, x + 1])                 # the tools' checks)
+                  for y in range(FIELD_H) for x in range(0, FIELD_W, 2)))
+        fd = [f for f in field["frames"] if "dyn" in f]
+        a.out.with_name(a.out.name + "_field.inc").write_text(
+            "; generated by tools/msxsprites.py: the play-field BOB frames (msx/field.asm)\n"
+            f"FIELD_N: equ {len(field['frames'])}\n"
+            f"FIELD_Y0: equ {FIELD_Y0}                ; their atlas: page 3 from this line (VRAM {0x18000 + FIELD_Y0 * 128:05X}h)\n"
+            f"FIELD_LINES: equ {field['lines']}\n"
+            f"FIELD_ID0: equ 0x{FIELD_ID0:02X}             ; their BOBHASH ids: FIELD_ID0 + index\n"
+            f"FIELD_LATE: equ {min([f['fid'] for f in field['frames'] if f['proc'] in FIELD_RIDDEN] or [len(field['frames'])])}"
+            "              ; frames from here: the lifts and the vehicle\n"
+            f"FIELD_DYN0: equ {fd[0]['fid'] if fd else 0}              ; frames from here to FIELD_DYN1 (excluded): the\n"
+            f"FIELD_DYN1: equ {fd[-1]['fid'] + 1 if fd else 0}              ;   dynamic slot's (field.asm fb_dyn)\n"
+            f"DYN_Y: equ {field['dyn_y']}                   ; the dynamic slot: atlas lines DYN_Y..DYN_Y + DYN_H - 1\n"
+            f"DYN_H: equ {DYN_H}\n"
+            "field_tab:                          ; per frame: x, y in the atlas, width, height (as drawn), dx, dy\n"
+            "                                    ; (signed: the draw offset of a removed frame shown as another)\n"
+            + "".join(f"        db {f['x']}, {f['y']}, {f['sw']}, {f['sh']}, {f['ox'] & 255}, {f['oy'] & 255}"
+                      f"      ; {f['proc']} {f['addr']:05X}\n" for f in field["frames"])
+            + "field_look:                         ; per frame: the frame it looks like (a removed frame: the\n"
+              "                                    ; one shown instead; field.asm fb_wants)\n"
+            + "".join(f"        db {f['look']}      ; {f['addr']:05X}\n" for f in field["frames"])
+            + "field_dyn:                          ; per frame from FIELD_DYN0: the dynamic frame of its pixels\n"
+            + "".join(f"        db {f['dyn']}      ; {f['addr']:05X}\n" for f in fd)
+            + "dyn_tab:                            ; per dynamic frame: its bit, the frames whose place it takes\n"
+              "                                    ; (bits), bank (from FIELD_DYN_BANK), address (8000h window)\n"
+            + "".join(f"        dw 0x{bit:04X}, 0x{ev:04X}\n        db {bk}\n        dw 0x{ad:04X}\n        db 0\n"
+                      for bit, ev, bk, ad in field["dyn_tab"]))
     a.out.with_suffix(".json").write_text(json.dumps(stats))
     render_sheet(a.out.with_suffix(".png"), previews, pal)
     if bob_previews:

@@ -199,3 +199,49 @@ d78   fire_latch           byte: fire held (cleared every 4 frames with the rapi
 15d6  player_relocate_xy   2 words: where obj_relocate puts RoboCop (level header +20/+22)
 d876  obj29_update         object type 29: a gunner that stays put (BOB frames 36-37: its two facings). Word at A3: below $40 -> FUN_c948 (not decoded); from $40 it counts up, faces RoboCop (x vs player_x), fires at phase $0E (FUN_f5bc; shot speed $4000 at +$E0) and goes back to 0 at phase $17 (REA/Ghidra, 2026-10-21)
 df6e  obj32_update         object type 32 (level 1 end): camera offsets patched, map words from its table ($DE68: x, y, word) written one per 4 frames, explosions, $16D0 level complete
+f900  pickup_update        four pickup slots ($D80+k type, $D84 x, $D94 y, $DA4 vy 16.16): each frame y += vy, vy += $2800, stops on solid cells ($EF8E); drawn 16x16 (D4 $402) with A2 = the long at pickup_gfx + type (REA/Ghidra, 2026-10-21)
+f964  pickup_gfx           longs indexed by the pickup type (4..36 in steps of 4; entry 0 is code): $6D520 scatter gun, $6D5C0 rapid fire, $6D660 time -1 min, $6D700 time +1 min, $6D7A0 reversed controls, $6D840 shield, $6D8E0 energy, $6D980 three-way gun, $4B4AC nuke
+f98c  pickup_drop          a pickup into a free slot of pickup_update (also called by activate_objects $9CC6, $C33E, $EA42, obj44_update $EC8C)
+ec22  obj44_update         object type 44 (level 1, the flying vehicle's ride): with the camera in x $348-$49F, y $E0-$23F, every 16th frame while riding drops a pickup at x $460 + (random & $3F) + table $ECA4, y camera - 8, type ((random >> 8) & $1C) + 4, vy 1.75; taking one while riding knocks the vehicle down ($FBCC)
+# --- the level's continuity, its end and the effects' draw sites (REA/Ghidra, 2026-10-21) ---
+9d0c  objtype_table        per type: +0 look table (long), +$88 flags, +$8a activator offset, +$110/+$112 size (4-byte stride)
+9ea4  act_explode_look4    activator: an explosion while the entry's look index is 4
+9ee8  act_0c               activator (levels 2-3; not analysed)
+9f74  act_20               activator (levels 2-3; not analysed)
+9f84  act_floor_switch     trapdoor activator: on with RoboCop on its row, x in [x - 18, x + 42)
+a038  act_conveyor_left    conveyor activator (offset 14h)
+a03e  act_conveyor_right   conveyor activator (offset 18h)
+a0d4  act_barrier          barrier activator
+a232  looks_door           looks of the door (type 40h): $A4EA, $A502, -1
+a24a  looks_trapdoor       looks of the trapdoor (type 48h): $A3FE, $A406, $A40E, $A416, -1
+a272  looks_cracked_wall   looks of the cracked wall (type 5Ch): $A532, $A54A (the hole), -1
+a65e  objl0_e21_trapdoor   level 1 object list entry 21: trapdoor (cells 118-121 x 15) into the wall's room
+a68e  objl0_e25_cracked_wall level 1 object list entry 25: the cracked wall (x 2064, y 256): obj_relocate
+a742  objl0_e40_door       level 1 object list entry 40: the start door (5 hits)
+96dc  spawn0_e13_level_end level 1 spawn list entry 13: type 32 (x 2432, y 736, once), the level's end
+ef8e  obj_map_cell         an object's map cell: column (x >> 4) - 8, row y >> 4
+efe0  map_row_offsets      data: 51 words, each map row's offset
+f366  spawn_explosion      D5 low byte = type 0-8 (frames $F3BC/$F3C5), high byte 0: drawn by $F12A, 4: by $F266
+8052  level_loaded         flag
+8b92  special_handlers     dispatch of the special objects' list ($8B54)
+80ae  level_start_entry    level_init again (after the level's end: the next level's load table entry)
+81b8  level_next           the level done: $8050 + 1
+8382  brainstorm_stage     bonus stage (D0 = 2 after level 1, 4 after level 2)
+8420  shooting_range_stage bonus stage (D0 = 1 after level 1, 5 after level 2)
+10762 text_screen_stop     $10768 (script A0), then $FE14 (music stopped, palette black)
+10768 text_screen          a text script, one element per VBL; ends on fire or $16D1 once 50 VBLs passed
+11dc6 number_text          D2 -> 8 characters at A4 ('[' + digit, leading zeros as spaces; $11D30 powers of two)
+f080  effects_update       the explosions and smoke of $F366 (slots 0-5 only: the first two of each clear_game_vars never drawn)
+f266  explosion_draw       explosion $0408: parts $F292/$F2B6 (tables $F2C2-$F350)
+f3ce  ebullet_update       enemy bullets: gfx $F4A4 + 4t, BLTSIZE $F500 + 4t, steps $F55C/$F55E
+f5bc  ebullet_add          an enemy bullet of type D6
+c948  walker_legs          legs of types 15, 24, 29 (tables $C9B4/$C9D4)
+dbea  obj25_draw           type 25 (the machine at the top): muzzle flash $3F940/$3FC10 (pea target at $DBD2)
+16cf  level_restarted      flag set at $8742, cleared by clear_game_vars before $8852 reads it (no effect)
+169e  relocate_count       frames held in state 12/13 at the cracked wall ($50: the relocation)
+16be  hostages_rescued
+16c0  nukes_collected
+16c2  henchmen_killed      type 32 waits for its value at its first frame + 10
+16c4  end_count            the level's end: 40h, counted down by main_loop ($8188) to the fade out
+16d0  level_done           set by type 32 after 272 frames
+16d1  text_done            set by text command 7

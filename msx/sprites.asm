@@ -170,6 +170,8 @@ feed_vdp:
 fv_go:  push bc
         push de
         push hl
+        push ix                     ; (the play-field BOBs' work uses IX and IY: field.asm)
+        push iy
         ld hl,(act_8000)            ; (act_8000, act_a000: the tile cache maps its banks; the
         push hl                     ; game logic calls this from code in both windows)
         call idle_work
@@ -182,6 +184,8 @@ fv_go:  push bc
         cp h
         ld a,h
         call nz,bank_a000
+        pop iy
+        pop ix
         pop hl
         pop de
         pop bc
@@ -1777,7 +1781,181 @@ pc_rn:  inc l
         call pl_list
         ld hl,pl_wb
         call pl_list
+        jp rc_prefetch
+
+; RoboCop's next animation step (the same state's next record, the one before when its
+; animation runs backwards, the same aim) gets its patterns into free slots before the logic
+; asks for it, through the background queue: its version is then complete at once. Each walk
+; step has 11-18 patterns of its own (the original redraws the body and arms every step), a
+; cycle 106 against the 64 slots: loaded only after the change, a step showed 7-12 VBLANKs late
+; and the steps (2 ticks each) in between were skipped, so the walk looked to go backwards. The
+; slots it takes are free ones (slot_ref 0, as alloc_slot gives them): no version loses any.
+; After the plan's own work, while the background queue is short (the BOBs' loads first);
+; rcp_id / rcp_ok skip a step already brought in.
+rc_prefetch:
+        ld a,(bq_head)
+        ld b,a
+        ld a,(bq_tail)
+        sub b
+        cp 4 * 8
+        ret nc                      ; (4 or more loads waiting)
+        ld a,(obj_tab + O_FLAGS)
+        rla
+        ret nc                      ; (not shown)
+        ld a,(obj_tab + O_KIND)
+        or a
+        ret nz
+        ld hl,(obj_tab + O_ID)      ; record * 4 + aim
+        ld de,SPR_RC_ARM
+        or a
+        sbc hl,de
+        ret nc                      ; (a start-of-level arm pose)
+        add hl,de
+        ld a,l
+        and 3
+        ld b,a                      ; B = aim
+        srl h
+        rr l
+        srl h
+        rr l                        ; L = record
+        ld a,(p_state)
+        ld e,a
+        ld d,0
+        push hl
+        ld hl,pl_nrec
+        add hl,de
+        ld c,(hl)                   ; C = the state's records
+        ld hl,pl_rec0
+        add hl,de
+        ld d,(hl)                   ; D = its first
+        pop hl
+        ld a,c
+        cp 2
+        ret c                       ; (one record: no next step)
+        ld a,l
+        sub d                       ; the step shown
+        cp c
+        ret nc                      ; (not one of the state's)
+        ld e,a
+        ld a,(p_rev)
+        or a
+        ld a,e
+        jr nz,rcp_back
+        inc a
+        cp c
+        jr c,rcp_rec
+        xor a
+        jr rcp_rec
+rcp_back:
+        or a
+        jr nz,rcp_b1
+        ld a,c
+rcp_b1: dec a
+rcp_rec:
+        add a,d                     ; the next record
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        ld e,b
+        ld d,0
+        add hl,de                   ; its composition: record * 4 + aim
+        ld de,(rcp_id)
+        or a
+        sbc hl,de
+        jr nz,rcp_new
+        ld a,(rcp_ok)
+        or a
+        ret nz                      ; (brought in already)
+rcp_new:
+        add hl,de
+        ld (rcp_id),hl
+        xor a
+        ld (rcp_ok),a
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,de                   ; *3: its index entry
+        ld de,0x8000                ; (RoboCop's index)
+        add hl,de
+        ld a,SPR_BASE_BANK
+        call bank_8000
+        ld a,(hl)
+        inc hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        add a,SPR_BASE_BANK
+        call bank_8000
+        ld hl,0x8000
+        add hl,de                   ; its composition
+        ld b,(hl)                   ; records
+        ld de,COMP_HDR + 4
+        add hl,de                   ; the first one's pattern id (RoboCop drops no column)
+rcp_lp: push bc
+        push hl
+        ld c,(hl)
+        inc hl
+        ld b,(hl)                   ; BC = pattern id
+        call slot_warm
+        pop hl
+        pop bc
+        ret c                       ; (no free slot or the queue is full: the next plan goes on)
+        ld de,REC_SIZE
+        add hl,de
+        djnz rcp_lp
+        ld a,1
+        ld (rcp_ok),a
         ret
+
+; BC = pattern id: nothing to do when a slot holds it or will (pat_held), else a free slot gets
+; it, used by no entry, its upload into the background queue. C when no slot is free or the
+; queue is full (a slot that got the pattern keeps it: pend_load queues it for a version that
+; wants it).
+slot_warm:
+        ld a,b
+        and (PAT_HINTS - 1) / 256
+        add a,pat_slot / 256
+        ld h,a
+        ld l,c
+        ld a,(hl)                   ; the slot it was put in last (FFh: never)
+        cp SPR_SLOTS
+        jr nc,swm_new
+        add a,a
+        add a,pat_held & 0xFF
+        ld e,a
+        ld d,pat_held / 256
+        ld a,(de)
+        cp c
+        jr nz,swm_new
+        inc e
+        ld a,(de)
+        cp b
+        ret z                       ; (held, or on its way: NC)
+swm_new:
+        call alloc_slot             ; (keeps BC, DE, HL)
+        ret c
+        ld (hl),a                   ; where the pattern is
+        ld e,a
+        or SO_GEN
+        ld l,a
+        ld h,SLOT_PG
+        inc (hl)                    ; a new generation (an older upload of the slot is not copied),
+        ld l,e
+        ld (hl),0                   ; not loaded,
+        ld a,e
+        or SO_Q
+        ld l,a
+        ld (hl),0                   ; in no queue
+        ld a,e
+        add a,a
+        add a,pat_held & 0xFF
+        ld l,a
+        ld h,pat_held / 256
+        ld (hl),c
+        inc l
+        ld (hl),b                   ; what it will hold
+        jp bq_pat                   ; (E = slot, BC = id; C when the queue is full)
 
 ; A = object: into its work list when the look at it put it in one (pl_st; then no more).
 pl_put: ld c,a

@@ -137,8 +137,13 @@ def converted(obj: dict, joint_pal: bytes) -> list:
             meta = json.loads((ROOT / "build/msx/robocop.json").read_text())
             _conv_cache["rc"] = (comps, meta["rc_index"],
                                  {int(c): tuple(v) for c, v in meta["rc_mirrors"].items()},
-                                 {int(c): tuple(v) for c, v in meta["rc_moves"].items()}, {})
-        comps, index, pairs, moves, lays = _conv_cache["rc"]
+                                 {int(c): tuple(v) for c, v in meta["rc_moves"].items()}, {},
+                                 meta.get("rc_start"))
+        comps, index, pairs, moves, lays, start = _conv_cache["rc"]
+        conv = msxsprites.Converter(pal, cap=msxsprites.RC_CAP)
+
+        def target(c: int) -> np.ndarray:
+            return np.where(comps[c] > 0, msxsprites.nearest(sppal[comps[c]], pal, 1), 0)
 
         def layout(c: int) -> list:
             if c not in lays:
@@ -149,9 +154,13 @@ def converted(obj: dict, joint_pal: bytes) -> list:
                     cr, dy, dx = pairs[c]
                     lays[c] = msxsprites.mirror_layout(layout(cr), player.BUF_W, dy, dx)
                 else:
-                    tgt = np.where(comps[c] > 0, msxsprites.nearest(sppal[comps[c]], pal, 1), 0)
-                    lays[c] = msxsprites.Converter(pal, cap=msxsprites.RC_CAP).composition(tgt)
+                    lays[c] = conv.composition(target(c))
             return lays[c]
+
+        if start and start["arms"][0] not in lays:  # (the start-of-level arm poses: converted together)
+            tg = {c: target(c) for c in set(start["arms"]) | {start["after"]}}
+            lays.update(msxsprites.start_layouts(conv, comps, [tg.get(c) for c in range(len(comps))],
+                                                 start["arms"], start["after"], sppal, layout))
 
         cols = layout(index[obj["id"]])
     _conv_cache[key] = cols
@@ -169,7 +178,7 @@ def expected_sprites(objs: list[dict], joint_pal: bytes) -> dict[tuple[int, int]
         lay = converted(obj, joint_pal)
         for j, (y0, boxes) in enumerate(lay):
             dropped = obj["drop"] >> (len(lay) - 1 - j) & 1      # (bands numbered from the bottom)
-            for c in boxes:
+            for c in reversed(boxes):                           # (the first box of a band in front)
                 im = c["fallback"] if sil or dropped else c["full"]
                 for y in range(16):
                     for i in range(16):

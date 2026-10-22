@@ -42,6 +42,7 @@ ttp_prep:
         cp 16
         ret nc
         ld (s38_tmp_x),a
+        call fb_mark38              ; (field.asm: the play-field BOBs over it again)
         push de
         push bc
         ld a,b
@@ -70,55 +71,6 @@ ttp_prep:
         scf
         ret
 
-s38_init:
-        xor a
-        ld b,25
-        call wrreg                  ; no V9958 scroll (FORCE_V9938 on an MSX2+)
-        ld hl,0                     ; (the camera: set by the game, pl_init)
-        ld (frame),hl
-        ld (late),hl
-        ld (stall),hl
-        ld (vstall),hl
-        ld (tiles_drawn),hl
-        xor a
-        ld (s38_vis_page),a
-        ld (s38_flip_wait),a
-        ld a,0xFF
-        ld (s38_back_c0),a
-        ld (s38_rq),a
-        call cam_cells
-        ld a,b
-        ld (s38_vis_c0),a
-        ld a,c
-        ld (prev_cy),a
-        dec a
-        ld (s38_tmp_row),a
-s38i_row:
-        ld a,(s38_vis_c0)
-        ld e,a
-s38i_col:
-        push de
-        ld a,(s38_vis_c0)
-        ld c,a
-        ld d,0
-        ld a,(s38_tmp_row)
-        call tile_to_page
-        pop de
-        inc e
-        ld a,(s38_vis_c0)
-        add a,16
-        cp e
-        jr nz,s38i_col
-        ld a,(s38_tmp_row)
-        inc a
-        ld (s38_tmp_row),a
-        ld b,a
-        ld a,(prev_cy)
-        add a,VIEW_ROWS-1
-        cp b
-        jr nz,s38i_row
-        jp s38_publish
-
 ; Once per frame: flips, camera holds, build target, row queue, one command, registers. It works
 ; toward the view the game wants (v_x, v_y; cam_x, cam_y are what it shows: the camera held at
 ; a page's or row's edge), also on frames without a tick (the cadence holds the ticks while the
@@ -140,6 +92,7 @@ s38_update:
         jr nz,s38u_cells            ; the flip is not on screen yet
         xor a
         ld (s38_flip_wait),a
+        ld (rd_phase),a             ; (a changed cell drawn on the old page only: again on the new)
 s38u_cells:
         call cam_cells              ; B = cx, C = cy
         ld a,(s38_vis_c0)
@@ -163,6 +116,11 @@ s38u_step:
         ld a,(s38_i)
         cp VIEW_ROWS
         jr nz,s38u_hold
+        ld a,(fb_bsync)             ; (field.asm: its play-field BOBs composed)
+        cp e
+        jr nz,s38u_hold
+        ld a,(s38_vis_c0)
+        ld (s38_old_c0),a           ; (the page on screen until the flip is: s38_redraw)
         ld a,e                      ; page flip (shown at the next VBLANK)
         ld (s38_vis_c0),a
         ld a,(s38_vis_page)
@@ -276,6 +234,8 @@ s38t_set:
         ld a,(s38_back_c0)
         cp e
         ret z
+        ld a,0xFF
+        ld (fb_bsync),a             ; (field.asm: its play-field BOBs not composed yet)
         ld a,e                      ; new build target
         ld (s38_back_c0),a
         ld a,(s38_vis_c0)
@@ -291,6 +251,10 @@ s38t_bd:
         ld a,(prev_cy)
         dec a
         ld (s38_r0),a
+        push bc
+        ld hl,fb_bbinit             ; (field.asm: where its copy may bring something else than the
+        call field_call             ; BOBs wanted, before it draws anything)
+        pop bc
         ret
 
 ; Issues at most one VDP command, only if the VDP is idle.
@@ -363,10 +327,10 @@ s38b_lp:
         ret
 
 ; One step of the oldest cell the game changed (tiles.asm rd_queue), when it is in the kept
-; rows: the displayed page (between the HUD split and the VBLANK through vdp_cmd_q, at other
-; times at once), then the page being built (each draws only the columns it holds; a flip in
-; between starts the cell again on the new displayed page: s38_update). NZ when it took this
-; call.
+; rows: the page on screen (between the HUD split and the VBLANK through vdp_cmd_q, at other
+; times at once), then the other one: the page being built, or during a flip not on screen yet
+; the new displayed page (each draws only the columns it holds; a flip in between starts the
+; cell again: s38_update). NZ when it took this call.
 s38_redraw:
         call rd_peek
         ret z
@@ -380,12 +344,13 @@ s38_redraw:
         ld a,(rd_phase)
         or a
         jr nz,s38r_back
+        call s38_shown
+        call fb_redraw
+        jr nz,s38r_vis              ; (the play-field BOBs compose it there: tiles.asm)
         ld a,(split_armed)
         or a
         jr nz,s38r_late
-        ld a,(s38_vis_c0)
-        ld c,a
-        ld a,(s38_vis_page)
+        call s38_shown
         ld b,d
         ld d,a
         ld a,b
@@ -406,12 +371,18 @@ s38r_wait:
 s38r_late:
         ld a,1                      ; (at other times at once: a change never waits)
         ld (rd_phase),a
-        ld a,(s38_vis_c0)
-        ld c,a
-        ld a,(s38_vis_page)
+        call s38_shown
         jr s38r_draw
 s38r_back:
         call rd_pop
+        ld a,(s38_flip_wait)
+        or a
+        jr z,s38r_bk
+        ld a,(s38_vis_c0)           ; (the flip not on screen yet: the new displayed page)
+        ld c,a
+        ld a,(s38_vis_page)
+        jr s38r_draw
+s38r_bk:
         ld a,(s38_back_c0)
         cp 0xFF
         jr z,s38r_nz
@@ -429,6 +400,23 @@ s38r_nz:
 s38r_pop:
         call rd_pop
         or 1
+        ret
+
+; -> A = the page on screen, C = its first column: until a flip is on screen (s38_flip_wait) the
+; old page. Keeps B, DE, HL.
+s38_shown:
+        ld a,(s38_flip_wait)
+        or a
+        jr nz,s38s_old
+        ld a,(s38_vis_c0)
+        ld c,a
+        ld a,(s38_vis_page)
+        ret
+s38s_old:
+        ld a,(s38_old_c0)
+        ld c,a
+        ld a,(s38_vis_page)
+        xor 1
         ret
 
 ; One tile of the pending row: first on the displayed page (16 columns), then on the back
@@ -547,8 +535,9 @@ s38ct_go:
         pop af
         jp tile_to_page
 
-; Next chunk of the shifted copy: up to 4 row slots from position s38_i, not crossing the
-; ring wrap; 240 px wide, displayed page -> back page.
+; Next chunk of the shifted copy: up to 4 row slots from position s38_i (1 while the play-field
+; BOBs have work: field.asm, their commands then wait less), not crossing the ring wrap; 240 px
+; wide, displayed page -> back page.
 s38_copy_chunk:
         ld a,(s38_r0)
         ld b,a
@@ -558,11 +547,17 @@ s38_copy_chunk:
         ld c,a                      ; first slot
         ld a,16
         sub c                       ; slots before the wrap
-        cp 4
-        jr c,s38cc_n1
-        ld a,4
-s38cc_n1:
         ld b,a
+        ld a,(fb_busy)
+        or a
+        ld a,4
+        jr z,s38cc_m
+        ld a,1
+s38cc_m:
+        cp b
+        jr nc,s38cc_n1
+        ld b,a
+s38cc_n1:
         ld a,(s38_i)
         neg
         add a,VIEW_ROWS             ; slots left in the build

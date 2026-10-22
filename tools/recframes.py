@@ -116,7 +116,7 @@ def sprite_look(rows: list[bytes], regs: list[int], pal: list[int], ram: bytes, 
             continue
         sil = sil_colour[obj.get("sil", 0)]
         for y0, boxes in msxframe.converted(obj, joint_pal):
-            for c in boxes:
+            for c in reversed(boxes):                # (the first box of a band in front)
                 im = c["fallback"] if sil else c["full"]
                 for y in range(16):
                     for i in range(16):

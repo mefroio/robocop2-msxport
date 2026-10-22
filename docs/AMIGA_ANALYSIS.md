@@ -426,6 +426,44 @@ over (PIC9)**, called from `main_loop` when the lives counter `$8034` goes negat
   head icons (`$88DE`) and the fade out; lives `$8034` − 1 → `level_init` again, or game over.
 - Level end (`$16D0`, set by type 32): score + 100h a frame (sound 26h every 4th), `$16C4`
   counts down, fade out, `$8050` + 1, the next level loads.
+- **Type 32, the level's end** (`obj32_update` `$DF6E`; level 1: spawn list entry 13 at
+  `$96DC`, x 2432, y 736, once, when the camera is at x 2001-2272, y 568-640) **[verified:
+  code; bench and MSX traces]**: the camera offsets become 80h / −30h and RoboCop's y at least
+  2D0h; on its first frame it stores `$16C2` + 10 and until that many henchmen died it forces
+  the spawns (`$16B8` = 0, marker mask `$C53D` = 0). The `cmpi.w #$A,$16C0` (ten nukes) result
+  is overwritten by the next MOVE: the nukes are not required. Then energy full, one of the 36
+  map words of `$DE68` every 4 frames (explosion 5 on odd frames), explosions, controls locked;
+  at (A3) >> 2 = 44h (272 frames) `$16D0` set and `$16C4` = 40h. `main_loop` `$8188` adds 100
+  points a frame for 65 frames, fades out, `$8050` + 1 (`$81B8`), then `$80AE` `level_init`:
+  `load_level1` `$8582` (statistics, Brainstorm, shooting range, briefing, PIC4, MU1, MADEX and
+  DATAL2). Bench: with `$16C2` poked to 10 after type 32's first frame, `$16D0` at game frame
+  472, the statistics at 567. Test aid: the bench's and the MSX drive's god mode keep `$16C4`
+  at 100h, so the level never ends with it.
+- **The cracked wall** (`obj_relocate` `$9FC4`; level 1 object list entry 25 at `$A68E`: type
+  5Ch, x 2064, y 256, looks `$A272`: `$A532` cracked, `$A54A` hole, −1; reached by falling
+  through trapdoor entry 21 at `$A65E`, type 48h, `act_floor_switch` `$9F84`, into a closed
+  room, cols 116-125 × rows 16-19) **[verified: code; bench]**: `activate_objects` runs it every
+  frame while the entry is in its window; in states 12/13 (up or fire on a floor with
+  attribute bit 2) debris (explosion type 0 via `$F366`) and `$169E` + 1; at 50h (3.2 s)
+  RoboCop and the camera (`move.l`) go to `$15D6`/`$15D8`, which then become 90h/50h, state 10h
+  is asked, `$16CD` = 0 (black), `$169E` = 0, `$16CE` set (fade in) and the entry is switched
+  on (`st 4(A1)`). `level_init` writes `$15D6`/`$15D8` from the level header +20/+22 at
+  `$87A4`/`$87A8` (after `clear_game_vars`): level 1 (996, 640), level 2 (192, 112), level 3
+  (224, 544). Nothing else is reset. Bench (`--tele 100:2072:320 --joy 110:300:u --god`): the
+  relocation at game frame 191, RoboCop at map column 55, row 40 (the hole graphic), the camera
+  easing to (760, 528) by frame 224, control back at 224. A death puts every object list entry
+  but type 58h back to look 0 / 4 hits (`$16CF`, set at `$8742`, is cleared by
+  `clear_game_vars` before `$8852` reads it): door, trapdoor and wall come back.
+- **Route of level 1** (map 160 × 51 cells; player column = (x >> 4) − 7, row = y >> 4;
+  checked link by link with bench drives, route picture by the agent run of 2026-10-21)
+  **[verified: bench; the order inferred from walls and floors]**: A start outside (door
+  entry 40) → B lower-left building (lifts L0, L5) → C outdoor gap (the flying vehicle, type 44
+  dropping pickups) → D middle building (lifts L2, L3, beams, barriers, trapdoors) → E the
+  cracked wall's room → relocation → F upper-left building (lift L1; a jump from the row-12
+  platform lands on row 10) → G the corridor between floors 5 and 10 (beams, barriers, crates,
+  drums, type 25 the machine) → H the lab building (entered through the row-10 gaps at columns
+  142-144 or 148-150; lift L4) → I the lab floor, type 32. Camera limits are global (x 0-8E0h,
+  y 0-280h): only types 44 and 32 change its offsets.
 - `level_init` after a death runs `clear_game_vars` (`$FE96`): `$B00-$16EB` cleared, and also
   `$802D`, `$802E` (keyboard and joystick bytes), `$804D` (input lock), `$B02B` = 7Fh (the
   joystick mask), `$B16` = `$6FFA0`. **[verified: code; MSX death trace]**
@@ -462,11 +500,39 @@ over (PIC9)**, called from `main_loop` when the lives counter `$8034` goes negat
 
 - `make sprites`: Ghidra assembly exported with the REA CLI (`tools/rea_dump_asm.sh`) →
   `tools/bobcatalog.py` follows A2/D4 up to every call to `draw_bob` and its wrappers
-  (`$AC44`, `$AC56`, `$AC6E`, `$AC84`), enumerates frames (adjustments and tables) and
-  assigns the level from code (spawn lists, special objects, common PERMA/SPERMA).
-- 76 references; unique frames: 22 common, 39 (level 1), 41 (level 2), 60 (level 3); mostly
-  between 16×16 and 48×56, bosses up to 80×48. 17 references of "child" objects still have
-  an inferred level. Sheets in `build/sprites/<level>_<routine>.png`.
+  (`$AC44`, `$AC56`, `$AC6E`, `$AC84`), enumerates frames (adjustments, word tables and, since
+  2026-10-21, tables of pointers read with `movea.l (d,PC,Dn),A2`) and assigns the level from code
+  (spawn lists, special objects, common PERMA/SPERMA).
+- 81 references (4 hard-coded from REA since 2026-10-21, see below); unique frames: 22 common, 39 (level 1), 41 (level 2), 60 (level 3) before the
+  pickups' table was read; mostly between 16×16 and 48×56, bosses up to 80×48. 17 references of
+  "child" objects still have an inferred level. Sheets in `build/sprites/<level>_<routine>.png`.
+- **Pickups** **[verified, REA]**: `$F900` (pickup update) draws each of its four slots
+  (`$D80+k` type, `$D84` x, `$D94` y, `$DA4` vy) with D4 = `$402` (16×16) and A2 = the long at
+  `$F964 + type` (`movea.l ($F964,PC,D2.w),A2` at `$F958`): type 4 scatter gun `$6D520`, 8 rapid
+  fire `$6D5C0`, 12 time −1 min `$6D660`, 16 time +1 min `$6D700`, 20 reversed controls
+  `$6D7A0`, 24 shield `$6D840`, 28 energy `$6D8E0`, 32 three-way gun `$6D980`, 36 nuke `$4B4AC`
+  (type 0: no pickup; the long after type 36 is code). The flying vehicle's ride drops types
+  4-32 (type 44, `obj44_update` `$EC22`, through `pickup_drop` `$F98C`); taking one while riding
+  knocks the vehicle down (`$FBCC`). Until the table was read, five of them had no MSX frame
+  and were invisible on the MSX while still hitting RoboCop.
+- Draw calls the catalogue still cannot follow (their frames come only from the bench's
+  coverage, `--drawn`): `$10750`, `$C992`, `$CBA6` (obj03), `$D178` (obj05), `$D946` (obj29),
+  `$E246` (obj34), `$F12A` (`$F080`), `$F292` and `$F2B6` (`$F266`), `$F488` (`$F3CE`, enemy
+  bullets); `bobcatalog.py catalog` lists them. Read with REA (agent run, 2026-10-21): their
+  parallel tables are BLTSIZE[T + 2i] beside gfx[T + d + 4i]. `$D178` is level 2's, `$E246`
+  level 3's, `$10750` the title logo's. Five level-1 groups were in neither the catalogue nor
+  the coverage, so the MSX hid them: the muzzle smoke type 3 (`$54096`, `$541D6`, `$54316`,
+  `$54456`, 32 × 16, the mirror of type 2: the enemies of types 3 and 27 left of RoboCop) and
+  type 2's rare first step `$50946` (`$F12A`); enemy bullet type 1 (`$54596`, `$54816`,
+  `$54956`: the rightward shots of types 3 and 27, damage 40h, invisible on 3 of 4 steps) and
+  type 7 (`$40660`, 16 × 8, the machine type 25's) (`$F488`); type 25's muzzle flash (`$3F940`,
+  `$3FC10`, 48 × 24, `$DC3A` in `$DBEA`). `bobcatalog.py` `HARD_REFS` now lists them.
+  Explosion types (`$F366`: D5 low byte 0-8, frames `$F3BC`/`$F3C5`; high byte 0 drawn by
+  `$F12A`, 4 by `$F266`): level 1 spawns 0-5 and `$0408`. `$F366` allocates 8 slots from slot
+  7 down but `$F080` processes slots 0-5 only (`cmpa.w #$D3A`): the first two explosions after
+  each `clear_game_vars` are never drawn and stay (an original bug, kept). `update_objects` also
+  spawns from the level's marker table (header +24: level 1 `$C59C`), which adds types 3, 13,
+  15, 24, 27, 29, 30 and 31 to level 1.
 
 ### Per-level loading (`$86FA`) **[verified]**
 
@@ -693,7 +759,12 @@ every screen in `screens/`.
 - Cursor (`$118B4`): lines 6–7 of the next cell, plane 0 `$7F`, plane 1 `$63`. It is erased (a
   space) at the start of every call and drawn after a character, a position, a wait or the
   halt when bit 2 of `$B01` is set. `$B00` moves only in `main_loop` and the title loop: in the
-  other screens the cursor is always on or always off.
+  other screens the cursor is always on or always off. Entered through `$FE14` (the statistics,
+  the briefings) it is always off: `$FE14` does not return but falls through at `$FE92` into
+  `clear_game_vars` `$FE96`, so `$B00` is 0 **[verified: code; bench, 362 iterations]**.
+- The font's glyphs use colours 1 and 4 only: plane 1 is always clear and planes 0 and 2 never
+  meet; the shadow (colour 4, `$147`) is drawn into the font data by hand, not a shifted copy
+  of the strokes (colour 1, `$070`) **[verified: data]**.
 
 ### Script format (`$116CA`, pointer `$10F2C`) **[verified: code]**
 
@@ -713,8 +784,9 @@ every screen in `screens/`.
 - Characters (`$118D6`; the panel's `$10620` is the same): `' '` → glyph 41, codes ≥ `'@'` →
   code − `'A'`, others → code − `$16`. So `'0'`–`'9'` and `'['`–`'d'` are digits, `'e'`–`'l'`
   (and `':'`–`'?'`) are `. , ? " !`, blank, `©`, `%`; `'@'` reads the `$FF` bytes before the
-  font (a colour-7 block). Numbers come from `$11DC6`: D2 → BCD at `$11DFA` (subtracting
-  `$11D30`'s powers of ten) → 8 characters `'['` + digit at A4, leading zeros as spaces.
+  font (a colour-7 block). Numbers come from `$11DC6`: D2 → BCD at `$11DFA` (`$11D30` holds the
+  powers of two `$8000`…1, `$11D52` their BCD values, added for each bit set: 0…32767) → 8
+  characters `'['` + digit at A4, leading zeros as spaces (0 shows as one '0').
 - Scripts (calls = VBLs without fire; each screen lasts max(calls + 1, 50) VBLs, + 16 for the
   curtain):
 
@@ -791,7 +863,11 @@ every screen in `screens/`.
   `$ECC0`; the 10th gives a life) → `$11DC6` → script `$1132F`. No score is added here (the
   level bonus is the in-game count of `$16D0`, *Timer and death*). The counters lie in
   `$B00`–`$16EB`, which every `level_init` clears (also after a death or a continue): the
-  screen counts since the last (re)start.
+  screen counts since the last (re)start. Its 362 calls: 4 positions and 101 characters (one a
+  VBL), `FF 02 40` (256 calls: its counter `$16B2` starts at 0, cleared by `clear_game_vars`),
+  `FF 07` (`$16D1`, the loop ends); with fire it ends at the first call from the 50th on
+  (`clear_game_vars` also cleared the input lock `$804D` that type 32 had set). The bench's
+  picture (10 / 0 / 0) matches `rc2front.py`'s pixel for pixel **[verified: bench]**.
 - Brainstorm (`$8382`): intro, picture, PUZL (level 1 → 2: the disk-1 copy decrunched by
   `$124A6` from `$17080` to `$17100`; level 2 → 3: disk 2's at `$17100`), `jsr $17100` → D0 =
   0 solved (`$805E` + 1: a continue), 1 failed, 2 out of time; result text from `$840A`.

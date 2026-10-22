@@ -13,6 +13,9 @@
   then  the map attributes (tools/msxconv.py .atrp: packed, copied to page-0 RAM), bank ATR_BANK
   then  the static HUD image (tools/msxhud.py), bank HUD_IMG_BANK
   then  the level's tables, bank LEVEL_BANK: tile per DATAL tile offset (.otile, OTILE = 8000h)
+  then  the play-field BOBs' atlas (tools/msxsprites.py _field.bin), bank FIELD_IMG_BANK, and
+        their dynamic frames (_fdyn.bin), from bank FIELD_DYN_BANK
+  then  the SCREEN 8 pictures (PICTURES), up to 64 banks in all
 Generates build/msx/gen/banks.inc, rowtab.inc, options.inc (build options, see OPTIONS),
 input.inc (the JOY script) and the original's tables the logic banks include (tools/amitab.py
 with analysis/amiga_tables.tsv, from the level's RAM image build/ram/level1_full.bin), copies the level palette, the HUD (tools/msxhud.py) and RoboCop's
@@ -37,10 +40,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BANK = 0x2000
-LOGIC = ("LC1", "LC2", "L1", "LC3", "INPUT", "FRONT")        # logic banks after the two code banks (msx/rc2.asm sections):
+LOGIC = ("LC1", "LC2", "L1", "LC3", "INPUT", "FRONT", "FIELD")        # logic banks after the two code banks (msx/rc2.asm sections):
                                     # modules at 8000h (one at a time), the level at A000h
 PICTURES = ("title", "gameover")   # the SCREEN 8 pictures (TPIC, PIC9) next to the level's files
 ROWS_PER_BANK = 25
+FIELD_ID0 = 0xC8                    # the play-field BOB frames' BOBHASH ids (tools/msxsprites.py)
 COLS = 160
 VIEW_LINES = 163                    # msx/msx.inc
 OPTIONS = {
@@ -51,9 +55,12 @@ OPTIONS = {
     "EXTJOY": (0, "1 = test build driven from openMSX (tools/openmsx_rc2.tcl rc2_drive_trace): input in ext_joy"),
     "LOCKSTEP": (0, "K > 0 = test build: two game ticks every K frames whatever the CPU time (exact display tests)"),
     "TICK_HZ": (25, "game ticks per second: 25 (the PAL original, the default) or 30 (the NTSC release)"),
-    "CAD_MAX": (4, "most game ticks run for one picture: more are lost (the game slows down, as the original does when busy)"),
+    "CAD_MAX": (2, "most game ticks run for one picture: more are lost (the game slows down, as the original does when busy;"
+                   " 2: an animation never skips a step of 2 ticks, about 5 % slower in busy scenes)"),
     "CAD_HOLD": (2, "the same while the V9938 scroll keeps the camera at a page's edge (its next page not built yet)"),
     "ENEMY_CAP": (1, "N > 0 = at most N enemy slots in use (the original has 5; the user chose 1): 0 = the original, for trace tests"),
+    "DAMAGE_X": (3, "1-3: the enemies' damage to RoboCop multiplied (their bullets, touching them): 3 = the user's choice"
+                    " for the fewer enemies (ENEMY_CAP), 1 = the original, for trace tests"),
 }
 KEY_BITS = {"u": 0x01, "d": 0x02, "l": 0x04, "r": 0x08, "f": 0x10}   # the joystick byte ($802E)
 
@@ -98,12 +105,17 @@ HASH_EXTRA = 16
 
 def bob_hash(sprites_json: Path) -> bytes:
     """The level's BOB frames (tools/msxsprites.py) by the game's (A2, D4): slots of 8 bytes [A2 (3,
-    low first), D4 (2), frame id, 0, 0] from slot h = the XOR of those 5 bytes, plus 256 when bit 4
-    of A2 is set (msx/bob.asm bf_show), on into the next slots when taken (no wrap: the extra
-    slots after the 512 take the overflow); an empty slot has id FFh."""
-    frames = [f for f in json.loads(sprites_json.read_text()).get("bobs", []) if not f.get("spark")]
-    if len(frames) > 255:
-        raise SystemExit(f"{len(frames)} BOB frames: too many for the frame ids")
+    low first), D4 (2), frame id, silhouette, 0] from slot h = the XOR of those 5 bytes, plus 256
+    when bit 4 of A2 is set (msx/bob.asm bf_show), on into the next slots when taken (no wrap: the
+    extra slots after the 512 take the overflow); an empty slot has id FFh. A play-field frame
+    (id FIELD_ID0 + its index) whose hit flash shows as a sprite silhouette has that sprite frame
+    in "silhouette" (FFh: none); the sprite frame itself is then not in the table."""
+    data = json.loads(sprites_json.read_text())
+    frames = [f for f in data.get("bobs", []) if not f.get("spark")]
+    if len(data.get("bobs", [])) > FIELD_ID0:            # (the hit spark's ids too)
+        raise SystemExit(f"{len(data['bobs'])} BOB frames: too many for the frame ids")
+    frames = [f for f in frames if "field" not in f]
+    frames += [dict(f, id=FIELD_ID0 + f["fid"]) for f in data.get("field", [])]   # (drawn into the play field)
     table = bytearray(b"\x00\x00\x00\x00\x00\xff\x00\x00" * (HASH_SLOTS + HASH_EXTRA))
     for f in frames:
         a2, d4 = f["addr"], (f["h"] << 6) | (f["w"] // 16 + 1)
@@ -113,7 +125,7 @@ def bob_hash(sprites_json: Path) -> bytes:
             h += 1
         if h >= HASH_SLOTS + HASH_EXTRA:
             raise SystemExit("BOBHASH: the overflow slots are full")
-        table[8 * h:8 * h + 8] = key + bytes([f["id"], 0, 0])
+        table[8 * h:8 * h + 8] = key + bytes([f["id"], f.get("sil", 0xFF), 0])
     return bytes(table)
 
 
@@ -145,19 +157,26 @@ def main(argv: list[str]) -> int:
             print(f"unknown option {a!r}; known: {', '.join(OPTIONS)}, JOY", file=sys.stderr)
             return 2
         opts[k] = int(v, 0)
+    if not 1 <= opts["DAMAGE_X"] <= 3:
+        print("DAMAGE_X must be 1, 2 or 3 (msx/hits.asm)", file=sys.stderr)
+        return 2
     vram = level.with_suffix(".vram").read_bytes()
     mp = level.with_suffix(".map").read_bytes()
     rows = len(mp) // (COLS * 2)
     gen = out.parent / "gen"
     gen.mkdir(parents=True, exist_ok=True)
     shutil.copy(level.with_suffix(".pal"), gen / "level1.pal")
-    for name in ("hud.pal", "robocop.inc", "robocop_flash.inc", "hud_rt.inc", "player.inc"):
+    for name in ("hud.pal", "robocop.inc", "robocop_flash.inc", "robocop_field.inc", "hud_rt.inc", "player.inc",
+                 "sound.inc", "text.inc"):
         shutil.copy(level.parent / name, gen / name)
     atr = level.with_suffix(".atrp").read_bytes()               # (packed: copied to page-0 RAM)
     otile = level.with_suffix(".otile").read_bytes()
     otile += level.with_suffix(".atr2").read_bytes()        # (ATR2 = OTILE + 400h)
     otile += b"\xff" * (0x600 - len(otile)) + bob_hash(level.parent / "robocop.json")   # (BOBHASH = 8600h)
     hud_img = (level.parent / "hud.sc5").read_bytes()
+    field_img = (level.parent / "robocop_field.bin").read_bytes()    # (the play-field BOBs' atlas)
+    field_dyn = (level.parent / "robocop_fdyn.bin").read_bytes()     # (their dynamic frames: banks of their own)
+    dyn_banks = max(1, -(-len(field_dyn) // BANK))
     if len(atr) > BANK or len(hud_img) > BANK:
         print("error: the map attributes or the HUD image do not fit a bank", file=sys.stderr)
         return 1
@@ -189,7 +208,7 @@ def main(argv: list[str]) -> int:
     # the SCREEN 8 pictures (tools/msxpic.py: 256 bytes per line), each from a bank of its own
     pics = [(level.parent / f"{n}.sc8").read_bytes() for n in PICTURES]
     pic_first = []
-    b = bank_atr + 3
+    b = bank_atr + 4 + dyn_banks        # (bank_atr + 3: the play-field BOB atlas, then its dynamic frames)
     for p in pics:
         pic_first.append(b)
         b += -(-len(p) // BANK)
@@ -201,7 +220,9 @@ def main(argv: list[str]) -> int:
         + f"BANK_TILES: equ {bank_tiles}\nBANK_MAP: equ {bank_map}\n"
         f"MAP_ROWS: equ {rows}\nMAP_COLS: equ {COLS}\nSPR_BASE_BANK: equ {bank_spr}\n"
         f"HUD_BANK: equ {bank_hud}\nATR_BANK: equ {bank_atr}\nATR_PACKED: equ {len(atr) - 16}\n"
-        f"HUD_IMG_BANK: equ {bank_atr + 1}\nLEVEL_BANK: equ {bank_atr + 2}\nOTILE: equ 0x8000\nATR2: equ 0x8400\n"
+        f"HUD_IMG_BANK: equ {bank_atr + 1}\nLEVEL_BANK: equ {bank_atr + 2}\nFIELD_IMG_BANK: equ {bank_atr + 3}\n"
+        f"FIELD_DYN_BANK: equ {bank_atr + 4}\n"
+        f"OTILE: equ 0x8000\nATR2: equ 0x8400\n"
         f"BOBHASH: equ 0x8600\n"
         + "".join(f"PIC_{n.upper()}_BANK: equ {pic_first[i]}\nPIC_{n.upper()}_LINES: equ {len(pics[i]) // 256}\n"
                   for i, n in enumerate(PICTURES)) +
@@ -237,7 +258,12 @@ def main(argv: list[str]) -> int:
     rom = (cb + tiles + b"".join(map_banks) + sprites + hudrt + b"\xff" * (2 * BANK - len(hudrt))
            + atr + bytes(BANK - len(atr)) + hud_img + b"\xff" * (BANK - len(hud_img))
            + otile + b"\xff" * (BANK - len(otile))
+           + field_img + b"\xff" * (BANK - len(field_img))
+           + field_dyn + b"\xff" * (dyn_banks * BANK - len(field_dyn))
            + b"".join(p + b"\xff" * (-len(p) % BANK) for p in pics))
+    if len(rom) > 0x80000:
+        print(f"error: the ROM takes {len(rom) // BANK} banks (512 KiB: 64)", file=sys.stderr)
+        return 1
     size = 1
     while size < len(rom):
         size *= 2

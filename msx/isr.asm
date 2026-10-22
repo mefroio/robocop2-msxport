@@ -20,53 +20,6 @@
 ; (S#2 bit 5) is 1 for 312 VDP ticks from the right border, computed with the current
 ; horizontal adjust (so writing R#18 moves the window).
 
-isr_init:
-        ld hl,IM2_TABLE
-        ld de,IM2_TABLE+1
-        ld bc,256
-        ld (hl),IM2_VEC
-        ldir
-        ld a,0xC3                   ; JP isr
-        ld (IM2_JUMP),a
-        ld hl,isr
-        ld (IM2_JUMP+1),hl
-        ld a,IM2_I
-        ld i,a
-        im 2
-        xor a
-        ld (split_armed),a
-        ld (tick),a
-        ld (last_tick),a
-        ld (pk_state),a             ; (the sprite engine's state the interrupts share)
-        ld (pk_mux),a
-        ld (pq_buf),a
-        ld (bq_head),a
-        ld (bq_tail),a
-        ld (vram_busy),a
-        ld (sat_due),a
-        ld (sat_mux_n),a
-        ld (spr_vblank),a
-        ld (pub_seq),a              ; the list on screen until the first one is published: one
-        ld (app_seq),a              ; that changes nothing (R#15 = 0). At power-on the RAM holds
-        ld hl,vbl_list_a            ; anything, and a list read from it once wrote R#14 and an
-        ld (vbl_ptr),hl             ; address in the middle of the tiles' upload after the title
-        ld (pk_list),hl
-        ld (hl),a                   ; (seq 0)
-        inc hl
-        ld (hl),2
-        inc hl
-        ld (hl),a
-        inc hl
-        ld (hl),0x8F
-        ld hl,sat_pair0
-        ld (sat_cur),hl
-        ld (sat_nb),hl
-        ld hl,pq_buf
-        ld (pq_rd),hl
-        ld a,R5_SET_A
-        ld (spr_dsp),a
-        ret
-
 isr:    push af
         push bc
         push hl
@@ -200,7 +153,74 @@ sp_msk: ld a,SPLIT_R19
         out (c),a
         ld a,0x8F
         out (c),a                   ; R#15 = 0
+        call isr_fbgo               ; a play-field copy waiting: it starts as the beam leaves
         jp spr_upload               ; sprites off until the next frame: their uploads
+
+; A play-field copy for the page shown waiting (field.asm fb_cq 1 or 3), its picture published
+; (its stamp not fb_tick) with its sprites uploaded (pk_state not 1: both go on screen at the
+; same VBLANK), the VDP idle and the main program not giving it a command (cmd_lock): it starts
+; now (fb_cq 2 or 4). C = VDP_CTRL (kept), AF, B, HL.
+isr_fbgo:
+        ld a,(fb_cq)
+        rra
+        ret nc
+        ld a,(pk_state)
+        dec a
+        ret z
+        ld a,(cmd_lock)
+        or a
+        ret nz
+        ld a,(fb_tick)
+        ld hl,fb_cur + 11
+        cp (hl)
+        ret z
+        call ifg_idle
+        ret nz                      ; (a command runs)
+        ld hl,fb_cmd
+        call ifg_send
+        ld hl,fb_cq
+        inc (hl)                    ; (2, 4: started)
+        ld a,(fb_c2)                ; the pair's second part (fb_cmd2) right after it, so that
+        dec a                       ; both show from the same frame
+        ret nz
+        ld b,110                    ; (about 3 ms at most: else fb_wait starts it)
+ifg_wt: call ifg_idle
+        jr z,ifg_2
+        djnz ifg_wt
+        ret
+ifg_2:  ld hl,fb_cmd2
+        call ifg_send
+        ld a,2
+        ld (fb_c2),a
+        ret
+
+; -> Z when the VDP's command engine is idle (S#2 CE). Keeps BC, HL.
+ifg_idle:
+        ld a,2
+        out (c),a
+        ld a,0x8F
+        out (c),a
+        in a,(c)                    ; S#2
+        push af
+        xor a
+        out (c),a
+        ld a,0x8F
+        out (c),a                   ; R#15 = 0
+        pop af
+        and 1
+        ret
+
+; HL = 15 bytes -> R#32-R#46 (the command starts). Keeps BC.
+ifg_send:
+        push bc
+        ld a,32
+        out (c),a
+        ld a,0x80 + 17
+        out (c),a                   ; R#17 = 32
+        ld bc,15*256 + VDP_IND
+        otir
+        pop bc
+        ret
 
 ; VBLANK: registers of the frame being shown next, the play-field palette (pf_pal) and, when
 ; the list is a new one, the SAT built for it (it must be in VRAM before the first display
@@ -210,6 +230,9 @@ isr_vblank:
         ld a,(front_mode)
         or a
         jr nz,iv_tick
+        ld a,(fb_vok)               ; (a play-field copy that keeps ahead of the beam from here)
+        or a
+        call nz,isr_fbgo
         ld a,(pk_state)
         cp 1
         jr nz,iv_rdy
@@ -219,11 +242,26 @@ isr_vblank:
         ld a,(pk_state)
 iv_rdy: cp 2
         jr nz,iv_list
+        call fb_pend                ; (its play-field BOBs not all composed yet: it waits for them,
+        jr z,iv_take                ; FB_HOLD VBLANKs at most, so that they change with the sprites)
+        ld hl,fb_hold
+        inc (hl)
+        ld a,(hl)
+        cp FB_HOLD
+        jr c,iv_list
+iv_take:
+        if EXTJOY
+        ld hl,fb_visrec             ; (test builds: what the pictures are checked against)
+        call field_call
+        ld c,VDP_CTRL
+        endif
         xor a
+        ld (fb_hold),a
         ld (pk_state),a
         ld hl,(pk_list)
         ld (vbl_ptr),hl             ; the published frame from this one on
 iv_list:
+        ld c,VDP_CTRL               ; (fb_pend changes it)
         ld hl,(vbl_ptr)
         ld a,(app_seq)
         cp (hl)

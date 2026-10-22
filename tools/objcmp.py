@@ -15,7 +15,9 @@ bf_show). Per list, every drawn BOB is
     shown has another size, most likely another BOB's: legs for a torso);
   - missing: nothing there; with the builds that record why (sprites.asm sb_want), "missing,
     loading" when an object wants that frame there but no version of it is on screen yet,
-    "missing, left out" when the sprite budget left that object out of the tick;
+    "missing, left out" when the sprite budget left that object out of the tick; "missing, no
+    frame" when the sprite data has no such frame at all (bob_flush hides it: the ride's pickups
+    until 2026-10-21), the hit spark's frames and the play-field BOBs apart;
 BOBs wholly outside the MSX play area (256 x 163, the left 8 columns masked) are not counted;
 and objects showing something the bench did not draw there are extra (wrong places: the worst).
 Objects alternating between frames (budget) count as shown.
@@ -35,10 +37,15 @@ MAX_OBJ = 16
 VIEW = 163
 
 
-def frame_table() -> tuple[dict[tuple[int, int], int], dict[int, tuple[int, int]]]:
-    bobs = json.loads((ROOT / "build/msx/robocop.json").read_text())["bobs"]
-    return ({(f["addr"], (f["h"] << 6) | (f["w"] // 16 + 1)): f["id"] for f in bobs if not f.get("spark")},
-            {f["id"]: (f["w"], f["h"]) for f in bobs})
+def frame_table() -> tuple[dict[tuple[int, int], int], dict[int, tuple[int, int]], set[tuple[int, int]]]:
+    """(A2, D4) -> frame id, frame id -> size, and the (A2, D4) that are no sprite object by design
+    (the hit spark's frames, the BOBs drawn into the play field)."""
+    meta = json.loads((ROOT / "build/msx/robocop.json").read_text())
+    key = lambda f: (f["addr"], (f["h"] << 6) | (f["w"] // 16 + 1))   # noqa: E731
+    bobs = meta["bobs"]
+    other = {key(f) for f in bobs if f.get("spark")} | {key(f) for f in meta.get("field", [])}
+    return ({key(f): f["id"] for f in bobs if not f.get("spark")}, {f["id"]: (f["w"], f["h"]) for f in bobs},
+            other)
 
 
 def main() -> int:
@@ -47,7 +54,7 @@ def main() -> int:
     ap.add_argument("msx", type=Path)
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
-    table, size = frame_table()
+    table, size, other = frame_table()
     ami = {}
     for line in a.bench.read_text().splitlines():
         row = json.loads(line)
@@ -70,18 +77,22 @@ def main() -> int:
             elif flags & 0x20 and flags & 1:
                 wanted[(ident, x, y)] = "missing, left out" if flags & 0x10 else "missing, loading"
         want = []
+        res = Counter()
+        problems = []
         for a2, d4, x, y, minterm, drawn in ami[gf - 1]:
             fid = table.get((a2, d4))
-            if fid is None:
-                continue                                    # (the hit spark's frames: not BOB objects)
             sx, sy = x - 135 - cam_x, y - cam_y
+            if fid is None:
+                w, h = ((d4 & 63) - 1) * 16, d4 >> 6
+                if (a2, d4) not in other and not (sx + w <= 8 or sx >= 256 or sy + h <= 0 or sy >= VIEW):
+                    res["missing, no frame"] += 1           # (a frame the sprite data lacks: never
+                    problems.append(f"NO FRAME {a2:x}:{w}x{h} at ({sx},{sy})")   # shown at all)
+                continue
             w, h = size[fid]
             if sx + w <= 8 or sx >= 256 or sy + h <= 0 or sy >= VIEW:
                 continue                                    # (outside the MSX play area)
             want.append((fid, sx, sy))
         left = list(objs)
-        res = Counter()
-        problems = []
         rest = []
         for fid, x, y in want:                              # (BOBs drawn at one place, as the
             if (fid, x, y) in left:                         # parts of an explosion: exact ones
@@ -120,10 +131,10 @@ def main() -> int:
             res["extra"] += 1
             problems.append(f"EXTRA {o[0]} at ({o[1]},{o[2]})")
         tot.update(res)
-        if a.verbose or res["extra"] or res["late, other size"]:
+        if a.verbose or res["extra"] or res["late, other size"] or res["missing, no frame"]:
             print(f"list {seq} frame {gf - 1}: {dict(res)} {'; '.join(problems)}")
     print(f"{shown_lists} lists: {dict(tot)}")
-    return 1 if tot["extra"] or tot["late, other size"] else 0
+    return 1 if tot["extra"] or tot["late, other size"] or tot["missing, no frame"] else 0
 
 
 if __name__ == "__main__":

@@ -78,6 +78,7 @@ ao_lp:  ld hl,(ao_cnd)
         ret z                       ; no candidate left
         inc hl
         ld (ao_cnd),hl
+        ld (ao_curn),a
         ld l,a
         ld h,0
         push hl
@@ -533,7 +534,10 @@ act_08: ld a,(iy+2)
 
 ; $9FC4 (offset 10h): while RoboCop is in state 12/13 debris flies and $169E counts; at 50h he
 ; and the camera go to $15D6/$15D8 (which become 90h, 50h), state 10h is asked for, the palette
-; fades in again and the entry is switched on. Then as the default.
+; fades in again and the entry is switched on. Then as the default. The entries after this one
+; meet the new camera's window, as the Amiga's loop goes on with it (the candidates again, from
+; the next entry); the scroll engine draws the new view before the next picture (jump_pend:
+; rc2.asm, field.asm engines_jump).
 act_10: ld a,(p_state)
         and 0xFE
         cp 0x0C
@@ -581,6 +585,18 @@ a10_c:  ld hl,(AM + 0x169E)
         ld a,0xFF
         ld (p_fadein),a
         ld (iy+5),a
+        ld (jump_pend),a
+        call ao_cands
+        ld a,(ao_curn)
+        ld c,a
+        ld hl,(ao_cnd)
+a10_sk: ld a,(hl)                   ; (FFh, the end, is above every entry)
+        cp c
+        jr z,a10_n
+        jr nc,a10_cd
+a10_n:  inc hl
+        jr a10_sk
+a10_cd: ld (ao_cnd),hl
         jp ao_look
 
 ; $A038 / $A03E (offsets 14h, 18h): a conveyor belt of value + 1 cells moving left (14h) or

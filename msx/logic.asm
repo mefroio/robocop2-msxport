@@ -320,8 +320,8 @@ rnd_n:  djnz rnd_l
 ; pf_pal (the play field's palette, loaded at every VBLANK) changes as the copper's colours do:
 ; the fade ($F8C4) computes all of it from the level's palette, a flash ($F80E) and its end
 ; ($F878) rewrite RoboCop's colours. The Amiga tints his sprite colours (COLOR17-31); here his
-; entries that the background never uses (flash_idx, tools/msxsprites.py) take the tint, so
-; that only the sprites change colour.
+; entries that neither the background nor the play-field BOBs use (flash_idx, tools/msxsprites.py)
+; take the tint, so that only the sprites change colour.
 
 ; A = flash palette (PAL_...): RoboCop in its colours for 4 more game frames ($F826), then in the
 ; level's again (pl_fade). Keeps BC, DE, IX, IY.

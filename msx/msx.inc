@@ -102,6 +102,7 @@ q_row_end:  equ 0xC035
 
 ; V9938 engine
 s38_vis_page: equ 0xC040            ; displayed page (0/1)
+s38_old_c0: equ 0xC069              ; the first column of the page on screen until a flip is
 s38_vis_c0: equ 0xC041              ; first world column on the displayed page
 s38_back_c0: equ 0xC042             ; first column of the back page (FFh = none)
 s38_back_dir: equ 0xC043            ; 0 = built for the right, 1 = for the left
@@ -455,11 +456,29 @@ ao_xhi:     equ 0xCED2              ; 2
 ao_lo:      equ 0xCED4              ; its range in so_x
 ao_hi:      equ 0xCED5
 ao_cnt:     equ 0xCED6              ; entries in so_x
+ao_curn:    equ 0xCED7              ; the entry being activated
+jump_pend:  equ 0xCED8              ; non-zero: the cracked wall moved RoboCop and the camera (act_10):
+                                    ;   the scroll engine draws the new view (field.asm engines_jump)
 tick_n:     equ 0xCEE0              ; 2: game ticks since the power-on (the test scripts' frames)
 g_event:    equ 0xCEE2              ; what the last tick's frame_end asks for (FE_..., 0)
 lv_fresh:   equ 0xCEE3              ; non-zero: the level's lists are copied into RAM at its start
 sec_n:      equ 0xCEE4              ; display frames into the timer's second
 lvl_bank:   equ 0xCEE5              ; the level's logic bank (logic_map maps it at A000h; kept by pl_init)
+snd_v:      equ 0xCF00              ; 3 x SV_SIZE: the sound player's voices (sndplay.asm)
+snd_div:    equ 0xCF1E              ; VBLANKs into the sixth one (60 Hz: skipped)
+snd_mix:    equ 0xCF1F              ; the PSG mixer (R7) as written last
+snd_last:   equ 0xCF20              ; the last effect started
+snd_qh:     equ 0xCF21              ; the sound requests' queue (sndplay.asm): the next one the VBLANK takes,
+snd_qt:     equ 0xCF22              ;   the next free entry,
+snd_q:      equ 0xCF23              ;   SQ_N (8) entries
+fs_buf:     equ 0xCF40              ; TXT_STATS_LEN: the statistics script with its numbers (front.asm)
+fs_ptr:     equ 0xCFB8              ; 2: its next element
+fs_col:     equ 0xCFBA              ; the cursor's column,
+fs_row:     equ 0xCFBB              ;   row
+fs_wait:    equ 0xCFBC              ; 2: calls left of a wait
+fs_n:       equ 0xCFBE              ; 2: ticks so far
+fs_done:    equ 0xCFC0              ; 1: the script ended ($16D1)
+fs_div:     equ 0xCFC1              ; VBLANKs into the sixth one (60 Hz: skipped)
 ; enemy bullets ($F5BC, objects.asm ebullet_add)
 eb_x:       equ 0xCEB4              ; 2: D0
 eb_y:       equ 0xCEB6              ; 2: D1
@@ -527,6 +546,25 @@ ft_bix:     equ 0xF196              ;   2: its object (0: none),
 ft_tier:    equ 0xF198              ;   the tier looked at (O_TIER),
 ft_bbit:    equ 0xF199              ;   the band found (its bit),
 ln_neg:     equ 0xF19A              ;   1: ln_obj / ln_add take sprites away from the lines
+fb_busy:    equ 0xF1E0              ; field.asm: 1 while there is work (idle_work calls fb_work)
+fb_bsync:   equ 0xF1E1              ; V9938: the build target whose page holds the BOBs (flip ok)
+fb_eng:     equ 0xF1E7              ; field.asm: 0 the V9958's ring, 1 the V9938's two pages
+fb_cqp:     equ 0xF1E8              ; tiles.asm fb_redraw -> field.asm fb_cellq: the page,
+fb_cqr:     equ 0xF1E9              ;   1: the play-field BOBs draw the cell
+cmd_lock:   equ 0xF1EA              ; 1 while the main program gives the VDP a command (the split
+                                    ;   interrupt then starts no play-field copy: isr.asm)
+fb_hold:    equ 0xF1EB              ; VBLANKs a published list has waited for its play-field BOBs
+FB_HOLD:    equ 8                   ;   (isr.asm), at most
+fb_vok:     equ 0xF1ED              ; 1: the copy waiting keeps ahead of the beam from the VBLANK
+fb_c2:      equ 0xF1EE              ; 1: fb_cmd2 holds the next part of the copy waiting (the split
+                                    ;   interrupt starts it right after fb_cmd's: 2)
+fb_cmd2:    equ 0xF1EF              ; 15: that part's command (R#32-R#46)
+fb_qlk:     equ 0xF1FE              ; 1 while field.asm moves items (queue, work): fb_pend holds
+fb_tr:      equ 0xF240              ; 8: field.asm fb_cellq's cell
+fb_vis:     equ 0xF248              ; 41 (test builds): the play-field BOBs of the list on screen
+                                    ;   (tiles.asm fb_visrec: how many, FB_MAX x frame, x, y)
+rcp_id:     equ 0xF1CC              ; 2: rc_prefetch: RoboCop's composition last brought in ahead,
+rcp_ok:     equ 0xF1CE              ;   1 once all its patterns had a slot
 sp_list:    equ 0xF1D0              ; 16: sat_pack: the objects whose runs it places, in order
 ht_box:     equ 0xF100              ; 10 x 10: hit_test's boxes (F100h-F163h, within a 256-byte page)
 ph_w:       equ 0xF164              ; 2: pl_hits: an enemy's width,
@@ -534,8 +572,8 @@ ph_h:       equ 0xF166              ; 2:   height
 pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
                                     ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
-; C069h, C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F19Bh-F19Fh, F1CCh-F1CFh, E0A3h-E0FFh, F1E0h-F1FFh, F240h-F27Fh:
-; free; EA60h-EC41h: bob_list,
+; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F19Bh-F19Fh, F1CFh, F1E2h-F1E6h, F1ECh, F1FFh,
+; F271h-F27Fh: free; EA60h-EC41h: bob_list,
 ; cat_head, hz_ylo..; F280h-F37Fh: the stack)
 
 ; --- page 0 RAM (0000h-3FFFh: the main RAM once the BIOS is no longer needed, tiles.asm ram_page0)
@@ -563,5 +601,77 @@ tc_loads:   equ 0x1089              ; tiles copied into VRAM on demand (statisti
 ATR_RAM0:   equ 0x108C              ; the packed map attributes (tiles.asm atr_load): rows 0-47,
 ATR_RAM1:   equ 0x0910              ;   rows 48-50 (after TC_REF)
 atr_lut:    equ 0x1F8C              ; 16: the attribute value of each code of the packed map
+FB_MAX:     equ 8                   ; play-field BOBs of a tick (field.asm)
+FB_ENT:     equ 7                   ; an entry: frame, x (2), y (2), owner (2)
+; (field.asm's state: what TC_TILE and TC_REF leave free with TC_SLOTS 304 at most, 0660h-075Fh
+; and 0890h-090Fh, and E0A3h-E0FDh; with TC_SLOTS 256 at most, 0600h-065Fh too)
+dyn_res:    equ 0x0600              ; 2: the dynamic frames resident in the atlas's dynamic slot (bits)
+fb_dsn:     equ 0x0602              ; 1 while fb_bobs draws a dynamic frame strip by strip,
+fb_ds:      equ 0x0603              ;   the frame's line its next strip starts from,
+fb_dse:     equ 0x0604              ;   past its part's last line (lines of the frame),
+fb_dpr:     equ 0x0605              ;   8: its part (fb_r's layout)
+fb_stg:     equ 0x0610              ; the item's pieces when they are staged (2-4, the page shown's:
+                                    ;   each composed in a 64 x 64 of its own, then all copied in a
+                                    ;   row), else 0;
+fb_spk:     equ 0x0611              ;   the piece being composed or copied (0 .. fb_stg - 1),
+fb_scp:     equ 0x0612              ;   0 composing them, 1 copying them
+fb_sbx:     equ 0x0613              ; the x in page 3 of the piece's 64 x 64 (FB_SX, or a cache's)
+fb_spx:     equ 0x0614              ; 32: per staged piece its fb_px and fb_pe (x0, y0, x1, y1)
+fb_bki:     equ 0x0634              ; field.asm fn_take: the best rank so far (fn_key; 0 none),
+fb_bkp:     equ 0x0635              ;   2: its item
+fb_sn:      equ 0x0660              ; the item being composed: its page's list when it started
+fb_snap:    equ 0x0661              ;   (how many, then FB_MAX entries)
+fb_own:     equ 0x0699              ; 2: the owner of a rectangle going into the queue (FFFFh: none)
+fb_tick:    equ 0x069B              ; the picture being prepared (rc2.asm do_publish counts them): the
+                                    ;   items' stamp (none of the page shown copied before it is
+                                    ;   published), the caches' last use
+fb_lost:    equ 0x069C              ; rectangles lost (queue full: statistics)
+fb_cgi:     equ 0x069D              ; the cache of the item being composed (FFh: the tiles)
+fb_cpi:     equ 0x069E              ; the next part of its copy (0-3; 4: done)
+fb_bn:      equ 0x069F              ; copies left in a burst (FB_BURST)
+fb_wn:      equ 0x06A0              ; the play-field BOBs wanted (fb_frame): how many,
+fb_want:    equ 0x06A1              ;   FB_MAX entries: their place in the map and owner
+fb_dn0:     equ 0x06D9              ; what VRAM page 0 (the V9958's ring) shows: how many (FFh:
+fb_dr0:     equ 0x06DA              ;   unknown), the same entries
+fb_dn1:     equ 0x0712              ; page 1 (the V9938's other page)
+fb_dr1:     equ 0x0713
+fb_vlast:   equ 0x074C              ; V9938: the displayed page last seen (074Bh free)
+fb_cc:      equ 0x074D              ; 4: the piece's cells: first column, first row, last column,
+                                    ;   last row
+fb_xs:      equ 0x0751              ; 2: where its parts split: x,
+fb_ys:      equ 0x0753              ; 2:   y (the cache's wrap, the ring's 256)
+fb_cpy:     equ 0x0755              ; 2: the top of the copy's part in the map (fb_mayq)
+fb_dcnt:    equ 0x0757              ; fb_diff's page's list: its entries,
+fb_dptr:    equ 0x0758              ;   and their address (2)
+fb_slc:     equ 0x075A              ; the piece's edge column its cache does not hold (FFh: none)
+fb_lx0:     equ 0x075B              ; 2: the columns its parts keep (fb_part): from,
+fb_lx1:     equ 0x075D              ; 2:   to
+fb_stp:     equ 0x075F              ; the stamp of the rectangle going into the queue (fb_queue)
+fb_qn:      equ 0x0890              ; queue: how many,
+fb_q:       equ 0x0891              ;   FB_QMAX x [page, owner (2), x0, y0, x1, y1 (2 bytes each),
+FB_QMAX:    equ 8                   ;   picture (fb_tick when queued)]
+FB_QSZ:     equ 12
+fb_cache:   equ 0x08F1              ; FB_GMAX caches of 4 x 4 cells: [owner (2; FFFFh free), window
+FB_GMAX:    equ 3                   ;   (first column, first row), origin (column, row: cell (r, c)
+FB_CSZ:     equ 9                   ;   at ((r - oy) & 3, (c - ox) & 3)), cells held (2: bit
+                                    ;   row * 4 + column), last use (fb_tick)]
+fb_bbn:     equ 0xE0A3              ; V9938: what the page being built may hold from the displayed
+fb_bb:      equ 0xE0A4              ;   one (its copy): FB_BBMAX x [x0, y0, x1, y1] (2 bytes each)
+FB_BBMAX:   equ 5
+fb_cmd:     equ 0xE0CC              ; the VDP command being prepared (R#32-R#46)
+fb_cur:     equ 0xE0DB              ; the item being composed (fb_q's layout),
+fb_px:      equ 0xE0E7              ;   the piece's corner (2 + 2),
+fb_pe:      equ 0xE0EB              ;   its other corner (2 + 2),
+fb_r:       equ 0xE0EF              ; a rectangle in the map: x0, y0, x1, y1 (2 bytes each)
+fb_ph:      equ 0xE0F7              ; the phase (0 none, field.asm FP_FILL .. FP_WAIT),
+fb_ci:      equ 0xE0F8              ;   its cell (row, column), part or BOB index
+fb_dpg:     equ 0xE0FA              ; fb_diff's page (| 40h: the hidden one)
+fb_rw:      equ 0xE0FB              ; a cell: row,
+fb_cl:      equ 0xE0FC              ;   column
+fb_cq:      equ 0xE0FD              ; 1, 3 (its last part): fb_cmd holds a copy for the page shown
+                                    ;   (the interrupts start it: 2, 4)
+fb_n:       equ 0x1F9C              ; the tick's play-field BOBs (bob.asm fb_add): how many,
+fb_new:     equ 0x1F9D              ;   FB_MAX x [frame, x (2), y (2), owner (2)] as their records
+rd_bits:    equ 0x1FD5              ; 40: the cells waiting in RD_Q (tiles.asm rd_bit)
 mw_atr:     equ 0x108A              ; map_write's attributes
 mw_idx:     equ 0x108B              ; map_write's new patch

@@ -16,6 +16,13 @@
 - **MSX side: MSX-AI MCP with headless openMSX** (`msx_local_*`) to load, run, inspect
   memory/VRAM and capture screens.
 
+## Hardware reference
+- MSX2 Technical Handbook (ASCII 1987, Konamiman's transcription), cloned by `make reference`
+  into `reference/MSX2-Technical-Handbook` (git-ignored: third-party text, never commit it):
+  `md/Chapter4a.md` / `md/Chapter4b.md` (VDP: registers, sprites, commands and their register
+  settings), `md/Appendix3.md` (bit block transfer), `md/Appendix5.md` (VRAM map),
+  `md/Appendix6.md` (I/O map). Consult it for VDP and hardware details before guessing.
+
 ## Target
 - MSX2 (V9938) is the mandatory baseline; detect a V9958 at runtime and use MSX2+ features
   when present. Never MSX2+-only.

@@ -24,7 +24,7 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
 | Vertical scroll | R#23 (MSX2 and MSX2+) | hardware, zero cost |
 | Horizontal scroll MSX2+ | R#26/R#27 + SP2 (512 px) + MSK | only one new column every 16 px |
 | Horizontal scroll MSX2 | R#18 (±8 px) + shifted copy to the other page spread over several frames + page flip | one page costs ~6–8 frames; fits at ~1 px/frame |
-| Tiles in VRAM | page 2 + page 3 lines 0–175 (432 slots; level 1 uses 431); tile cache from ROM if a level needs more | page 3 lines 176–252 hold the sprite tables and the HUD |
+| Tiles in VRAM | page 2 (256 slots; level 1 uses 431 tiles); tile cache from ROM (clock replacement) | page 3 lines 0–175 hold the play-field BOBs' frames, caches and scratch; 176–252 the sprite tables and the HUD |
 | Frame rate | logic at 25 Hz, the PAL design speed (decision 7); video synchronised to VBL (50 or 60 Hz) | the game's timings and physics stay exact |
 
 ## Decisions taken (2026-10-19)
@@ -87,7 +87,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
 | Area | Content |
 |---|---|
 | pages 0–1 | play field: V9958 512×256 ring (SP2); V9938 two 256×256 pages |
-| page 2, page 3 lines 0–175 | tiles (432 slots of 16×16) |
+| page 2 | tile cache (256 slots of 16×16) |
+| page 3 lines 0–87 | play-field BOB frames (atlas, `robocop_field.bin`) |
+| page 3 lines 88–111 | the atlas's dynamic slot: the explosion's or the smoke's step being shown (`robocop_fdyn.bin`, strips of 24 lines) |
+| page 3 lines 112–175 | play-field BOB background caches (x 0–191, three 64×64) and scratch (x 192–255) |
 | page 3 lines 176–191 | sprite patterns `1D800h` (R#6 = 3Bh) |
 | page 3 lines 192–199 | sprite set A: colour table `1E000h`, SAT `1E200h` (R#5 = C7h) |
 | page 3 lines 200–207 | sprite set B: colour table `1E400h`, SAT `1E600h` (R#5 = CFh) |
@@ -129,6 +132,21 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   saved 16 KiB of ROM (sprite data 216 → 200 KiB). Storing one side and flipping the
   patterns on upload (a 256-byte table) would save about 30 KiB more for RoboCop, at about
   twice the CPU per pattern uploaded.
+- **Start of a level** (2026-10-21, `start_layouts`): the 18 arm poses (12 compositions: the gun
+  drawn, `START_GROUPS` 8-15, then spun, 16-25, then composition 18, a frame of the game) were
+  converted one by one, so a gun pixel in a box line changed his chest's colours on that line
+  from one pose to the next: the user saw a stroke across his chest, arm and back between poses
+  20 and 21 (46 pixels; 601 over every step the display can show). Now each group is converted
+  together (`Converter.coherent`): the same boxes for all, each pose its own OR boxes within
+  `RC_CAP`, and per box line the colours chosen by an exact min-sum over the steps the display
+  can show (the next pose, or one skipped when the game is busy: `SKIP`), so that a pixel the
+  original keeps, among pixels it keeps around it (`CALM_R`, `CALM_MOVE`), never changes colour;
+  the spin is pinned to composition 18, the drawing to the spin's first pose. The gun's greys
+  (Amiga colours 9-12, cyan stripes in the OR colours) are detail sprites in front, placed for
+  a group at once (`Converter.details`), never on a pixel linked to a neighbour's. Checked on the
+  recorded start (MSX2 50/60 Hz, MSX2+): every picture shows exactly the converted look, no
+  stroke pixel in any step; 11 pixels far from the original over the 12 poses (12 one by one),
+  80 % of the gun's grey pixels grey.
 - **Frames removed** (`msx/level1_frames.json`, `--remove`; the user's choice in the frame
   chooser, 2026-10-21): a removed RoboCop step shows the step chosen instead (the one before
   that stays) on both sides and every aim, moved to the removed record's hot spot
@@ -153,6 +171,16 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   frame. When no hole fits but the free entries would, the BOB runs are packed against
   entry 31 (`sat_pack`, once a plan): fragmented holes once kept the vehicle invisible for
   seconds.
+- **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work, while the background
+  queue holds fewer than 4 loads): the patterns of his state's next record (the one before when
+  the animation runs backwards; same aim) go into free slots (`slot_warm`: `slot_ref` 0, as
+  `alloc_slot` gives them, so no version loses any) through the background queue, and the
+  step's version is complete as soon as the logic asks for it. A walk step has 11–18 patterns
+  of its own (the original redraws the body and arms every step; a cycle uses 106 against the
+  64 slots); loaded only after the change, a step showed 7–12 VBLANKs late and the steps in
+  between (2 ticks each) were skipped: only 21–27 % of the shown step changes were one step,
+  and the walk looked to go backwards (the user, 2026-10-21). With it 67–79 %; with
+  `CAD_MAX` 2 as well, 93–94 % (the rest: pictures that still carry 3 ticks).
 - **Two sprite sets, double-buffered** (colour table + SAT; R#5 = C7h / CFh). Every published
   register list that changes the sprites switches R#5 to the other set, which the frame's
   queue made complete beforehand: its colour rows (`rows_sync`: per entry the row its version
@@ -216,8 +244,9 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   built for it), `rc2_patcheck` (every shown entry's pattern and colour row in VRAM),
   `rc2_sprvram` (no write into the set on screen during the play area), `rc2_lateirq`; exact
   display comparisons of refactors with `LOCKSTEP` builds and `tools/dispcmp.py`; what the MSX
-  shows against the bench's BOBs with `tools/objcmp.py` (exact, late, missing: loading or left
-  out). For the product ROM on a fresh machine (title, keyboard plans `rc2_keys`): `rc2_guard`
+  shows against the bench's BOBs with `tools/objcmp.py` (exact, late, missing: loading, left
+  out, or no frame at all in the sprite data, which `bob_flush` hides: the ride's pickups until
+  2026-10-21). For the product ROM on a fresh machine (title, keyboard plans `rc2_keys`): `rc2_guard`
   (every VDP register, palette, command and VRAM write timed by scan line from the HUD split:
   whatever could spoil the picture; a command counts when it starts while the beam draws the
   play area, or in the 4 lines before it, into what the screen shows — R#2's page, the lines
@@ -248,13 +277,113 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   one loads (a line may then pass 8: about 0.5 % of the frames of a keyboard session); no
   multiplexing of the 32-sprite total.
 
+## Play-field BOBs (decision 13; `msx/field.asm`, 2026-10-21)
+
+Why: on the level-1 coverage drive (`tools/objcmp.py` against the bench, 2995 lists, one
+enemy) 2132 BOB instances were left out by the sprite budget (88 % small 16x16 effects:
+bullets, debris, sparks), 84 % of them while the lift, the hostage or the vehicle were on
+screen. Those three are drawn into the play field by the VDP in all 16 colours, like the
+Amiga's blitter, and their sprites go to everything else. Since 2026-10-21 also the gunners that
+stay put (types 26 and 28: 48x40, one colour a line as sprites, "almost invisible" against the
+truck), the explosion ($F266, up to 80x88 in two parts) and the smoke ($F080's 48x56 frames),
+which as sprites were striped, cut or left out.
+
+- **Data**: `tools/msxsprites.py` gives their frames BOBHASH ids from C8h and packs them into an
+  atlas (page 3 lines 0-87; `robocop_field.inc`: place, size and the draw offset of a frame
+  removed by the user's choices, the frame each one looks like). The ROM keeps the atlas frame by
+  frame (`robocop_field.bin`, one bank; a gunner's other facing is the mirror of the first,
+  `field_upload` mirrors it). `bob_flush` sends their records to `fb_new` (frame, x, y, owner =
+  the record's object) instead of sprite objects; a gunner's hit flash also shows its sprite
+  silhouette over the play field (BOBHASH's silhouette byte, `bf_frame`).
+- **Dynamic frames**: the explosion and the smoke do not fit in VRAM: their frames stay in two
+  ROM banks of their own (`robocop_fdyn.bin`) and the step shown is copied into the atlas's last
+  24 lines when an item needs it (`fb_dyn`, `dyn_res`; a frame's lines in strips of 24 side by
+  side, one LMMM a strip). The user chose half of their steps ("metade dos quadros", the same
+  time in all): every other step shows the one before where that one was drawn (`FIELD_HALF`;
+  `field_look` makes it no change at all for the engine).
+- **What changes**: once a picture (`fb_frame`, before the sprites' frame) the wanted list is
+  compared with what each page holds (`fb_dr0`/`fb_dr1`; the V9958's ring is page 0). Every
+  BOB that changed queues its old and new rectangles with its owner; rectangles of a page with
+  the same owner are merged, and so are those that meet when one 64x64 piece holds both (a
+  bigger item reached the page in pieces a picture apart: until 2026-10-21 a hostage next to
+  smoke showed half old, half new for 3-4 pictures); a merged item keeps a BOB's owner over an
+  explosion's. A changed cell or a tile the scroll engines draw where a BOB is also becomes an
+  item (`fb_cellq`): it is composed with the BOBs over it, never a hole in one.
+- **Composing** (`fb_work`, one VDP command a call while the VDP is idle; the field goes first
+  in `idle_work`): an item is composed in the 64x64 scratch (page 3, x 192, line 112) from its
+  page's list as it was when the item started (`fb_sn`): the background, every BOB over it
+  (LMMM with TIMP, the game's drawing order), then one HMMM onto the page (two to four where
+  the V9958 ring's 256 px or a page's 256 lines are crossed).
+- **Background caches**: three 64x64 blocks (page 3 x 0, 64, 128) each hold the tiles of a
+  4x4-cell window of the map around one owner, cell (r, c) at ((r - oy) & 3, (c - ox) & 3) so
+  that a moving owner refills only the cells that come in (one 16x16 HMMM each, `FB_BURST` in a
+  row); the background of an item is then one to four HMMMs. An item of 5 columns takes the
+  narrower edge column from the tile cache (the hostage moves 2 px with its animation: 52 px).
+  `map_write` forgets a cell whose tile changed (`fb_inval`). Items without an owner or larger
+  than that take their background tile by tile.
+- **Never half a change on screen**: the copy onto the page shown starts only where the beam is
+  off the play area: the HUD split interrupt starts it when the VDP is idle (`isr_fbgo`), the
+  VBLANK interrupt too when it keeps ahead of the beam from there (`fb_vok`), the main loop in
+  the blank when it is short enough (`fb_mayq`); while such a copy waits nothing else may take
+  the VDP. A copy in two parts (the V9958 ring's x 256 or y 256 crossed) is a pair: the split
+  interrupt starts the second (`fb_cmd2`) as soon as the first is done, both in the same frame.
+  All of an owner's BOBs change in one item (items of one owner always merge). `cmd_lock` keeps
+  the interrupts off the command registers while the main program writes them.
+- **With the sprites**: every item carries the picture it belongs to (`fb_tick`, counted by
+  `do_publish`; a merged item keeps the older picture): its copy onto the page shown waits until
+  that picture is published and its sprites uploaded (`pk_state`), and the VBLANK keeps a
+  published list off the screen until its play-field BOBs are copied (`fb_pend`, `FB_HOLD` = 8
+  VBLANKs at most; `fb_qlk` while an item moves between the queue and the work), but for the
+  explosions' (their owner an explosion slot, high byte 0: a step drawn late shows the next one,
+  they never slow the game down). The page shown's items of a published picture go first
+  (`fn_take`; the V9938's other page after them): those the picture waits for (a BOB's change, a
+  cell's) in their order, then a lift's or the vehicle's on the screen (`fb_late`, frames from
+  `FIELD_LATE`: their copy is the one right before the picture goes on screen, so RoboCop riding
+  them and the platform change in the same VBLANK), then the explosions' (until 2026-10-21 an
+  explosion item of four pieces went first and the vehicle's waited past the hold: the vehicle
+  showed 1 px off for 4 pictures); a hostage may show its next frame a picture early, never
+  late. The V9938's old page counts as shown until a flip is on screen (an update in progress
+  there ends whole). Measured on the coverage drive: the hold costs about 3 % of pictures in the
+  busiest place (6.6 instead of 6.8 a second, the game's speed the same). Known: a lift's edge
+  and the vehicle on the screen together are copied in two windows, one of them a picture early
+  (2 frames, 1 px; MSX2+ only in the test; two items in the scratch would fix it).
+- **V9938**: the next page is built from a 16 px shifted copy of the displayed one, which brings
+  the BOBs in their place as they were when copied: once the copy is done, only where that may
+  differ from the BOBs wanted is composed on that page (`fb_bb`: the displayed page's work under
+  way when the build began, `fb_bbinit` called by `s38_target` before the build draws anything;
+  its changes since, `fb_qdiff`; the tiles drawn on the page being built that meet a BOB, its
+  new column among them, `fb_bbcell` from `fb_mark38`), and a marker lets it be shown
+  (`fb_bsync`). Until 2026-10-21 every BOB was composed again on every build: one build's items
+  held the page shown's for ~12 pictures (a hostage shown long after turning into smoke).
+  Page-copy chunks are one row slot instead of four while the field has work, so its commands
+  never wait long behind them.
+- **Checked** (headless, `fieldcheck.py` in the scratchpad: every play-area pixel no sprite
+  covers against the tiles and the BOB list of the list on screen, `fb_vis` in test builds; cells
+  the game rewrote in the last 30 frames are the scroll engine's and not checked; a hostage may
+  be one picture ahead, never behind or half drawn; lifts and the vehicle exactly): coverage
+  drive, game frames 430-555, 860-1340 (the vehicle, lifts, a hostage) and 1490-1850 (the
+  beams, a hostage), 4800 pictures per machine: MSX2 3 differ (a 7 px map cell), MSX2+ 6 (the
+  case above). First version (one VDP command per cell, no caches, no picture sync): 87 (MSX2)
+  and 51 (MSX2+) of the first 600. With the stricter check of 2026-10-21 (explosion steps no
+  longer excuse other BOBs; a picture mixing two steps of an explosion counts as torn) the
+  vehicle's window (game frames 860+, 1200 pictures) still differs in 15 pictures on an MSX2
+  (0 torn) and 35 on an MSX2+ (10 torn; the old engine: 30 and 35): a big explosion (smoke
+  80 x 40 and fire 48 x 16, one item of four 64 x 64 pieces, tile by tile) is erased about 0.2 s
+  after it ended. The CPU is the limit there: the logic and the sprite pipeline take about
+  95 % of it, the field's work waits 2-15 ms between calls (`idle_work`, `feed_vdp`) while each
+  16 x 16 tile takes the VDP 0.75 ms. Not fixed.
+- **Code**: a bank of its own at A000h (`BANK_FIELD`, through `field_call`; it also holds the
+  scroll engines' set-up); the fixed area keeps only the hooks (`fb_redraw`, `fb_mark`,
+  `fb_pend`, `fb_invf`, the interrupts' `isr_fbgo`).
+
 ## Game logic (`msx/player.asm` and the logic modules)
 
 - **Cadence** (decision 7): `cadence` adds 6 (50 Hz) or 5 (60 Hz) per VBLANK since the last
   main-loop frame (`wf_n`) and the game ticks every `CAD_TICK` = 300 / `TICK_HZ` (12 at
   25 Hz). A frame whose work took longer (busy scenes: the logic costs about 74,000 T-states a
   tick, a 60 Hz frame has 59,659) is caught up: the ticks due run in a row (`g_tick`, at most
-  `CAD_MAX` = 4 for one picture, `CAD_HOLD` = 2 while the V9938 scroll keeps the camera at a
+  `CAD_MAX` = 2 for one picture (4 until 2026-10-21: catching up skipped animation steps,
+  the walk's among them; 2 costs about 5 % of speed in busy scenes, 92 % in the worst 2 s), `CAD_HOLD` = 2 while the V9938 scroll keeps the camera at a
   page's edge, none while the view shown is 32 px or more behind the one wanted, or behind at
   all with RoboCop's sprites within 16 px of the screen's edge (`cam_lag`, `rc_safe`: the scroll
   catches up first, so he never runs off the screen); a longer delay is lost and only then the
@@ -268,8 +397,28 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   enemy bullets (`$F3CE`), `read_joystick` (`$BDEC`), `update_objects` (`$C3E4`) with every
   level-1 enemy type, explosions (`$F080`), pickups (`$F900`), the energy can (`$89BE`), the
   random word (`$BDCE`) and the frame's end (`$8144-$82E8`, `frame.asm`: cheats, time out, the
-  level's end, the death sequence, lives; `FE_RESTART` runs `level_restart`, `FE_OVER` and
-  `FE_NEXT` start a new game until the front end and the next levels exist).
+  level's end, the death sequence, lives; `FE_RESTART` runs `level_restart`, `FE_OVER` shows
+  the game over picture, `FE_NEXT` the level's statistics; both then go to the title and a new
+  game until the next levels exist).
+- **Fewer enemies** (`tools/mkrom.py` `ENEMY_CAP`, 1 in the product): with that many enemy slots
+  in use a free slot spawns nothing (`objects.asm` `uo_cap`). The types that draw nothing do
+  not count: 32, the level's end, which forces the henchmen's spawns it waits for (counted, it
+  took the only slot and the level could never end), and 44, the ride's pickup dropper.
+- **The cracked wall** (map object 25 of level 1, type 5Ch, activator `obj_relocate` `$9FC4`,
+  `mapobj.asm` `act_10`): after 80 ticks of "up" in front of it RoboCop and the camera go to
+  the level header's +20/+22 (`$15D6`/`$15D8`, set by `level1.asm` `l1i_hdr` as `level_init`
+  does at `$87A4`: (996, 640) in level 1), the palette black, fading in again. The object
+  list's entries after this one meet the new camera's window in the same tick (the candidates
+  rebuilt from the next entry), as the Amiga's loop goes on with the camera it changed. The
+  scroll engines would walk to the new view a column (V9958) or a page (V9938) at a time with
+  the ticks held (949 VBLANKs on an MSX2): `act_10` sets `jump_pend` and the main loop, after
+  the tick, calls `field.asm` `engines_jump`: the play field black from the next VBLANK
+  (`pal_fade` 0), the view computed (`pl_view`), the play-field BOBs and the waiting changed
+  cells forgotten (`fb_init`, `rd_*`), the view drawn by the engine's set-up (`scroll_init` /
+  `s38_init`) with the display, the HUD and the interrupts going on; about 26 VBLANKs on an
+  MSX2, 21 on an MSX2+, all black, then the original's fade-in. Measured against the bench
+  (`drive_reloc_up`): identical but `player_hot_x`/`_y` for 7 ticks right after the jump, while
+  the screen is still black (the Amiga reads past state 10's records there).
 - **Where**: fixed code (`4000h-7FFFh`): `player.asm`, `logic.asm` (helpers), `bob.asm`; module
   1 (`BANK_LC1` at `8000h` during the tick: `objects.asm`, `shots.asm`, `hits.asm`), module 2
   (`BANK_LC2`, mapped around `activate_objects`: `mapobj.asm`), module 3 (`BANK_LC3`, mapped
@@ -342,7 +491,21 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   for a window (the main loop seldom runs there). On the V9938 a flip between a cell's two
   phases restarts it on the new displayed page (`s38_update` clears `rd_phase`): before, the
   second phase found no back page and the new displayed page could keep the tile its shifted
-  copy brought before the change (seen: 4-17 pictures with an old tile after a flip).
+  copy brought before the change (seen: 4-17 pictures with an old tile after a flip). Until a
+  flip is on screen (`s38_flip_wait`: the list that shows it is published at the end of the
+  main loop's frame, several VBLANKs after `s38_update` decided it) the first phase draws on the
+  page still shown (`s38_shown`, its first column kept in `s38_old_c0`) and the second on the new
+  displayed page: before, a cell changed then stayed old on the screen until the flip showed
+  (seen: 9 pictures); when the flip reaches the screen a cell half done restarts on the new
+  displayed page (`rd_phase`). A changed cell where a play-field BOB is goes to `field.asm`
+  instead (see "Play-field BOBs"). A cell waiting in `RD_Q` is not queued again (`rd_bits`, one
+  bit per cell of the window `rd_queue` keeps; its redraw reads the map then): the level's
+  electric beams rewrite their cells every tick and overflowed the queue (238 requests lost in
+  the beams' corridor; now none, the queue at most 38). Known: a map object of several cells
+  changed in one tick (a bin of 2x2) is redrawn one cell a call, so for about 2 pictures it
+  shows partly changed; on the V9938 a beam cell may wait about 20 frames for its redraw (two
+  pages to draw); a cell drawn "at once" outside the blank can tear for one picture (the
+  15-machine batch: 1-6 in 40 s).
 - **Verification**: test ROMs play a joystick script (`tools/mkrom.py ... JOY=F:C:KEYS,...`,
   `TELE=`, `GOD=1`), or are driven from openMSX (`EXTJOY=1`: `tools/openmsx_rc2.tcl`
   `rc2_drive_rom` / `rc2_drive_trace` feed each tick the joystick byte, teleports, god mode
@@ -367,8 +530,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
 - **Speed (2026-10-20, 25 Hz)**: about 23 ticks per second and 7.2-7.5 pictures in the busiest
   scene of level 1 (the start, five enemies), 8.2 pictures walking (the CPU is the limit: the
   logic about 74,000 T-states a tick, the sprite pipeline about 165,000 per picture, the
-  interrupts 16 % of the time). `CAD_MAX=2` trades speed in busy scenes (about 74 %) for
-  9.3 pictures. Lighter scenes run at full speed. Measured with `tools/openmsx_rc2.tcl`
+  interrupts 16 % of the time). `CAD_MAX=2` traded speed in busy scenes (about 74 %) for
+  9.3 pictures then (with five enemies). 2026-10-21 (one enemy, `drive_play`, 38-40 s):
+  `CAD_MAX` 4 100 % speed and 11.7-12.0 pictures a second, `CAD_MAX` 2 (the default since)
+  94-96 % (92 % in the worst 2 s) and 12.1-12.4 pictures. Lighter scenes run at full speed. Measured with `tools/openmsx_rc2.tcl`
   (`rc2_prof` for the main loop's stages, `rc2_sample_span` for a sampling profile of one
   stretch, `tools/msxprof.py` to name the samples). Done so far: the catch-up cadence, ticks
   run while the published list waits, BOBs not recorded for skipped pictures, category lists
@@ -387,10 +552,22 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   SCREEN 5 back). While a picture shows, `front_mode` makes the VBLANK interrupt count frames
   and run the sound only.
 - Flow: power-on → title (fire) → level 1; game over → PIC9 for 128 frames → title; the level's
-  end → title (the statistics, the bonus stages and level 2 come later). Test builds with a
-  script skip the front end.
-- The ROM is 1 MiB since the pictures were added (the complete game with levels 2 and 3 will
-  need 2 MiB: MegaROM or MegaRAM of that size).
+  end → the level's statistics → title (the bonus stages and level 2 come later). Test builds
+  with a script skip the title and the game over picture.
+- **The level's statistics** (`front_stats`, `show_level_stats` `$85D8`: script `$1132F` through
+  `$10762`): the henchmen killed (`$16C2`), the nukes collected (`$16C0`) and the hostages
+  rescued (`$16BE`) typed into the play area of page 0 (a register list of its own: page 0
+  unscrolled, no sprites; the split shows the HUD as in the game), one script element a tick
+  (50 a second; at 60 Hz every sixth VBLANK is skipped), in the text screens' 8 x 8 font and
+  palette (`tools/msxtext.py` → `build/msx/text.inc`: the font's strokes colour 1, `$070`, its
+  hand-drawn shadow colour 4, `$147`; column c at x 8c − 16, the Amiga's bitplane x − 32, row r
+  at line 67 + 8r). No cursor: `$FE14` falls through into `clear_game_vars`, so `$B00` is 0 and
+  `$1171E` never draws it. It lasts 362 ticks (the 105 elements typed, the script's 256-call
+  wait, its end), or ends with fire from tick 50 on; then the play area goes black at once.
+  The bench's picture of the screen and the model's are identical (agent run, 2026-10-21).
+- The ROM is 512 KiB (64 banks, all used: the pictures take the last 13); `BANK_INPUT` holds
+  the test builds' joystick script and the sound player with its streams. The complete game
+  with levels 2 and 3 will need 2 MiB (MegaROM or MegaRAM of that size).
 
 ## Sound (`msx/sound.asm`)
 
@@ -401,8 +578,43 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
 - `snd_frame` runs from the VBLANK interrupt (the music keeps its tempo while the game catches
   up); the PSG's address latch is shared with the joystick reads, so outside the interrupt
   every PSG access runs with interrupts disabled and R7 keeps port A as input.
-- The original's music and sound effects are tunes of the same player (MU1 at `$18000`); their
-  conversion and the MSX player are in progress.
+- The original's music and sound effects are tunes of the same player (MU1 at `$18000`):
+  `tools/rc2music.py` models it exactly; `tools/msxsound.py` turns its output (per Amiga channel
+  and tick: period, volume, instrument, key-ons) and the samples into PSG streams
+  (`build/msx/sound.inc`, 7571 bytes with `--budget 7680`): the title's music (TITM tune 1,
+  three voices that loop together after 5184 ticks) and the 42 in-game effects (MU1, one voice
+  each). Its docstring gives the mapping and why: each instrument's pitch measured from its
+  sample (the 8SVX headers' samples per cycle are a default 32), the tunings snapped to one
+  grid (square waves expose detuning), the loudness from the RMS of the sample bytes played in
+  each tick (one-shot fades come out by themselves), the Amiga's drum channel riding the three
+  voices (a kick lifts the bass note's level, snares and toms are tone + noise for 3 ticks on
+  the quietest voice), effects as tone, tone + noise or noise per tick from the bytes played;
+  a trellis trades level detail for bytes to fit the budget. It writes preview WAVs of the
+  Amiga reference and of the PSG (`build/music/preview`) and prints how close they are (title:
+  chroma similarity about 0.85, levels within 1.5-2.2 dB; effects: envelope correlation
+  0.84-0.99).
+- Player (`msx/sndplay.asm`, in `BANK_INPUT` at `A000h` after the test builds' joystick script:
+  the ROM's 64 banks are full; `sound.asm` keeps only the stubs in the fixed area: `snd_frame`
+  from the VBLANK interrupt, `snd_play` from `frame_keys`, `snd_music` from `front_title`,
+  `snd_stop` in `pl_init` (`level_init` `$8720`), the game over, the statistics and the end of
+  the title; `sq_init` at power-on). The main program only queues a request (`sq_put`: an
+  effect, the title's music or a stop; 8 entries, `snd_q`); the VBLANK interrupt starts them
+  before its tick, so the voices change in one place and the main program never keeps the
+  interrupts off for them: an effect started there with the interrupts off took about 1300
+  cycles, and the HUD's split came 10 lines late once in a 40 s start check (2026-10-22). A
+  stop also silences the PSG at once (the VBLANK interrupt is off while a level starts). Three
+  voices of 10 bytes (`snd_v`): a stream is records of a duration
+  in ticks (0: the end: the title's voices go on at their loop point, an effect's voice goes
+  silent) and the voice's state (volume, tone and noise on, the 12-bit tone period, the noise
+  period: only what changes). 50 ticks a second as the Amiga's player (at 60 Hz every sixth
+  VBLANK is skipped). An effect plays on the voice of its Amiga channel (0-2: A-C; 3: an idle
+  voice, C first since A plays the shots, else the one nearest its record's end); while the
+  Amiga's channel 3 plays an effect,
+  an effect numbered lower than the last one started is not played (`$1822C`). The mixer
+  (R7) keeps port A as input and port B as output. Checked headless: the PSG's registers read
+  at every VBLANK of the title (60 and 50 Hz machines) follow the streams state by state at 1.2
+  and 1.0 VBLANKs a tick; in game the effects start on their voices (`sess_psgdrive.tcl` in the
+  scratchpad). No FM yet: the OPLL found at power-on stays silent.
 
 ## HUD
 

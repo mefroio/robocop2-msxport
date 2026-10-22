@@ -6,7 +6,7 @@ DISK1 ?= amiga/Robocop 2 (1991)(Ocean)[cr Melnok](Disk 1 of 2).adf
 DISK2 ?= amiga/Robocop 2 (1991)(Ocean)[cr Melnok](Disk 2 of 2).adf
 X := $(BUILD)/extracted
 
-.PHONY: setup list extract pics ram seeds rea-asm sprites msx mock rom disasm test clean
+.PHONY: setup list extract pics ram seeds rea-asm sprites msx mock rom disasm test clean reference
 
 setup:
 	$(PYTHON) -m venv "$(VENV)"
@@ -62,6 +62,8 @@ msx: extract $(BUILD)/ram/level1_full.bin $(BUILD)/sprites/catalog.json $(BUILD)
 	$(PYTHON) -I tools/msxhud.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud --black 4
 	$(PYTHON) -I tools/msxhudrt.py $(X)/files/PERMA_05.bin $(X)/boot/main_8000.bin $(BUILD)/msx/hud_rt
 	$(PYTHON) -I tools/player.py --inc $(BUILD)/msx/player.inc
+	$(PYTHON) -I tools/msxtext.py $(BUILD)/ram/level1_full.bin $(BUILD)/msx/text.inc
+	$(VPYTHON) -I tools/msxsound.py --out $(BUILD)/msx/sound.inc --budget 7680
 
 rom: msx
 	$(PYTHON) -I tools/mkrom.py $(BUILD)/msx/level1 $(BUILD)/msx/rc2.rom $(ROMOPTS)
@@ -77,6 +79,10 @@ disasm: extract
 
 test:
 	$(PYTHON) -I -m unittest discover -s tests -v
+
+# hardware reference for development (not part of the build; git-ignored: ASCII's text)
+reference:
+	git clone --depth 1 https://github.com/Konamiman/MSX2-Technical-Handbook.git reference/MSX2-Technical-Handbook
 
 clean:
 	rm -rf "$(BUILD)"

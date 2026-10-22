@@ -24,55 +24,6 @@ SPR_Y_OFS:  equ -16 - 25 - 0x1E     ; VSTART = hot_y - 16 + y - camera_y - 25 ($
 WALL:       equ 2                   ; map attribute bits
 FLOOR:      equ 5
 
-; Start of level 1 (level_init $871A, clear_game_vars $FE96): the game variables cleared (with
-; the keyboard and joystick bytes, the input lock and the joystick mask), RoboCop and the camera
-; at the header's position, no state asked for; the cadence for the
-; machine's refresh rate (RG9SAV bit 1: 50 Hz) and the view on the camera.
-pl_init:
-        ld hl,AM_START
-        ld bc,AM_END - AM_START
-        xor a
-        call fill                   ; (clear_game_vars)
-        ld hl,G_VARS
-        ld bc,G_VARS_END - G_VARS
-        xor a
-        call fill
-        xor a
-        ld (g_keys),a               ; (clear_game_vars: $802D, $802E, $804D)
-        ld (g_joy),a
-        ld (g_lock),a
-        ld a,0x7F
-        ld (ac_jmask),a             ; ($B02B)
-        xor a
-        call pal_fade               ; black until the fade in
-        if INPUT_SCRIPT
-        ld hl,input_script
-        ld (sc_run),hl              ; (the script's first run, from game frame 0)
-        endif
-        ld hl,LVL_X
-        ld (p_x),hl
-        ld (gcam_x),hl
-        ld hl,LVL_Y
-        ld (p_y),hl
-        ld (gcam_y),hl
-        ld hl,LVL_YMAX
-        ld (gcam_ymax),hl
-        ld a,0xFF
-        ld (p_pend+1),a             ; (st $1696: its high byte)
-        ld (p_fadein),a             ; the palette fades in ($16CE)
-        ld a,(RG9SAV)
-        and 2
-        ld a,5                      ; 60 Hz: every other frame
-        jr z,pi_hz
-        inc a                       ; 50 Hz: 3 ticks in 5 frames
-pi_hz:  ld (g_step),a
-        neg
-        add a,CAD_TICK
-        ld (g_acc),a                ; the first frame ticks
-        ld a,1
-        ld (wf_n),a
-        jp pl_view
-
 ; Once per frame, after its list is published: g_tick = the game ticks due (TICK_HZ a second:
 ; 30 as the NTSC original, whose main loop waits for 2 VBLs of 60 Hz, or 25 as the PAL one,
 ; tools/mkrom.py TICK_HZ), counted on the VBLANKs since the

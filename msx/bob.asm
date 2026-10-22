@@ -429,8 +429,12 @@ BOB_CATS:   equ 6
 ; identities; then the new ones take the free objects, lowest first. Each one's frame comes from
 ; the level's table (BOBHASH, tools/mkrom.py: A2 and D4 -> frame id); its place against the view
 ; as RoboCop's: map x = x - 143, map y = y. Objects left without a record are hidden and forget
-; their identity.
+; their identity. The play-field frames (the hostage, the gunners that stay put, the lifts, the
+; vehicle) take no object (fb_add, field.asm), but a gunner's hit flash also takes one: its
+; silhouette over the play field.
 bob_flush:
+        xor a
+        ld (fb_n),a                 ; (the play-field BOBs of the tick: fb_add)
         ld hl,bf_claim
         ld b,MAX_OBJ
         xor a
@@ -466,7 +470,30 @@ bf_rec: ld a,d
         pop ix                      ; IX = the record
         call bf_vis
         jr c,bf_nx                  ; (not on the MSX's screen: no object)
-        call bf_match               ; A = its identity's object, or C: none
+        ld a,(ix+9)                 ; the hostage and the gunners that stay put (enemies'), the lifts
+        and 0xF0                    ; and the vehicle (special), the explosion and the smoke are drawn
+        cp BC_ENEMY << 4            ; into the play field (field.asm): no object
+        jr z,bf_fq
+        cp BC_SPECIAL << 4
+        jr z,bf_fq
+        cp BC_EXPL << 4
+        jr nz,bf_ob
+bf_fq:  call bf_fid
+        cp 0xFF
+        jr z,bf_ob                  ; (not one of the level's frames: hidden there)
+        sub FIELD_ID0
+        jr c,bf_ob
+        push de
+        call fb_add
+        pop de
+        ld a,(ix+9)                 ; a gunner's hit flash: its silhouette too, a sprite object
+        and 15                      ; over the play field (bf_frame gives that frame)
+        jr z,bf_nx
+        inc de
+        ld a,(de)
+        inc a
+        jr z,bf_nx
+bf_ob:  call bf_match               ; A = its identity's object, or C: none
         jr c,bf_nw
         call bf_show
         jr bf_nx
@@ -828,6 +855,50 @@ bfs_new:
         ld a,(ix+9)
         and 15
         ld (de),a
+        call bf_frame
+        inc a
+        jp z,bfs_none               ; not one of the level's frames
+        dec a
+        push af
+        push ix
+        ld a,(bf_obj)
+        call obj_ix
+        pop iy                      ; the record
+        pop af
+        ld l,a
+        ld h,0                      ; the frame
+        ld a,(iy+9)
+        and 15
+        ld (os_mode),a              ; (BM_NORMAL, BM_FLASH, BM_BLACK: its silhouette)
+        ld a,1                      ; (a BOB)
+        call obj_set
+        jp bfs_pos
+
+; IX = a BOB record -> A = the sprite frame it shows: bf_fid's, but for a play-field frame drawn
+; as a silhouette (a gunner's hit flash: bob_flush) the sprite frame of that silhouette (its
+; BOBHASH slot's byte after the id). Keeps IX.
+bf_frame:
+        call bf_fid
+        cp FIELD_ID0
+        ret c                       ; (a sprite frame)
+        cp 0xFF
+        ret z                       ; (not one of the level's frames)
+        ld a,(ix+9)
+        and 15
+        ld a,(de)
+        ret z                       ; (drawn as it is)
+        inc de
+        ld a,(de)
+        cp 0xFF
+        ret nz                      ; (its silhouette's sprite frame)
+        dec de
+        ld a,(de)
+        ret
+
+; IX = a BOB record -> A = its frame id in the level's table (BOBHASH: A2 and D4), FFh when it is
+; not one of the level's frames, DE = that id's place in its slot; LEVEL_BANK mapped at 8000h.
+; Keeps IX.
+bf_fid:
         ld a,LEVEL_BANK             ; (obj_set maps the sprite banks)
         call bank_8000
         ld a,(ix+0)                 ; the slot: the XOR of the key's 5 bytes, + 256 with A2's
@@ -854,8 +925,8 @@ bfs_lp: ld a,l
         ld e,a
         ld d,h                      ; DE = the slot's frame id
         ld a,(de)
-        inc a
-        jr z,bfs_none               ; an empty slot: not one of the level's frames
+        cp 0xFF
+        ret z                       ; an empty slot: not one of the level's frames
         ld a,(ix+0)
         cp (hl)
         jr nz,bfs_nx
@@ -884,19 +955,8 @@ bfs_nx: ld a,l                      ; the next slot (the table does not wrap)
         jr bfs_lp
 bfs_got:
         ld a,(de)
-        push af
-        push ix
-        ld a,(bf_obj)
-        call obj_ix
-        pop iy                      ; the record
-        pop af
-        ld l,a
-        ld h,0                      ; the frame
-        ld a,(iy+9)
-        and 15
-        ld (os_mode),a              ; (BM_NORMAL, BM_FLASH, BM_BLACK: its silhouette)
-        ld a,1                      ; (a BOB)
-        call obj_set
+        ret
+
 bfs_pos:
         ld l,(iy+5)
         ld h,(iy+6)
@@ -923,6 +983,45 @@ bfs_none:
         ld a,(bf_obj)
         call obj_hide
         pop ix
+        ret
+
+; A = play-field frame (field.asm), IX = its BOB record: into the tick's field list (fb_new: frame,
+; x, y as the record has them, owner), FB_MAX at most.
+fb_add: ld c,a
+        ld a,(fb_n)
+        cp FB_MAX
+        ret nc
+        inc a
+        ld (fb_n),a
+        dec a
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        sub e                       ; * 7
+        ld e,a
+        ld d,0
+        ld hl,fb_new
+        add hl,de
+        ld (hl),c
+        inc hl
+        ld a,(ix+5)
+        ld (hl),a
+        inc hl
+        ld a,(ix+6)
+        ld (hl),a
+        inc hl
+        ld a,(ix+7)
+        ld (hl),a
+        inc hl
+        ld a,(ix+8)
+        ld (hl),a
+        inc hl
+        ld a,(ix+12)                ; (the owner)
+        ld (hl),a
+        inc hl
+        ld a,(ix+13)
+        ld (hl),a
         ret
 
 ; A = object: the frame it showed is not remembered (bf_show sets it again). Keeps BC, DE.

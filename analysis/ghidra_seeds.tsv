@@ -61,7 +61,7 @@
 0xda8c	function	obj28_update
 0xdafa	function	obj26_update
 0xdb70	function	obj25_update
-0xdbea	function
+0xdbea	function	obj25_draw
 0xdc9c	function	obj24_update
 0xdd04	function	obj23_update
 0xdd5c	function
@@ -91,7 +91,7 @@
 0xee68	function	obj51_update
 0xeee2	function	obj50_update
 0xf10a	function
-0xf266	function
+0xf266	function	explosion_draw
 0xf6a0	function
 0xf6b8	function	panel_update_digits
 0xf788	function
@@ -152,14 +152,22 @@
 0x1698	label	reversed_controls
 0x169a	label	energy_target
 0x169c	label	energy_shown
+0x169e	label	relocate_count
 0x16a0	label	hit_spark_timer
 0x16a2	label	hit_spark_x
 0x16a4	label	hit_spark_y
 0x16aa	label	energy_refill
 0x16bc	label	death_counter
+0x16be	label	hostages_rescued
+0x16c0	label	nukes_collected
+0x16c2	label	henchmen_killed
+0x16c4	label	end_count
 0x16cc	label	death_flag
 0x16cd	label	fade_level
 0x16ce	label	fade_in
+0x16cf	label	level_restarted
+0x16d0	label	level_done
+0x16d1	label	text_done
 0x802c	label	vbl_counter
 0x802d	label	keyboard_joy
 0x802e	label	joystick
@@ -171,11 +179,16 @@
 0x804a	label	timer
 0x804d	label	input_lock
 0x8050	label	level_number
+0x8052	label	level_loaded
 0x8054	label	message_read
 0x8056	label	message_write
 0x8058	label	message_column
 0x805a	label	message_countdown
 0x805c	label	weapon
+0x80ae	label	level_start_entry
+0x81b8	label	level_next
+0x8382	label	brainstorm_stage
+0x8420	label	shooting_range_stage
 0x85d8	label	show_level_stats
 0x8614	label	load_level_music
 0x865a	label	msg_timeout
@@ -186,15 +199,31 @@
 0x896a	label	panel_draw_icon
 0x89be	label	update_energy_can
 0x8b32	label	update_special_objects
+0x8b92	label	special_handlers
 0x9626	label	spawnlist_level0
+0x96dc	label	spawn0_e13_level_end
 0x97b0	label	spawnlist_level1
 0x99e2	label	spawnlist_level2
 0x9c06	label	activate_objects
 0x9c76	label	map_object_look
+0x9d0c	label	objtype_table
 0x9d96	label	objtype_act_offsets
+0x9ea4	label	act_explode_look4
 0x9ec4	label	objtype_act_base
+0x9ee8	label	act_0c
+0x9f74	label	act_20
+0x9f84	label	act_floor_switch
 0x9fc4	label	obj_relocate
+0xa038	label	act_conveyor_left
+0xa03e	label	act_conveyor_right
+0xa0d4	label	act_barrier
+0xa232	label	looks_door
+0xa24a	label	looks_trapdoor
+0xa272	label	looks_cracked_wall
 0xa562	label	objlist_level0
+0xa65e	label	objl0_e21_trapdoor
+0xa68e	label	objl0_e25_cracked_wall
+0xa742	label	objl0_e40_door
 0xa828	label	objlist_level1
 0xaa3a	label	objlist_level2
 0xacbc	label	spawn_effect
@@ -219,9 +248,16 @@
 0xc238	label	msg_suspect
 0xc24b	label	msg_cain_destroyed
 0xc3e4	label	update_objects
+0xc948	label	walker_legs
 0xd46c	label	msg_chase_cain
 0xdc76	label	msg_arrest
 0xed11	label	msg_extra_life
+0xef8e	label	obj_map_cell
+0xefe0	label	map_row_offsets
+0xf080	label	effects_update
+0xf366	label	spawn_explosion
+0xf3ce	label	ebullet_update
+0xf5bc	label	ebullet_add
 0xf76c	label	frame_keys
 0xf80e	label	palette_flash
 0xf816	label	set_robocop_colours
@@ -230,6 +266,9 @@
 0xf841	label	msg_debug
 0xf878	label	palette_fades
 0xf8c4	label	palette_fade
+0xf900	label	pickup_update
+0xf964	label	pickup_gfx
+0xf98c	label	pickup_drop
 0xfd52	label	weapon_ammo_table
 0xfd5a	label	weapon_icon_table
 0xfd92	label	message_slots
@@ -241,7 +280,10 @@
 0x1049e	label	copper_game
 0x105d2	label	panel_draw_digit
 0x10620	label	panel_draw_char
+0x10762	label	text_screen_stop
+0x10768	label	text_screen
 0x11a20	label	game_boot
+0x11dc6	label	number_text
 0x11e06	label	show_picture
 0x12082	label	high_score_entry
 0x12352	label	copper_picture

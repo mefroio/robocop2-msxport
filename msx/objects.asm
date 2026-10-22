@@ -128,12 +128,18 @@ uo_next:
 
         if ENEMY_CAP
 ; (The port, tools/mkrom.py ENEMY_CAP: the MSX shows two large characters in full colour at
-; most; with ENEMY_CAP slots in use a free slot spawns nothing, so the level's spawns wait.)
+; most; with ENEMY_CAP slots in use a free slot spawns nothing, so the level's spawns wait. The
+; types that draw nothing do not count: 32, the level's end, which spawns the henchmen it waits
+; for, and 44, the ride's pickup dropper.)
 uo_cap: ld hl,OBJ_SLOTS + OS_TYPE
         ld de,4
         ld bc,5 * 256               ; B = slots, C = in use
 uoc_lp: ld a,(hl)
         or a
+        jr z,uoc_n
+        cp 32
+        jr z,uoc_n
+        cp 44
         jr z,uoc_n
         inc c
 uoc_n:  add hl,de
