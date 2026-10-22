@@ -19,7 +19,9 @@ init:   di
         ld sp,0xF380
         if DIAG
         in a,(PPI_SLOT)
-        ld (dg_a8b),a               ; (test build: A8h as the BIOS left it)
+        ld (dg_a8b),a               ; (test build: A8h as the BIOS left it; the SCC probed
+        ld hl,dg_log                ;  after each step of the start: sound.asm dg_probe)
+        ld (dg_ptr),hl
         endif
         ld a,(MSXVER)
         if DIAG
@@ -34,18 +36,37 @@ init:   di
         ld hl,2 + 3 * 256           ;  sprite tables need pages 2-3)           ; the mapper's banks at power-on in the 8000h and A000h windows
         ld (act_8000),hl            ; (act_8000, act_a000: the interrupts put act_a000 back)
         call slot_page2             ; cartridge also in page 2 (8000h-BFFFh)
+        if DIAG
+        di
+        ld b,'1'
+        call dg_probe
+        endif
         ld hl,snd_detect
         call front_call             ; an OPLL (with the BIOS: before page 0 becomes RAM; cold.asm)
         di
+        if DIAG
+        ld b,'2'
+        call dg_probe
+        endif
         ld hl,vdp_setup
         call front_call             ; SCREEN 5, VDP ID, IM 2, palette, tiles, HUD, sprite tables
+        if DIAG
+        di
+        ld b,'3'
+        call dg_probe
+        endif
         ld hl,ram_page0
         call front_call             ; page 0: RAM from now on (no more BIOS calls; cold.asm)
         jp c,no_ram                 ; (cold.asm: BANK_FRONT still at 8000h)
+        if DIAG
+        ld b,'4'
+        call dg_probe
+        endif
         call snd_init               ; the PSG (and the OPLL) silent (cold.asm: BANK_FRONT at 8000h)
         if DIAG
-        ld hl,dg_log
-        ld (dg_ptr),hl              ; (test build: the SCC tests' reads logged)
+        di
+        ld b,'5'
+        call dg_probe
         endif
         ld hl,mus_init
         call mus_call               ; an SCC: the title music's chips (music.asm)

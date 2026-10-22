@@ -321,6 +321,35 @@ scp_ok: xor a                       ; (Z)
         ret
 
         if DIAG
+; (Test build, rc2.asm init: B = a mark: 'P', the mark and what the SCC's first waveform byte
+; gives back of 5Ah, BFh, 24h, 89h stored there (3Fh at 9000h, about 1 ms each), logged; page 2
+; must show the cartridge. Keeps every register.)
+dg_probe:
+        push af
+        push bc
+        ld a,'P'
+        call dg_rec
+        ld a,b
+        call dg_rec
+        ld a,0x3F
+        ld (BANK_8000),a
+        ld a,0x5A
+dgp_lp: ld (0x9800),a
+        ld b,0
+dgp_w:  djnz dgp_w
+        ld b,a
+        ld a,(0x9800)
+        call dg_rec
+        ld a,b
+        add a,0x65
+        cp 0xEE
+        jr nz,dgp_lp
+        ld a,(act_8000)
+        ld (BANK_8000),a
+        pop bc
+        pop af
+        ret
+
 ; (Test build: A = a byte for dg_log. Keeps every register and flag.)
 dg_rec: push hl
         ld hl,(dg_ptr)

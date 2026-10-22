@@ -4,16 +4,19 @@
 ; Written for the user's SX-2 with an MSX Pico+, whose SCC the port did not find (2026-10-22).
 ;
 ; The screen (32 x 24 characters, front.asm dg_show), every number in hex:
-;   0  V the BIOS's MSX version, VDP (0 V9938, 2 V9958), FM (snd_fm), MODE (mus_mode), P2
-;      (scc_pg2: another slot's SCC)
+;   0  V the BIOS's MSX version, VDP (0 V9938, 2 V9958), FM (snd_fm) AT (snd_slot: where it
+;      was found, or the last slot tried), MD (mus_mode), P2 (scc_pg2: another slot's SCC)
 ;   1  A8 at the start and now, R9 (RG9SAV), CPU: loops of 37 T-states between two VBLANKs
 ;   2  EXP: EXPTBL, SLT: SLTTBL (the BIOS's slot tables)
 ;   3  CART: page 1's primary slot now, SUB: its secondary register (FF: not expanded)
 ;   4-5  for banks 02, 03, 3F, 40, 64, 7F written at 9000h: what 8000h-8001h show
 ;   6  98: 9800h-9803h with 3Fh at 9000h; SW: 8000h before and after 02h stored at 9800h (a
 ;      MegaRAM or a Konami mapper switches its 8000h bank there, a Konami SCC mapper does not)
-;   7  LOG and how many bytes; 8-14 dg_log: FEh, C, the values scc_pat read (5Ah, BFh, 24h,
-;      89h written, in turn); FDh, a slot scc_scan saw, E (expanded) or R (RAM)
+;   7-9  P1-P5: what the SCC's first waveform byte gave back of 5Ah, BFh, 24h, 89h stored
+;      there after each step of the start (rc2.asm: the cartridge in page 2; the OPLL's search,
+;      which switches an FM-PAC's ports on; the VDP; page 0 RAM; the PSG and OPLL silenced)
+;   10  LOG and how many bytes; 11-15 the rest of dg_log: FEh, C, the values scc_pat read (5Ah,
+;      BFh, 24h, 89h written, in turn); FDh, a slot scc_scan saw, E (expanded) or R (RAM)
 ;   16-21  64 values stored at 9800h and loaded back, by instruction form (F1-F6): how many came
 ;      back right and the first wrong ones
 ;   22  the tone playing, in turn for 3 s each: A (A4) through the engine's stores (sound.asm
@@ -41,6 +44,10 @@ dg_main:
         ld hl,dgs_fm
         call dg_str
         ld a,(snd_fm)
+        call dg_hex
+        ld hl,dgs_at
+        call dg_str
+        ld a,(snd_slot)
         call dg_hex
         ld hl,dgs_mode
         call dg_str
@@ -134,26 +141,61 @@ dg_main:
         call dg_hex
         ld a,(act_8000)
         ld (BANK_8000),a
-        ld bc,0x0700                ; row 7, rows 8-14
+        ld hl,dg_log                ; rows 7-9: the probes ('P', mark, 4 values each)
+        ld b,7
+        ld c,0
+dgp_r:  push hl
+        call dg_at
+        pop hl
+        ld a,(hl)
+        cp 'P'
+        jr nz,dgp_x
+        call dg_ch
+        inc hl
+        ld a,(hl)
+        call dg_ch
+        inc hl
+        ld a,' '
+        call dg_ch
+        ld a,(hl)
+        call dg_hex
+        inc hl
+        ld a,(hl)
+        call dg_hex
+        inc hl
+        ld a,(hl)
+        call dg_hex
+        inc hl
+        ld a,(hl)
+        call dg_hex
+        inc hl
+        ld a,c
+        xor 16                      ; (two a row: columns 0 and 16)
+        ld c,a
+        jr nz,dgp_r
+        inc b
+        jr dgp_r
+dgp_x:  ld (dg_lpos),hl             ; (the rest of the log: scc_pat's and scc_scan's)
+        ld bc,0x0A00                ; row 10, rows 11-14
         call dg_at
         ld hl,dgs_log
         call dg_str
         ld hl,(dg_ptr)
-        ld de,dg_log
+        ld de,(dg_lpos)
         or a
-        sbc hl,de
+        sbc hl,de                   ; HL = its bytes
         ld a,l
         call dg_hex
         ld a,h
         or a
         ld a,l
-        jr nz,dgl_70
-        cp 70
+        jr nz,dgl_40
+        cp 40
         jr c,dgl_n
-dgl_70: ld a,70
-dgl_n:  ld (dg_n),a
-        ld hl,dg_log
-        ld b,8
+dgl_40: ld a,40
+dgl_n:  ld (dg_n),a                 ; (shown: 4 rows of 10 at most)
+        ld hl,(dg_lpos)
+        ld b,11
 dgl_r:  ld a,(dg_n)
         or a
         jr z,dgl_x
@@ -563,7 +605,8 @@ dg_sq:      db 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70,
 dgs_v:      db "V", 0
 dgs_vdp:    db " VDP", 0
 dgs_fm:     db " FM", 0
-dgs_mode:   db " MODE", 0
+dgs_at:     db " AT ", 0
+dgs_mode:   db " MD", 0
 dgs_p2:     db " P2 ", 0
 dgs_a8:     db "A8 ", 0
 dgs_r9:     db " R9 ", 0

@@ -556,6 +556,7 @@ dg_n:       equ 0xE906              ;   counts,
 dg_v:       equ 0xE907              ;   a test's value,
 dg_bad:     equ 0xE908              ;   4: a test's first wrong values read,
 dg_src:     equ 0xE90C              ;   the byte an ldi stores,
+dg_lpos:    equ 0xE90E              ;   2: where the log's scc_pat part starts,
 dg_log:     equ 0xE910              ;   176: the SCC tests' reads (sound.asm scc_pat, scc_scan),
 dg_txt:     equ 0xEE00              ;   32 x 24: the screen's text (objl_ram, before the level)
 sp_ptrs:    equ 0xEA00              ; their list as MSX pointers (0 after the last; up to 16)
