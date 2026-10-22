@@ -128,29 +128,39 @@ uo_next:
 
         if ENEMY_CAP
 ; (The port, tools/mkrom.py ENEMY_CAP: the MSX shows two large characters in full colour at
-; most; with ENEMY_CAP slots in use a free slot spawns nothing, so the level's spawns wait. Only
-; the enemies count: not 32, the level's end, which spawns the henchmen it waits for, nor 44,
-; the ride's pickup dropper (both draw nothing), nor 45, the hostage (drawn into the play field:
-; it shows together with an enemy, the user's choice).)
+; most; with ENEMY_CAP enemies in use their spawns wait: the spawn list's enemy entries stay as
+; they are, the spawn delay and the map's markers do not count. Only the enemies count: not 32,
+; the level's end, which spawns the henchmen it waits for, nor 44, the ride's pickup dropper
+; (both draw nothing), nor 45, the hostage (drawn into the play field: it shows together with
+; an enemy, the user's choice); those still spawn as on the Amiga, when their entry comes into
+; the window just outside the screen. (Waiting too, a hostage came while RoboCop was there:
+; on screen out of nowhere, the user saw, 2026-10-22.))
 uo_cap: ld hl,OBJ_SLOTS + OS_TYPE
         ld de,4
         ld bc,5 * 256               ; B = slots, C = in use
 uoc_lp: ld a,(hl)
         or a
         jr z,uoc_n
-        cp 32
-        jr z,uoc_n
-        cp 44
-        jr z,uoc_n
-        cp 45
+        call not_enemy
         jr z,uoc_n
         inc c
 uoc_n:  add hl,de
         djnz uoc_lp
         ld a,c
         cp ENEMY_CAP
-        jp c,uo_free
-        jp uo_next
+        ccf
+        sbc a,a
+        ld (uo_capd),a              ; (FFh: capped)
+        jp uo_free
+
+; A = an object type -> Z when it is not an enemy (ENEMY_CAP): 32, 44, 45.
+not_enemy:
+        cp 32
+        ret z
+        cp 44
+        ret z
+        cp 45
+        ret
         endif
 
 ; A = offset in lv_htab: calls that routine (IX = the slot).
@@ -190,6 +200,25 @@ uf_at:  ld e,(hl)
         ld a,(hl)
         or a
         jp m,uf_last                ; (x < 0: the end; HL = it + 1)
+        if ENEMY_CAP
+        ld d,a
+        ld a,(uo_capd)
+        or a
+        jr z,uf_any
+        push hl                     ; (enemies capped: an enemy's entry waits as it is)
+        inc hl
+        inc hl
+        inc hl
+        inc hl
+        ld a,(hl)                   ; its type (+4 ^ 1)
+        pop hl
+        call not_enemy
+        jr z,uf_any
+        ld de,13
+        add hl,de
+        jp uf_at
+uf_any: ld a,d
+        endif
         ld d,a                      ; D4 = x
         ld a,e
         sub c
@@ -242,7 +271,7 @@ uf_cnt: ld l,(iy+10)
         ld (iy+10),l
         ld (iy+11),h
         bit 7,h
-        jr z,uf_nxi                 ; still counting
+        jp z,uf_nxi                 ; still counting
         set 7,(iy+12^1)
         ld l,(iy+8)
         ld h,(iy+9)
@@ -312,7 +341,13 @@ uf_last:
 
 ; The list is done: the spawn delay counts down; once it is negative a map marker can spawn,
 ; every (mask + 1) game frames ($C53D, patched by the level and its end).
-uf_end: ld hl,(AM + 0x16B8)
+uf_end:
+        if ENEMY_CAP
+        ld a,(uo_capd)
+        or a
+        jp nz,uo_next               ; (enemies capped: the delay and the markers wait)
+        endif
+        ld hl,(AM + 0x16B8)
         bit 7,h
         jr nz,uf_mk
         dec hl

@@ -437,12 +437,18 @@ which as sprites were striped, cut or left out.
   level's end, the death sequence, lives; `FE_RESTART` runs `level_restart`, `FE_OVER` shows
   the game over picture, `FE_NEXT` the level's statistics; both then go to the title and a new
   game until the next levels exist).
-- **Fewer enemies** (`tools/mkrom.py` `ENEMY_CAP`, 1 in the product): with that many enemy slots
-  in use a free slot spawns nothing (`objects.asm` `uo_cap`). Only the enemies count: not the
-  types that draw nothing, 32, the level's end, which forces the henchmen's spawns it waits for
-  (counted, it took the only slot and the level could never end), and 44, the ride's pickup
-  dropper; nor 45, the hostage, drawn into the play field (the user's choice, 2026-10-22: a
-  hostage shows together with an enemy).
+- **Fewer enemies** (`tools/mkrom.py` `ENEMY_CAP`, 1 in the product): with that many enemies in
+  use their spawns wait (`objects.asm` `uo_cap`): a free slot still walks the level's spawn list,
+  but the enemies' entries stay as they are, and the spawn delay and the map's markers do not
+  count. Only the enemies count: not the types that draw nothing, 32, the level's end, which
+  forces the henchmen's spawns it waits for (counted, it took the only slot and the level could
+  never end), and 44, the ride's pickup dropper; nor 45, the hostage, drawn into the play field
+  (the user's choice, 2026-10-22: a hostage shows together with an enemy). Those three spawn as
+  on the Amiga, when their entry comes into the window just outside the screen. Until
+  2026-10-22 the whole walk waited: a hostage whose place came into view while an enemy lived
+  appeared when that enemy went, on screen out of nowhere (the user saw it; reproduced in
+  openMSX: entry 10, 23 ticks late, spawned the tick the enemy left). An enemy that waited still
+  appears at its place when the slot frees, on screen if its place is in view.
 - **Harder hits** (`tools/mkrom.py` `DAMAGE_X`, 3 in the product): the enemies' bullets take
   their damage (`$FA63`) times `DAMAGE_X` and touching an enemy costs `DAMAGE_X` instead of 1
   (`hits.asm`), but the missile, enemy bullet types 1 and 2 (damage 40h, fired only by the

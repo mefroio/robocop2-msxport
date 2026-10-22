@@ -357,6 +357,7 @@ uo_d3:      equ 0xCE10              ;   D3 (2),
 uo_d4:      equ 0xCE12              ;   D4 (2)
 key_p:      equ 0xCE14              ; key_scan: P as last seen
 pause_n:    equ 0xCE15              ; ticks before "PAUSE ON." again
+uo_capd:    equ 0xCE16              ; ENEMY_CAP: not 0 while the enemies in use reach it (objects.asm uo_cap)
 dbg_msg:    equ 0xCE18              ; 20: the message "NUKE nn HOST nn" ($F841, written by $F788)
 g_tick:     equ 0xCE05              ; 1 on the frames the game ticks
 g_acc:      equ 0xCE06              ; cadence: + g_step per frame, the game ticks at CAD_TICK
