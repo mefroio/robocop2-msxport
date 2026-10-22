@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATS = 0x1132F                     # show_level_stats' script
 STATS_FIELDS = (0x1135A, 0x11379, 0x11398)  # henchmen ($16C2), nukes ($16C0), hostages ($16BE)
 CREDIT = ((158, "2026 PORT BY RODRIGO G.M. GARCIA"),   # (picture line, text): the user's credit
-          (168, "ORIGINAL GAME BY"),                    # (32 characters a line at most)
+          (168, "ORIGINAL AMIGA GAME BY"),              # (32 characters a line at most)
           (178, "OCEAN SOFTWARE LTD"))
 CREDIT_INK = 0xDB                   # G7 (GGGRRRBB): the strokes (glyph colour 1),
 CREDIT_SHADE = 0x21                 #   their shadow (colour 4)
