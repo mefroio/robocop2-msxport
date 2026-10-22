@@ -16,7 +16,7 @@ consecutive banks mapped at 8000h-BFFFh; VRAM addresses are the low 16 bits, bit
   cells:    14 x (dw VRAM address of the first byte on the first line, db bytes per line,
             db 0, 10 x dw patch): timer MM MM SS SS (red), ammo x3, score x7; 16 lines each
   patches:  unique blocks of 16 lines x n bytes
-  font:     42 glyphs x 8 lines x 9 bytes, HUD colours (0 = transparent), packed 2 pixels
+  font:     44 glyphs x 8 lines x 9 bytes, HUD colours (0 = transparent), packed 2 pixels
             per byte for a cell starting on a byte (p0p1 p2p3 p4p5 p6p7) and for one starting
             in the middle of a byte (0p0 p1p2 p3p4 p5p6 p70)
   frame:    8 bytes: the pixel after the last text cell (the box frame), per text line

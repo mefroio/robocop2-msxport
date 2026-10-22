@@ -6,7 +6,8 @@ last 9600 bytes of PERMA; its palette is COLOR01..31 of copper list $10332 (MOVE
 All assets live in PERMA (loaded at $58850):
 
   digits   $654B0 + n*$60   16x16, 3 planes; 0-9 green, 12-21 red   ($105D2, called by $F6B8)
-  font     $65DB0 + n*24    8x8, 3 planes; A-Z = 0-25, '0'.. = c-$16, space = 41  ($10620)
+  font     $65DB0 + n*24    8x8, 3 planes, FONT_GLYPHS of them; A-Z = 0-25, '0'.. = c-$16,
+           space = 41, 42 '©', 43 '%' (code 'l': "10%" in the NUKE / HOST message, $F855) ($10620)
   heads    $666D0 + n*$2A8  32x34, 5 planes (lives; n = 0 normal)    ($88DE)
   icons    $676C0 + n*$A0   16x16, 5 planes (weapon, 8 entries)      ($896A, offsets $AF76)
   can      $661D0           32x40, 5 planes, modulo $24 in the panel: full energy can
@@ -57,6 +58,10 @@ def planes(perma: bytes, addr: int, w: int, h: int, n: int, row_bytes: int | Non
              for x in range(w)] for y in range(h)]
 
 
+FONT_GLYPHS = 44                    # (all of them: 42 left out '%', drawn as the bytes after the
+                                    #   font in the MSX's HUD: the user saw it garbled, 2026-10-22)
+
+
 def font_char(perma: bytes, n: int) -> list[list[int]]:
     """8x8 glyph: 24 bytes = for each plane, 8 lines of one byte (as $10620 copies them)."""
     o = FONT + 24 * n - PERMA_LOAD
@@ -67,7 +72,7 @@ def font_char(perma: bytes, n: int) -> list[list[int]]:
 def assets(perma: bytes) -> dict[str, list]:
     return {
         "digits": [planes(perma, DIGITS + 0x60 * n, 16, 16, 3) for n in range(22)],
-        "font": [font_char(perma, n) for n in range(42)],
+        "font": [font_char(perma, n) for n in range(FONT_GLYPHS)],
         "heads": [planes(perma, HEADS + 0x2A8 * n, 32, 34, 5) for n in range(2)],
         "icons": [planes(perma, ICONS + 0xA0 * n, 16, 16, 5) for n in range(8)],
         "can": [planes(perma, CAN, 32, 40, 5)],
