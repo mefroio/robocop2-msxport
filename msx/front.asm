@@ -11,13 +11,120 @@ PIC_TOP:    equ 106                 ; (the picture's centre line on the 212-line
 
 ; ----- the title -----
 
-; TPIC until fire is pressed (after it was released).
+; TPIC until fire is pressed (after it was released); then the music stops and RoboCop's speech
+; plays (the title's end on the Amiga, on start here: the user's choice for the PSG).
 front_title:
         ld a,PIC_TITLE_BANK
         ld b,PIC_TITLE_LINES
         call pic_show
         call snd_music              ; (TITM tune 1: $10884)
-        jp front_fire
+        call front_fire
+        call snd_stop
+        jp voice_play
+
+; ----- RoboCop's speech -----
+
+; The speech as PCM on the PSG (tools/msxvoice.py: VOICE_LEN index bytes from bank VOICE_BANK on,
+; through the A000h window, one every VOICE_RATE_T T-states): each sets the three voices'
+; volumes (voice_tab), tone and noise off (a voice then outputs its volume's level), so their
+; summed levels follow the sample. The interrupts stay off meanwhile (a VBLANK would delay
+; samples); every 256 samples fire is read (SPACE or trigger A): pressed once released, it ends
+; the speech. Then the voices silent, the mixer and the A000h window as they were.
+PSG_IN:     equ 0xA2
+voice_play:
+        ld a,(act_a000)
+        push af
+        xor a
+        ld (vp_rel),a               ; (fire held from the start: released first)
+        di
+        ld a,7
+        out (PSG_ADDR),a
+        ld a,PSG_MIX
+        out (PSG_DATA),a
+        ld a,VOICE_BANK
+        ld (act_a000),a
+        ld (BANK_A000),a
+        ld hl,0xA000
+        ld de,VOICE_LEN
+vp_lp:  ld a,(hl)                   ; 8 (T-states, with the M1 wait)
+        inc hl                      ; 7
+        ld c,a                      ; 5
+        ld b,voice_tab / 256        ; 8
+        ld a,8                      ; 8
+        out (PSG_ADDR),a            ; 12
+        ld a,(bc)                   ; 8
+        out (PSG_DATA),a            ; 12  voice A's volume
+        inc b                       ; 5
+        ld a,9                      ; 8
+        out (PSG_ADDR),a            ; 12
+        ld a,(bc)                   ; 8
+        out (PSG_DATA),a            ; 12  B's
+        inc b                       ; 5
+        ld a,10                     ; 8
+        out (PSG_ADDR),a            ; 12
+        ld a,(bc)                   ; 8
+        out (PSG_DATA),a            ; 12  C's
+        ld a,h                      ; 5
+        cp 0xC0                     ; 8
+        jr z,vp_bank                ; 8
+vp_b:   ld a,l                      ; 5
+        or a                        ; 5
+        jr z,vp_fire                ; 8
+vp_c:   dec de                      ; 7
+        ld a,d                      ; 5
+        or e                        ; 5
+        jr z,vp_end                 ; 8
+        ld b,(VOICE_RATE_T - 238) / 14  ; 8 (the loop's own 238 T-states, M1 waits counted; an equ
+                                    ; of voice.inc's, included later, would be 0)
+vp_w:   djnz vp_w                   ; 14 a turn, 9 the last
+        jr vp_lp                    ; 13
+vp_bank:
+        ld a,(act_a000)             ; (the window's end: the next bank)
+        inc a
+        ld (act_a000),a
+        ld (BANK_A000),a
+        ld h,0xA0
+        jr vp_b
+vp_fire:
+        ld a,15
+        out (PSG_ADDR),a
+        in a,(PSG_IN)
+        and 0xBF                    ; (joystick port 1)
+        out (PSG_DATA),a
+        ld a,14
+        out (PSG_ADDR),a
+        in a,(PSG_IN)
+        and 0x10
+        jr z,vpf_dn                 ; (trigger A down)
+        in a,(0xAA)
+        and 0xF0
+        or 8
+        out (0xAA),a
+        in a,(0xA9)
+        and 1
+        jr z,vpf_dn                 ; (SPACE down)
+        ld a,1
+        ld (vp_rel),a
+        jr vp_c
+vpf_dn: ld a,(vp_rel)
+        or a
+        jr z,vp_c
+vp_end: ld b,8
+vpe_lp: ld a,b
+        out (PSG_ADDR),a
+        xor a
+        out (PSG_DATA),a
+        inc b
+        ld a,b
+        cp 11
+        jr nz,vpe_lp
+        ld a,7
+        out (PSG_ADDR),a
+        ld a,(snd_mix)
+        out (PSG_DATA),a
+        ei
+        pop af
+        jp bank_a000
 
 ; ----- the game over -----
 

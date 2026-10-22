@@ -712,6 +712,13 @@ REA CLI and extra function seeds (same engine, project seeds plus the targets).
 `hiscores.json`, `font.json`, `font.png`, `font_strokes.png`, `title.json` and a render of
 every screen in `screens/`.
 
+- RoboCop's speech in the title music **[verified: the model's rendering, identified by ear by the
+  user, 2026-10-22]**: "YOUR MOVE, CREEP" is TITM sample 11 (16020 bytes at 7004 Hz, "TOM" in its
+  8SVX NAME chunk: the names say nothing of the content; sample 6 "ORCH1" is an orchestra hit),
+  instrument 24, keyed on channel 2 at tick 2880 (57.6 s at 50 ticks a second) and on channel 0
+  at tick 2889, AUDxPER 335 (10685 bytes a second, 1.5 s), volume 64: the same speech left and
+  right 9 ticks apart. Its only two key-ons in the tune.
+
 ### Sequence **[verified: code]**
 
 - **Boot** (`game_boot` `$11A20`), silent and without waits: each picture stays while the next

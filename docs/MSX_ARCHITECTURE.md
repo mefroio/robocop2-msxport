@@ -72,7 +72,7 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
    comes from `main_loop` when the lives run out). 320→256 px width conversion (same width
    on the TV), fixed 3-3-2 palette with Floyd–Steinberg (`tools/msxpic.py`). The other
    photos are dropped and the between-level scenes become text/briefing screens; MegaROM
-   estimated at ~300–450 KiB compressed (fits in 512 KiB).
+   estimated at ~300–450 KiB compressed (fits in 512 KiB; the ROM grew to 1 MiB later for the speech).
 6. **MegaROM** kept; bank switching goes through a single routine, so a floppy + memory
    mapper version stays possible in the future.
 7. **Game logic at 25 Hz** (final, 2026-10-20 evening): the original's routines are ported
@@ -603,9 +603,12 @@ which as sprites were striped, cut or left out.
   `$1171E` never draws it. It lasts 362 ticks (the 105 elements typed, the script's 256-call
   wait, its end), or ends with fire from tick 50 on; then the play area goes black at once.
   The bench's picture of the screen and the model's are identical (agent run, 2026-10-21).
-- The ROM is 512 KiB (64 banks, all used: the pictures take the last 13); `BANK_INPUT` holds
-  the test builds' joystick script and the sound player with its streams. The complete game
-  with levels 2 and 3 will need 2 MiB (MegaROM or MegaRAM of that size).
+- The ROM is 1 MiB (128 banks; the user's choice, 2026-10-22, for RoboCop's speech and the next
+  levels: a 1 MiB MegaRAM or flash cartridge): the first 64 hold the game as before (the
+  pictures take the last 13 of them), the speech follows from `VOICE_BANK`, the rest is free.
+  The 8000h window must never map bank 63 or 127: on a KonamiSCC cartridge they select the
+  SCC's registers at `9800h`. `BANK_INPUT` holds the test builds' joystick script and the sound
+  player with its streams. The complete game with levels 2 and 3 may need 2 MiB.
 
 ## Sound (`msx/sound.asm`)
 
@@ -616,6 +619,18 @@ which as sprites were striped, cut or left out.
 - `snd_frame` runs from the VBLANK interrupt (the music keeps its tempo while the game catches
   up); the PSG's address latch is shared with the joystick reads, so outside the interrupt
   every PSG access runs with interrupts disabled and R7 keeps port A as input.
+- **RoboCop's speech** ("YOUR MOVE, CREEP", in the title music at 57.6 s: instrument 24, sample
+  11, "TOM" in its 8SVX header, on Amiga channel 2 and again on channel 0 nine ticks later; the
+  user identified it): tones cannot say it, so the PSG streams leave its notes silent and, the
+  user's choice for the PSG, it plays when the player starts: the title music stops and
+  `front.asm` `voice_play` plays it as PCM (`tools/msxvoice.py`: the two channels rendered as
+  Paula plays them, the A500's filter, 7990 samples a second, 1.68 s in 2 banks from
+  `VOICE_BANK`). Each sample byte indexes `voice_tab`: the three voices' volumes (tone and noise
+  off, a voice outputs its level) whose summed levels come nearest to it on the AY's curve
+  (1.5 % quantisation error, against about 30 % with one voice's 16 levels). The loop takes 448
+  T-states a sample (measured in openMSX on both VDPs) with the interrupts off; every 256
+  samples it reads fire: pressed once released, it ends the speech. Recorded in openMSX: the
+  music up to the key, then the speech, then silence.
 - The original's music and sound effects are tunes of the same player (MU1 at `$18000`):
   `tools/rc2music.py` models it exactly; `tools/msxsound.py` turns its output (per Amiga channel
   and tick: period, volume, instrument, key-ons) and the samples into PSG streams

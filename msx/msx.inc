@@ -479,6 +479,7 @@ fs_wait:    equ 0xCFBC              ; 2: calls left of a wait
 fs_n:       equ 0xCFBE              ; 2: ticks so far
 fs_done:    equ 0xCFC0              ; 1: the script ended ($16D1)
 fs_div:     equ 0xCFC1              ; VBLANKs into the sixth one (60 Hz: skipped)
+vp_rel:     equ 0xCFC2              ; front.asm voice_play: fire released since it began
 pl_gs:      equ 0xCFD0              ; 16: sprite plan: per object its parts' state (sprites.asm pw_gs)
 pg_or:      equ 0xCFE0              ; sprite plan: pg_each's result
 pl_seq:     equ 0xCFE1              ; sprite plan: plans so far (low byte: pl_stamp)

@@ -440,6 +440,9 @@ input_end:
         include "front.asm"
         include "cold.asm"          ; init routines of the fixed code (cold.asm)
         include "text.inc"          ; the text screens' font and the statistics (tools/msxtext.py)
+front_tab:
+        ds (0x100 - (front_tab & 0xFF)) & 0xFF, 0xFF  ; (voice_tab: 256-byte aligned)
+        include "voice.inc"         ; RoboCop's speech: its PSG table (tools/msxvoice.py)
 front_end:
         ds 0xA000 - front_end, 0xFF
 

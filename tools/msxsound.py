@@ -57,6 +57,10 @@ How the Amiga sound is mapped (the decisions and why)
   step (ACCENT): the PSG has no attack and ba1's envelope is flat, so repeated bass notes would
   merge into one; the trellis picks the cheapest articulation (often alternate levels). Slides
   send a new period when 30 cents away.
+- Title, RoboCop's speech ("YOUR MOVE, CREEP": instrument 24, sample 11, "TOM" in its header;
+  at 57.6 s on channel 2, again on channel 0 nine ticks later): tones cannot say it, so its notes
+  are silent in the streams (SPEECH_INST) and the PSG plays the speech as PCM when the player
+  starts (tools/msxvoice.py, the user's choice).
 - Title, drums (Amiga channel 3: BDRM, SNARE, TOM1): the PSG has no fourth voice, so each hit
   rides one of the three for a few ticks. These samples are darker than any PSG noise (their
   brightness, the power-weighted mean log2 frequency over 60 Hz-8 kHz, is 7.3 octaves for BDRM,
@@ -108,6 +112,9 @@ PSG_HZ = PAULA_HZ / 2                   # the MSX's PSG clock, 1789772.5 Hz
 AY_STEP = PSG_HZ / 16                   # tone f = AY_STEP / period; the noise shifts at AY_STEP / np
 AY_INT = PSG_HZ / 8                     # the PSG counters' rate (a tone half-period = period counts)
 TICK_HZ = 50                            # the Amiga player's tick rate (and the MSX player's)
+SPEECH_INST = 24                        # RoboCop's speech ("YOUR MOVE, CREEP": sample 11, "TOM" in its
+                                        # header) in the title: PSG PCM on start instead
+                                        # (tools/msxvoice.py, front.asm voice_play), silent here
 FS = 44100                              # preview WAVs
 SPT = FS // TICK_HZ                     # 882 output samples per tick
 DMA_PERIOD = 113.75                     # one audio DMA word (2 bytes) per NTSC raster line: the
@@ -855,7 +862,7 @@ class Title:
         prev = None
         for t in range(self.T):
             i = int(ch.ins[t])
-            if ch.amp[t] <= 0 or i not in self.spc or ch.per[t] <= 1:
+            if ch.amp[t] <= 0 or i not in self.spc or ch.per[t] <= 1 or i == SPEECH_INST:
                 prev = None
                 continue
             lv = 20 * math.log10(ch.amp[t] / self.a_ref)
