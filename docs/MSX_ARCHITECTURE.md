@@ -274,7 +274,11 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   live in normal play, and the skip gave +1.9 % pictures a second, 2026-10-23),
   colour rows, SAT; publish; then the ticks due. `feed_vdp` gives the scroll engine its next
   VDP command at many points (the tick's stages, each object the plan works on, the budget, the
-  BOB lists): its pages are built only from these points.
+  BOB lists): its pages are built only from these points. It looks at the engines only while
+  one may have work (`iw_more`: set once a frame by `wait_frame` and by the engine's update,
+  and when a changed cell is queued, `rq_add`; cleared by the engine's idle exit when its
+  queues are empty): 96 % of its 25 calls a picture found none, each ~1,000 T-states of status
+  reads, pushes and bank checks; the fast return gave +7 % pictures a second (2026-10-23).
 - **Objects against the camera**: screen place = world place − the camera of the tick frame
   (`pl_show`, `bob_flush`; `cam_mark` keeps it in `sp_cam_x`/`sp_cam_y`). Both scroll engines
   also move the camera on frames without a tick (catching up with `v_x`/`v_y`); such a frame

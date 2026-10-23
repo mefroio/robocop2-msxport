@@ -152,7 +152,15 @@ sprites_init:
 ; A000h window (the upload maps it before each use).
 feed_vdp:
         push af
-        di                          ; (both engines' work starts with vdp_busy: while a command
+        ld a,(fb_busy)              ; nothing to feed: no play-field BOB work (field.asm) and no
+        or a                        ; scroll work since the engine last found none (iw_more); in
+        jr nz,fv_chk                ; normal play 96 % of the calls, 25 a picture, end here
+        ld a,(iw_more)
+        or a
+        jr nz,fv_chk
+        pop af
+        ret
+fv_chk: di                          ; (both engines' work starts with vdp_busy: while a command
         ld a,2                      ; runs there is nothing to do, so that is looked at first)
         out (VDP_CTRL),a
         ld a,0x8F

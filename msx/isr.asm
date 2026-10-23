@@ -438,7 +438,9 @@ wf_got: ld (last_tick),a
         ld hl,(late)
         inc hl
         ld (late),hl
-wf_ok:  ld hl,(frame)
+wf_ok:  ld a,1
+        ld (iw_more),a              ; (every frame's first feed_vdp looks at the scroll engine)
+        ld hl,(frame)
         inc hl
         ld (frame),hl
         ret

@@ -61,6 +61,8 @@ dt_prep:
 ; toward the view the game wants (v_x, v_y; cam_x, cam_y are what it shows), also on frames
 ; without a tick (the cadence holds the ticks while the view shown lags far behind).
 scroll_update:
+        ld a,1
+        ld (iw_more),a              ; (there may be work for scroll_work from now on)
         ld hl,(v_x)
         ld (cam_x),hl
         ld hl,(v_y)
@@ -186,7 +188,7 @@ sw_col: pop af
         jp draw_tile
 sw_row: ld a,(q_row)
         cp 0xFF
-        jr z,sw_redraw
+        jr z,sw_idle
         ld a,(q_row_col)
         ld e,a
         inc a
@@ -201,6 +203,18 @@ sw_row: ld a,(q_row)
         ld (q_row),a
         ld a,b
         jp draw_tile
+
+; No column or row to draw: the changed cells, and with none waiting either nothing to do until
+; the next update or a changed cell sets iw_more again.
+sw_idle:
+        call sw_redraw
+        ld a,(rd_tail)
+        ld hl,rd_head
+        cp (hl)
+        ret nz
+        xor a
+        ld (iw_more),a
+        ret
 
 ; The cells the game changed (tiles.asm rd_queue) that are in the kept area: between the HUD split
 ; and the VBLANK up to RD_BURST in a row (vdp_cmd_q: started where the beam is off the play area,

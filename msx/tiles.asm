@@ -346,6 +346,8 @@ rq_add: ld a,(rd_tail)
         ld (hl),d
         inc l
         ld (hl),e
+        ld a,1
+        ld (iw_more),a              ; (work for the scroll engine: feed_vdp looks again)
         ret
 rq_full:
         ld hl,rd_lost

@@ -594,6 +594,10 @@ pl_busy:    equ 0xF1E2              ; (LOCKSTEP test builds) 1 while spr_plan ru
                                     ;   leave the background queue alone (sprites.asm su_bg)
 pl_vis:     equ 0xF1E3              ; 2: plan: the objects the look still visits (pl_fl | pl_flp,
                                     ;   shifted out one by one)
+iw_more:    equ 0xF1E5              ; 1 while a scroll engine may have idle work: set once a frame
+                                    ;   (wait_frame, the engine's update) and when a changed cell is
+                                    ;   queued (rq_add), cleared by the engine's idle exit; feed_vdp
+                                    ;   looks at the engines only then
 fb_eng:     equ 0xF1E7              ; field.asm: 0 the V9958's ring, 1 the V9938's two pages
 fb_cqp:     equ 0xF1E8              ; tiles.asm fb_redraw -> field.asm fb_cellq: the page,
 fb_cqr:     equ 0xF1E9              ;   1: the play-field BOBs draw the cell

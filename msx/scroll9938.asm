@@ -76,6 +76,8 @@ ttp_prep:
 ; a page's or row's edge), also on frames without a tick (the cadence holds the ticks while the
 ; view shown lags far behind).
 s38_update:
+        ld a,1
+        ld (iw_more),a              ; (there may be work for s38_work from now on)
         ld hl,(v_x)
         ld (cam_x),hl
         ld hl,(v_y)
@@ -290,7 +292,7 @@ s38w_rq:
         call s38_target
 s38w_b: ld a,(s38_back_c0)
         cp 0xFF
-        ret z
+        jr z,s38w_idle
         ld a,(s38_phase)
         or a
         jr nz,s38w_copy
@@ -307,8 +309,15 @@ s38w_b: ld a,(s38_back_c0)
 s38w_copy:
         ld a,(s38_i)
         cp VIEW_ROWS
-        ret nc                      ; back page ready
-        jp s38_copy_chunk
+        jp c,s38_copy_chunk
+s38w_idle:                          ; the back page ready, or none, and no changed cell waiting (a
+        ld a,(rd_tail)              ; cell half drawn is still in the queue): nothing to do until
+        ld hl,rd_head               ; the next update or a changed cell sets iw_more again
+        cp (hl)
+        ret nz
+        xor a
+        ld (iw_more),a
+        ret
 
 ; Between the HUD split and the VBLANK: up to RD_BURST changed cells in a row (s38_redraw's
 ; steps, each waiting for the one before).
