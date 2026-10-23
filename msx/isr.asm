@@ -15,10 +15,11 @@
 ;   uploads then wait for the next frame.
 ;
 ; Split timing (openMSX VDP model): the line interrupt fires at the right border of display
-; line (R#19 - R#23) & 255; R#1 (blank), R#8 (sprites) and R#18 take effect at the start of
-; the next line, while R#2, R#23, R#26, R#27 and the palette take effect immediately. HR
-; (S#2 bit 5) is 1 for 312 VDP ticks from the right border, computed with the current
-; horizontal adjust (so writing R#18 moves the window).
+; line (R#19 - R#23) & 255, where S#1 FH goes up too; R#1 (blank), R#8 (sprites) and R#18
+; take effect at the start of the next line (144 VDP ticks after its sync), while R#2, R#23,
+; R#26, R#27 and the palette take effect immediately. HR (S#2 bit 5) is 1 for 312 VDP ticks
+; from the right border, computed with the current horizontal adjust (so writing R#18 moves
+; the window); with R#18 = 0 it goes down 226 ticks into the next line, past its latch point.
 
 isr:    push af
         push bc
@@ -48,12 +49,21 @@ isr_s0: in a,(c)                    ; S#0: bit 7 = VBLANK (the read acknowledges
         reti
 
 ; HUD split (V = VIEW_LINES): the interrupt fires at the end of line V-4 and the ISR reaches
-; the first HR poll ~1.1-1.7 lines later, inside line V-2. Blanks the display from line V
-; (written during line V-1); once line V-1 is complete (its right border) switches page,
-; scroll, adjust and palette with unrolled OUTI, and turns the display back on while still in
-; line V+3, so the HUD shows from line V+4. On the V9958 the border mask is then turned off
-; (the HUD's left columns are still black there) so that the HUD uses all 256 px. The line
-; interrupt stays enabled: a match created by the HUD's R#23 is acknowledged and ignored.
+; the first HR poll ~1.1-1.7 lines later, inside line V-2. Blanks the display and the sprites
+; from line V and sets the adjust to 0 there (all three written during line V-1); once line
+; V-1 is complete (its right border) switches page and scroll, sets R#19 for a line match at
+; the right border of line V+2 (written just before the HUD's R#23, so that no match of the
+; play field's R#19 against it comes in between) and loads colours 4-9, all the HUD's first
+; lines use (with 0, the same in both palettes), then the others pair by pair until the beam
+; is there (S#1 FH), and once line V+3 has begun (HR low) turns the display back on: the HUD
+; shows from line V+4 whatever the CPU's speed and the VDP's I/O waits (written after the
+; whole palette, a Z80's display-on landed a line late on the T9769 engines, whose VDP ports
+; take a cycle more: the HUD's first line black on the FS-A1FX, flickering on the FS-A1GT;
+; 2026-10-23). The colours left go after it, all in before HUD line 4 even at an R800's VDP
+; pace (tools/mkrom.py checks that the HUD's lines 0-3 use only colours 0 and 4-9). On the
+; V9958 the border mask is turned off (the HUD's left columns are still black there) so that
+; the HUD uses all 256 px. The line interrupt stays enabled: a match created by the HUD's R#23
+; is acknowledged and ignored.
 isr_split:
         xor a
         ld (split_armed),a
@@ -61,7 +71,7 @@ isr_split:
         out (c),a
         ld a,0x8F
         out (c),a                   ; S#2 (HR polling)
-sp_e1: in a,(c)
+sp_e1:  in a,(c)
         and 0x20
         jr z,sp_e1                  ; right border of line V-2
 sp_s0:  in a,(c)
@@ -75,7 +85,11 @@ sp_s0:  in a,(c)
         out (c),a
         ld a,0x88
         out (c),a                   ; sprites off from line V
-sp_e0: in a,(c)
+        xor a
+        out (c),a
+        ld a,0x92
+        out (c),a                   ; R#18 = 0 from line V (the HR polls below go by it)
+sp_e0:  in a,(c)
         and 0x20
         jr z,sp_e0                  ; right border of line V-1: nothing visible changes now
         ld hl,split_list+1
@@ -84,7 +98,7 @@ sp_e0: in a,(c)
         outi
         outi
         outi
-        outi                        ; R#2 = page 3, R#23 = HUD_R23, R#18 = 0
+        outi                        ; R#2 = page 3, R#19 = SPLIT_R19_ON, R#23 = HUD_R23
         ld a,(split_list)
         cp 6
         jr z,sp_pal
@@ -92,55 +106,56 @@ sp_e0: in a,(c)
         outi
         outi
         outi                        ; V9958: R#26/R#27 = page 3 unscrolled
-sp_pal: ld a,1
+sp_pal: ld a,4
         out (c),a
         ld a,0x90
-        out (c),a                   ; R#16 = colour 1
-        ld hl,hud_palette+2
-        ld c,VDP_PAL
+        out (c),a                   ; R#16 = colour 4
+        ld a,1
+        out (c),a
+        ld a,0x8F
+        out (c),a                   ; S#1 (FH)
+        ld hl,hud_palette           ; (colours 4-15, then 0-3)
+        ld bc,12*256 + VDP_PAL
+        otir                        ; colours 4-9
+        ld b,20
+sp_pw:  in a,(VDP_CTRL)
+        rrca
+        jr c,sp_fh                  ; FH: line V+2 drawn (the read acknowledges it)
         outi
         outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        ld c,VDP_CTRL
+        jr nz,sp_pw                 ; colours 10-15, 0-3 until then
+        ld b,32                     ; (all in: a fast CPU waits for FH, up to ~1 line at 10 MHz;
+sp_wf:  in a,(VDP_CTRL)             ;  the bound only matters to a split serviced 3 lines late,
+        rrca                        ;  whose match was behind already: at 3.58 MHz its HUD shows
+        jr c,sp_w0                  ;  ~12 lines late)
+        djnz sp_wf
+sp_w0:  ld b,0
+sp_fh:  ld c,VDP_CTRL
+        ld a,2
+        out (c),a
+        ld a,0x8F
+        out (c),a                   ; S#2
+sp_s3:  in a,(c)
+        and 0x20
+        jr nz,sp_s3                 ; line V+3 has started
         ld a,R1_ON
         out (c),a
         ld a,0x81
-        out (c),a                   ; still in line V+3: HUD visible from line V+4
-        ld a,(hud_msk)
+        out (c),a                   ; display on from line V+4: the HUD
+sp_on:  ld a,(hud_msk)
         or a
         jr z,sp_msk
         ld a,R25_HUD
         out (c),a
         ld a,0x99
         out (c),a                   ; V9958: no border mask in the HUD
-sp_msk: ld a,SPLIT_R19
+sp_msk: ld a,b
+        or a
+        jr z,sp_r19
+        ld c,VDP_PAL
+        otir                        ; the colours left (B bytes)
+        ld c,VDP_CTRL
+sp_r19: ld a,SPLIT_R19
         out (c),a
         ld a,0x80 + 19
         out (c),a                   ; R#19 against the HUD's R#23: its match (line V-4) is behind
@@ -299,13 +314,13 @@ split_init:
         inc hl
         ld (hl),0x82
         inc hl
+        ld (hl),SPLIT_R19_ON
+        inc hl
+        ld (hl),0x93                ; R#19: a match at the right border of display line V+2
+        inc hl
         ld (hl),HUD_R23
         inc hl
         ld (hl),0x97                ; R#23: HUD_VRAM_LINE shown at display line V+4
-        inc hl
-        ld (hl),0
-        inc hl
-        ld (hl),0x92                ; R#18 = 0
         inc hl
         ld b,6
         ld a,(hud_msk)

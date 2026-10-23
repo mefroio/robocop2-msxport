@@ -410,8 +410,8 @@ slot_page2:
 palette:
         incbin "level1_grade.pal"   ; (the level's palette through the colour grade: tools/mkrom.py)
         include "robocop_flash.inc" ; RoboCop's palette flashes (tools/msxsprites.py)
-hud_palette:
-        incbin "hud_grade.pal"
+hud_palette:                        ; (the HUD's from colour 4: colours 4-15, then 0-3, as the split
+        incbin "hud_split.pal"      ;  loads them: isr.asm isr_split, tools/mkrom.py)
         include "grade.inc"         ; the fade's limits through the colour grade (tools/mkrom.py)
 rowtab:
         include "rowtab.inc"

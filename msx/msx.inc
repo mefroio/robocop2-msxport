@@ -54,6 +54,8 @@ HUD_VRAM_LINE: equ 208
 VRAM_HUD:   equ 0x18000 + HUD_VRAM_LINE*128
 HUD_R23:    equ (HUD_VRAM_LINE - VIEW_LINES - HUD_BLACK) & 255   ; R#23 that shows it at line 167
 SPLIT_R19:  equ (HUD_R23 + SPLIT_LINE) & 255    ; R#19 after the split: its match is behind (isr.asm)
+SPLIT_R19_ON: equ (HUD_R23 + VIEW_LINES + 2) & 255  ; R#19 during the split: a match at the right
+                                    ;   border of display line V+2 times the display-on (isr.asm)
 SPR_PAT:    equ 0x1D800             ; R#6 = 3Bh
 SPR_COL_A:  equ 0x1E000             ; SAT = SPR_COL_A + 200h, R#5 = C7h
 SPR_COL_B:  equ 0x1E400             ; SAT = SPR_COL_B + 200h, R#5 = CFh
