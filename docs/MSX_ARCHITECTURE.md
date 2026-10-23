@@ -974,8 +974,7 @@ beam (since 2026-10-23):
    whatever the CPU's speed and the VDP's I/O waits.
 5. Then the V9958's R#25 (no border mask in the HUD), the colours not written yet (all in by
    display line ~169 on a 3.58 MHz Z80, before HUD line 4 even at an R800's 8.66 µs per VDP
-   access), R#19 = `SPLIT_R19` with the S#1 read (below), `isr_fbgo` and the frame's sprite
-   uploads (`spr_upload`).
+   access), R#19 = `SPLIT_R19` with the S#1 read (below) and `isr_fbgo`.
 
 A CPU fast enough to write every colour before FH waits for it with a bound (32 reads, about a
 line at 10 MHz); the bound only matters to a split serviced 3 lines late, whose match was
