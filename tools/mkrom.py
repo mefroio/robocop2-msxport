@@ -29,7 +29,9 @@ input.inc (the JOY script), music.inc (the music streams' banks and addresses fr
 headers, the SCC's waveforms, the OPLL's patch, the voices' state after the speech), grade.inc
 (the fade's limits through the colour grade, tools/msxbright.py) and the
 original's tables the logic banks include (tools/amitab.py
-with analysis/amiga_tables.tsv, from the level's RAM image build/ram/level1_full.bin), copies the level palette and the HUD's
+with analysis/amiga_tables.tsv, from the level's RAM image build/ram/level1_full.bin) and the
+camera-cell masks of the level's spawn list and hazards (tools/cellmasks.py: cells_l1.inc, the
+game logic's shortcuts), copies the level palette and the HUD's
 (both through the colour grade: level1_grade.pal, hud_grade.pal), the HUD (tools/msxhud.py) and RoboCop's
 logic tables (tools/player.py --inc) into build/msx/gen, assembles with z80asm and writes
 build/msx/rc2.rom.
@@ -307,6 +309,13 @@ def main(argv: list[str]) -> int:
     r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "amitab.py"),
                         str(ROOT / "build" / "ram" / "level1_full.bin"), str(ROOT / "analysis" / "amiga_tables.tsv"),
                         str(gen)], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout + r.stderr, file=sys.stderr)
+        return 1
+    # the camera-cell masks of the level's spawn list and hazards (cells_l1.inc: the logic's shortcuts)
+    r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "cellmasks.py"),
+                        str(ROOT / "build" / "ram" / "level1_full.bin"), str(ROOT / "analysis" / "amiga_tables.tsv"),
+                        str(gen), str(COLS), str(rows)], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr, file=sys.stderr)
         return 1

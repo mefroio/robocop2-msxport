@@ -68,6 +68,13 @@ death_none:
 update_objects:
         ld hl,(AM + 0x0B0E)
         ld (AM + 0x0B12),hl         ; the list from its start
+        call sw_prep                ; (the port: the list's candidates this tick, level1.asm)
+        xor a
+        ld (sw_ci),a                ; (entry 0)
+        if ENEMY_CAP
+        inc a
+        ld (sw_tchg),a              ; (the enemies in use counted at the first free slot)
+        endif
         ld ix,OBJ_SLOTS
 uo_lp:  ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
         ld a,(ix+OS_TYPE)
@@ -106,6 +113,10 @@ uo_lp:  ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
         add a,2                     ; the death routine
         call obj_call
         ld (ix+OS_TYPE),0
+        if ENEMY_CAP
+        ld a,1
+        ld (sw_tchg),a              ; (one enemy fewer: uo_cap counts again)
+        endif
         jr uo_next
 uo_run: ld a,0xFF
         ld (AM + 0x16BB),a          ; (st $16BA: the word's high byte)
@@ -116,6 +127,10 @@ uo_run: ld a,0xFF
         or a
         jp p,uo_next
         ld (ix+OS_TYPE),0
+        if ENEMY_CAP
+        ld a,1
+        ld (sw_tchg),a
+        endif
 uo_next:
         ld de,4
         add ix,de
@@ -135,7 +150,15 @@ uo_next:
 ; an enemy, the user's choice); those still spawn as on the Amiga, when their entry comes into
 ; the window just outside the screen. (Waiting too, a hostage came while RoboCop was there:
 ; on screen out of nowhere, the user saw, 2026-10-22.))
-uo_cap: ld hl,OBJ_SLOTS + OS_TYPE
+; The count is made again only once a slot's type changed since the last one (sw_tchg, set at
+; the tick's start, at a death, at a handler's negative return and in slot_place; the port):
+; nothing else writes a type between two free slots of a tick, so uo_capd stands.
+uo_cap: ld a,(sw_tchg)
+        or a
+        jp z,uo_free
+        xor a
+        ld (sw_tchg),a
+        ld hl,OBJ_SLOTS + OS_TYPE
         ld de,4
         ld bc,5 * 256               ; B = slots, C = in use
 uoc_lp: ld a,(hl)
@@ -176,6 +199,11 @@ obj_call:
 ; A free slot ($C44C): the next entries of the spawn list inside the window (x in camera x +
 ; 5Dh..+1AFh, y in camera y - 28h..+A8h) count down (an entry once spawned is skipped while bit 6
 ; of its flags is set); the first one at zero spawns here. Entries outside the window are reset.
+; (The port walks the tick's candidates only (sw_list, level1.asm sw_prep: the entries the
+; window can reach from the camera's 64-pixel cells and those that may hold a count or their
+; spawned bit, sw_dirty), from the one $B12 points at (sw_ci): an entry left out is outside the
+; window with nothing to reset, so the original's visit would change nothing. $B12 is set as the
+; original sets it, at a spawn and at the end.)
 uo_free:
         ld hl,(gcam_y)
         ld de,-0x28
@@ -184,22 +212,35 @@ uo_free:
         ld de,0xD0
         add hl,de
         ld (uo_d3),hl               ; D3
-        ld hl,(gcam_x)
-        ld bc,0x5E
-        add hl,bc
-        ld b,h
-        ld c,l                      ; BC = D0 + 1 (D0 = camera x + 5Dh, D2 = D0 + 152h)
-        ld hl,(AM + 0x0B12)         ; (the port walks the list with HL, most entries being out
-        jr uf_at                    ; of the window, and sets $B12 - the entry reached - when
-uf_nxi: push iy                     ; it leaves: at a spawn or at the end)
-        pop hl
-        ld de,14
+        ld a,(sw_ci)
+        ld e,a
+        ld hl,sw_list
+uf_s:   ld a,(hl)                   ; the first candidate from that entry on
+        cp e
+        jr nc,uf_s1                 ; (FFh after the last: above every index)
+        inc hl
+        jr uf_s
+uf_s1:  ld (sw_lp),hl
+uf_nx:  ld hl,(sw_lp)               ; the next candidate
+        ld a,(hl)
+        cp 0xFF
+        jp z,uf_last
+        inc hl
+        ld (sw_lp),hl
+        ld (sw_k),a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,sw_ptr
         add hl,de
-uf_at:  ld e,(hl)
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a                      ; HL = the entry
+        ld bc,(sw_bc)               ; BC = D0 + 1 (D0 = camera x + 5Dh, D2 = D0 + 152h)
+        ld e,(hl)
         inc hl
         ld a,(hl)
-        or a
-        jp m,uf_last                ; (x < 0: the end; HL = it + 1)
         if ENEMY_CAP
         ld d,a
         ld a,(uo_capd)
@@ -213,10 +254,7 @@ uf_at:  ld e,(hl)
         ld a,(hl)                   ; its type (+4 ^ 1)
         pop hl
         call not_enemy
-        jr z,uf_any
-        ld de,13
-        add hl,de
-        jp uf_at
+        jr nz,uf_nx
 uf_any: ld a,d
         endif
         ld d,a                      ; D4 = x
@@ -240,9 +278,12 @@ uf_out: ld de,9                     ; out of the window (HL = the entry + 1): it
         inc hl
         inc hl
         ld (hl),a                   ; (+12 ^ 1: bit 7 spawned)
-        inc hl
-        jp uf_at
-uf_xin: dec hl                      ; HL = the entry
+        call sw_dclr                ; (clean: nothing left to reset)
+        jp uf_nx
+uf_xin: push hl
+        call sw_dset                ; (it may hold a count from now on)
+        pop hl
+        dec hl                      ; HL = the entry
         push hl
         ld e,(hl)
         inc hl
@@ -264,20 +305,22 @@ uf_xin: dec hl                      ; HL = the entry
         bit 6,(iy+7^1)
         jr z,uf_cnt
         bit 7,(iy+12^1)
-        jr nz,uf_nxi                ; spawned once already
+        jp nz,uf_nx                 ; spawned once already
 uf_cnt: ld l,(iy+10)
         ld h,(iy+11)
         dec hl
         ld (iy+10),l
         ld (iy+11),h
         bit 7,h
-        jp z,uf_nxi                 ; still counting
+        jp z,uf_nx                  ; still counting
         set 7,(iy+12^1)
         ld l,(iy+8)
         ld h,(iy+9)
         ld (iy+10),l
         ld (iy+11),h                ; the count starts again
         ld (AM + 0x0B12),iy         ; ($B12: the entry reached)
+        ld a,(sw_k)
+        ld (sw_ci),a
         call slot_clear
         ld (ix+OS_Y),e
         ld (ix+OS_Y+1),d
@@ -327,17 +370,13 @@ uf_yout:
         inc hl
         jp uf_out
 
-; The list's end (HL = it + 1): $B12 is the last entry, unless the walk started at the end.
+; The list's end: $B12 is the last entry (the original leaves $B12 alone when the walk started
+; at the end marker, which never happens: $B12 only ever points at an entry).
 uf_last:
-        dec hl
-        ld de,(AM + 0x0B12)
-        or a
-        sbc hl,de
-        jr z,uf_end
-        add hl,de
-        ld de,-14
-        add hl,de
+        ld hl,spawn_ram + 14 * (SW_N - 1)
         ld (AM + 0x0B12),hl
+        ld a,SW_N - 1
+        ld (sw_ci),a
 
 ; The list is done: the spawn delay counts down; once it is negative a map marker can spawn,
 ; every (mask + 1) game frames ($C53D, patched by the level and its end).
@@ -527,6 +566,10 @@ type_rec:
 ; DE = x, HL = the type's record: x, the side RoboCop is on and the hit points of the
 ; difficulty ($8060: diff_tab set) for the type's index.
 slot_place:
+        if ENEMY_CAP
+        ld a,1
+        ld (sw_tchg),a              ; (one type in use more: uo_cap counts again)
+        endif
         ld (ix+OS_X),e
         ld (ix+OS_X+1),d
         push hl

@@ -471,6 +471,31 @@ which as sprites were striped, cut or left out.
   (`hits.asm`), but the missile, enemy bullet types 1 and 2 (damage 40h, fired only by the
   enemies of types 3 and 27: REA, the 28 calls of `ebullet_add` `$F5BC`), at most twice its
   damage: 192 of the 258 energy points was too much (the user's choice, 2026-10-22).
+- **Shortcuts (2026-10-23)**: bookkeeping the original does every frame is skipped where it can
+  change nothing, so the logic's decisions stay the Amiga's tick for tick (logic traces 0 differ
+  on the bench's cov1, cov0 and death-and-restart drives; the pinned LOCKSTEP 24 display records
+  0 differ). (1) The spawn walk (`objects.asm` `uo_free`) visits only the tick's candidates
+  (`level1.asm` `sw_prep`: `sw_list`): the entries the walk's window can reach from the camera's
+  64-pixel cells (`tools/cellmasks.py` writes a mask of entries per cell of camera x and per cell
+  of camera y into `cells_l1.inc`, in the level's bank, from the routine's own window tests) or
+  that may hold a count or their spawned bit (`sw_dirty`, set when an entry's x is in the window,
+  cleared with its reset); an entry left out is outside the window and already reset, so the
+  original's visit would write zeros over zeros. The list is built again only when the cells or
+  the dirty mask change; `$B12` follows the original (the spawning entry; the last entry at the
+  end). (2) With `ENEMY_CAP` the enemies in use are counted again only once a slot's type changed
+  (`sw_tchg`). (3) A lift at rest at its path's end (`special.asm` `spl_rest`, `sp_rest`), RoboCop
+  not on it and out of the camera's x range skips its run: the original's steps back to the same
+  point and, unseen, does nothing else. (4) The hazards' scan runs only when a record is within
+  the window's reach from the camera's cells (`hz_xm`, `hz_ym`, the same tool). Every life
+  `sw_init` derives the dirty mask from the list (a death keeps it) and clears the rest flags.
+  Measured (`drive_play`, over the sprite plan, budget and `feed_vdp` items of the same day):
+  MSX2 13.20 → 16.70 pictures/s and 23.98 → 24.60 ticks/s, MSX2+ 13.13 → 16.49 and
+  23.85 → 24.42; in the busy `c860` window mostly as ticks: MSX2 7.16 → 7.20 pictures/s and
+  11.06 → 11.56 ticks/s, MSX2+ 5.93 → 6.19 and 11.78 → 12.25. Fixed area +0 bytes; `LC1` +61,
+  `LC3` +137, `L1` +681 (380 of tables). The caches live in `AC_VARS`' tail
+  (`DD20h-DD6Bh`). The next levels need their own `cells_lN.inc` and the level header's
+  convention (`lv_init`, `lv_hz`) extended to `sw_prep`, `sw_cell` and the tables `special.asm`
+  names.
 - **The cracked wall** (map object 25 of level 1, type 5Ch, activator `obj_relocate` `$9FC4`,
   `mapobj.asm` `act_10`): after 80 ticks of "up" in front of it RoboCop and the camera go to
   the level header's +20/+22 (`$15D6`/`$15D8`, set by `level1.asm` `l1i_hdr` as `level_init`
@@ -610,7 +635,7 @@ which as sprites were striped, cut or left out.
   run while the published list waits, BOBs not recorded for skipped pictures, category lists
   and a 512-slot hash for the BOBs, the budget's line phase on difference arrays, `bob_draw`'s
   quick test, the attribute reads, the view's tables, the spawn list walk, the lifts' path
-  stepping, the hazards' window.
+  stepping, the hazards' window, the shortcuts above (2026-10-23).
 
 ## Front end (`msx/front.asm`, bank `BANK_FRONT` at `8000h`)
 
