@@ -83,14 +83,10 @@ spr_init:
         ld bc,SPR_SLOTS
         xor a
         call fill                   ; every slot free
-        di                          ; (the interrupt loads the background queue)
-        ld a,(bq_tail)
-        ld (bq_head),a              ; nothing in it
         ld hl,SLOT_PG*256 + SO_OK
         ld bc,2*SPR_SLOTS
         xor a
         call fill                   ; nothing loaded, nothing queued (slot_ok, slot_q)
-        ei
         ld a,SO_FL - 1
         ld (fl_n),a                 ; nothing to release
         ld hl,pat_slot
@@ -138,15 +134,6 @@ spr_init:
         ld (pk_mux),a               ; (never set since the alternation went; the Tcl checks read it)
         ld (alloc_p),a
         ld (rcp_ok),a               ; (rc_prefetch: nothing brought in ahead)
-        if LOCKSTEP
-        ld (pl_busy),a
-        endif
-        ld a,(RG9SAV)
-        and 2
-        ld hl,UPW_60
-        jr z,si_upw
-        ld hl,UPW_50
-si_upw: ld (up_window),hl           ; (50 Hz: a longer vertical blank)
         ld a,R5_SET_A
         ld (spr_set),a
         ld (spr_dsp),a

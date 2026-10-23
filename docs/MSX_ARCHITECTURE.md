@@ -210,31 +210,44 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   what the list on screen shows: `pub_spr`), pictures of a character from two ticks went from
   11.4 % to 0.8 % (MSX2) and from 8.2 % to 0 (MSX2+); parts missing 1.0–1.3 %, single plans
   while a new part loads in busy scenes; the game 2 % slower there.
-- **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work, while the background
-  queue holds fewer than 4 loads): the patterns of his state's next record (the one before when
-  the animation runs backwards; same aim) go into free slots (`slot_warm`: `slot_ref` 0, as
-  `alloc_slot` gives them, so no version loses any) through the background queue, and the
-  step's version is complete as soon as the logic asks for it. A walk step has 11–18 patterns
-  of its own (the original redraws the body and arms every step; a cycle uses 106 against the
-  64 slots); loaded only after the change, a step showed 7–12 VBLANKs late and the steps in
-  between (2 ticks each) were skipped: only 21–27 % of the shown step changes were one step,
-  and the walk looked to go backwards (the user, 2026-10-21). With it 67–79 %; with
+- **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work): the patterns of his
+  state's next record (the one before when the animation runs backwards; same aim) go into free
+  slots (`slot_warm`: `slot_ref` 0, as `alloc_slot` gives them, so no version loses any), and
+  the step's version is complete as soon as the logic asks for it. A walk step has 11–18
+  patterns of its own (the original redraws the body and arms every step; a cycle uses 106
+  against the 64 slots); loaded only after the change, a step showed 7–12 VBLANKs late and the
+  steps in between (2 ticks each) were skipped: only 21–27 % of the shown step changes were one
+  step, and the walk looked to go backwards (the user, 2026-10-21). With it 67–79 %; with
   `CAD_MAX` 2 as well, 93–94 % (the rest: pictures that still carry 3 ticks).
 - **Two sprite sets, double-buffered** (colour table + SAT; R#5 = C7h / CFh). Every published
-  register list that changes the sprites switches R#5 to the other set, which the frame's
-  queue made complete beforehand: its colour rows (`rows_sync`: per entry the row its version
-  wants against `col_held` / `col_held_b`), its SAT (`q_sat`) and the new patterns (slots no
-  shown entry uses). The set on screen is never written, so no change can tear.
-- **Upload queues**: the frame's queue (`pq_buf`: [bytes \| 80h for the early clock, VRAM
-  address, source bank and address]) runs from the split interrupt until the vertical blank
-  begins (S#2 VR: written later, the VBLANK interrupt's registers and palette came in the
-  next picture's first lines) and resumes where it stopped; the VBLANK interrupt applies the
-  list only once its queue is done, then adds `BQ_LATE` units of the background queue
-  (`bq_buf`: patterns of versions still being prepared, with the slot's generation checked
-  before the copy). Costs in units of 16 T-states (`QC_PAT`, `QC_COL`, `QC_COLEC`). The copies go through 32
-  unrolled OUTIs (18 T-states a byte against OTIR's 23; the VDP takes a write every 5-9 T-states
-  where the uploads run, the HUD's lines with the sprites off and the blank: openMSX's access-slot
-  model from real-hardware measurements), +1.3 % pictures a second (2026-10-23).
+  register list that changes the sprites switches R#5 to the other set, made complete
+  beforehand: its colour rows (`rows_sync`: per entry the row its version wants against
+  `col_held` / `col_held_b`), its SAT (`q_sat`) and the new patterns (slots no shown entry uses).
+  The set on screen is never written, so no change can tear.
+- **Uploads written by the plan** (2026-10-23): a pattern goes into its slot when the plan needs
+  it (`pat_now`: a free or new slot, which no entry of the list on screen uses; the pattern table
+  serves both sets), the colour rows and the SAT into the set not on screen (`pc_rows`, `q_sat`:
+  `wait_frame` waited for the last list, so that set is not shown; consecutive entries' rows are
+  written without a new address, `pcr_next`), all from the main program during the display
+  (`spr_wr` sets R#14 = 7 and the address with the interrupts off; the interrupts write no VRAM
+  at all now). The copies go through unrolled OUTIs (`outi32`, 18 T-states a byte: during the
+  display with sprites on the V9938 and the V9958 take a CPU write at least every 70 VDP cycles,
+  12 T-states, by openMSX's access-slot model from measurements on real chips). Until then they
+  went through a frame's queue (`pq_buf`) and a background ring (`bq_buf`) that the split and
+  VBLANK interrupts copied in the HUD's lines and the blank: the queue writing, each copy's
+  set-up, the slot generations and the waiting cost more than the bytes (the plan's side about
+  1,080 T-states for a 32-byte pattern, the copy's about 1,300), a version whose patterns went to
+  the background ring waited a frame or more, and nearly every picture reached the screen a
+  VBLANK late (its queue outlived the split's window). Measured: normal play 13.5 -> 17.8
+  pictures a second on the V9938 (17.6 on the V9958), the game at 99 % of its speed, the busy
+  windows +7-11 %; logic traces 0 differ; no write into the set on screen in 30 s of each busy
+  window (`rc2_sprvram`), SAT and patterns right (`rc2_satcheck`, `rc2_patcheck` 0 bad), the
+  product's start check guard 0 on both VDPs. Versions now show a picture or more sooner, so the
+  exact display records differ from the earlier ones by design (new baselines). Known: an enemy
+  drawn from two parts on the same lines as RoboCop (RoboCop 4 + legs 3 + torso 2) still makes
+  9 on a line, which the budget leaves to the VDP (it hides that line's last sprite, never
+  RoboCop's); with the parts now on time this shows in the vehicle window on the V9958 too
+  (151 of 1,800 frames, where a part was still loading before).
 - **SAT**: built once per published frame (`sat_build`) for the set it goes to. (Until 2026-10-23
   the code for objects alternating between frames was still there, a second half of the pair
   and the interrupt writing their y's, though the budget never set `mux_on` since the user's
@@ -299,10 +312,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   display comparisons of refactors with `LOCKSTEP` builds and `tools/dispcmp.py` (`LOCKSTEP=24`:
   no frame comes late on either VDP, and the same ROM gives the same 3,000 lists twice; the test
   builds also pin the engine's two inputs that depend on its own speed, so that a faster build
-  decides alike: the interrupts load nothing from the background queue while `spr_plan` runs,
-  `pl_busy`, since `rc_prefetch` and `bq_pat` read that queue, and `rc_hold` reads `last_tick`
-  instead of `tick`, the VBLANK count at the moment the budget runs; without the pins a build
-  that is only faster differed in 2,300-2,500 of 3,000 lists); what the MSX
+  decides alike: `rc_hold` reads `last_tick` instead of `tick`, the VBLANK count at the moment
+  the budget runs; until the uploads moved into the plan the interrupts also had to leave the
+  background queue alone while `spr_plan` ran; without the pins a build that is only faster
+  differed in 2,300-2,500 of 3,000 lists); what the MSX
   shows against the bench's BOBs with `tools/objcmp.py` (exact, late, missing: loading, left
   out, or no frame at all in the sprite data, which `bob_flush` hides: the ride's pickups until
   2026-10-21). For the product ROM on a fresh machine (title, keyboard plans `rc2_keys`): `rc2_guard`
@@ -315,7 +328,7 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   `VDP.commandExecuting` probe: a play-area line it wrote was drawn while it ran; this probe
   slows a run about threefold); the
   VBLANK check is taken at `isr.asm` `iv_late`, the list's registers and SAT in, not at
-  `iv_tick`, which comes after `spr_late`'s uploads), `rc2_camcheck` (at every `list_tail`,
+  `iv_tick`, which came after `spr_late`'s uploads until 2026-10-23), `rc2_camcheck` (at every `list_tail`,
   RoboCop's `O_X`/`O_Y` must be `p_x + p_hotx + SPR_X_OFS + 8 − cam_x` /
   `p_y + p_hoty + SPR_Y_OFS − cam_y` with the camera that list publishes), `rc2_overlines`
   (every frame with a line above 8, wanted against shown versions), `rc2_viewlag`, and

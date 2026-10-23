@@ -14,15 +14,14 @@
 ; between frames, the user's rule: the code that took turns in the SAT pairs' second halves went
 ; on 2026-10-23; the pairs keep their 256 bytes.)
 ;
-; One sprite set (colour table + SAT) and the 64 pattern slots, written only while no sprite is
-; on screen: the HUD (sprites off) and the vertical blank. The main loop plans each published
-; frame's changes as an upload queue; the split interrupt runs it a slice per frame
-; (spr_upload) and the VBLANK interrupt puts the frame on screen with its SAT once its queue
-; is done (isr.asm). Every object shows one version (disp) and prepares the version it wants
-; (pend: its patterns go into slots no other entry uses, or into the slot that still holds
-; them); once they are all queued, its colour rows go to its run of SAT entries and the new
-; version replaces the old one in that same frame, so an object never shows half of a change,
-; nor another object's frame. A released slot keeps its pattern (pat_held, pat_slot): frames
+; Two sprite sets (colour table + SAT; R#5 switches them with each list) and the 64 pattern slots.
+; The main program writes what a list needs as it plans it: the patterns into slots no shown entry
+; uses (pat_now), the colour rows and the SAT into the set not on screen (pc_rows, q_sat); the
+; VBLANK interrupt then puts the list on screen with its set. Every object shows one version
+; (disp) and prepares the version it wants (pend: its patterns go into slots no other entry
+; uses, or into the slot that still holds them); once they are all in, its colour rows go to its
+; run of SAT entries and the new version replaces the old one in that same frame, so an object
+; never shows half of a change, nor another object's frame. A released slot keeps its pattern (pat_held, pat_slot): frames
 ; that come back cost nothing.
 ;
 ; SAT: entries 0-1 the hit spark (in front of RoboCop), RoboCop's run from entry 2, the BOBs'
@@ -118,26 +117,6 @@ UP_TOTAL:   equ 400                 ; work per frame (units of about 100 T-state
                                     ; spr_cost; kept for the HUD's own pacing):
 COST_BUDGET: equ 100                ;   the budget
 HUD_HEAVY:  equ 90                  ; HUD work (units) from which the layout of a tick waits
-; Upload queues: the frame's (pq_buf) holds entries [bytes | 80h with the early clock (its bit
-; 7 ORed into each byte), VRAM address as port 99h takes it (low, high | 40h; R#14 = 7: the
-; sprite tables are in 1C000h-1FFFFh), source bank, source address in the A000h window (2)],
-; 0 after the last; the background one (bq_buf, a ring of 32) [slot, its generation, then the
-; same five bytes] for patterns. The plan works them out; spr_upload only copies. Costs in
-; units of 16 T-states (measured: the copy and its overhead).
-Q_PAT:      equ 32                  ; a pattern
-Q_COL:      equ 16                  ; a colour row,
-Q_COLEC:    equ 16 | 0x80           ;   with the early clock
-QC_PAT:     equ 70                  ; what each costs (measured with openMSX: the copy, its set-up
-QC_COL:     equ 42                  ; and the queue's own loop)
-QC_COLEC:   equ 68
-UPW_60:     equ 620                 ; units from the split's uploads (line 166) to the vertical
-UPW_50:     equ 1600                ;   blank (line 212) at 60 Hz; at 50 Hz the frame's queue may
-                                    ;   run on into the long blank (its VBLANK work still ends
-                                    ;   before the next picture)
-PQ_PATS:    equ 6                   ; patterns the frame's queue takes at most (with up to 32
-                                    ; colour rows and the SAT's four parts: pq_buf, 256 bytes)
-BQ_LATE:    equ 400                 ; background units the VBLANK interrupt adds after its own work
-
 ; At a level's start (engines_init): nothing shown, every slot and colour row unknown (spr_init,
 ; cold.asm: in the front end's bank).
 sprites_init:
@@ -1746,10 +1725,9 @@ pu_n:   pop hl
 ; ----- plan -----
 
 ; Once per published frame (sprites_frame): every object's versions toward what it wants, in
-; order RoboCop, the spark, the BOBs. The frame's queue (pq: the patterns and colour rows its
-; new versions need, all written in one blank time, at most pq_left units) and the background
-; queue (bq: patterns of versions still being prepared) are filled; the objects whose new
-; versions are complete then show them in this frame.
+; order RoboCop, the spark, the BOBs. The patterns a new version needs are written into their
+; slots at once (pend_load, pat_now), so a version is complete in the plan that prepares it and
+; shows in this frame.
 spr_plan:
         ld hl,pl_seq
         inc (hl)                    ; (pl_stamp)
@@ -1759,10 +1737,6 @@ spr_plan:
         xor a
         ld (pl_pack),a              ; (no packing yet in this plan)
         call slots_free
-        ld hl,PQ_PATS * QC_PAT      ; (the frame's queue also takes up to 32 rows and the SAT)
-        ld (pq_left),hl
-        ld hl,pq_buf
-        ld (pq_wr),hl
         call rc_zone
         ld hl,pl_wa                 ; one look at every object: one not shown drops its
         ld (pl_pa),hl               ; versions, one shown as it wants is left alone, the others
@@ -1921,20 +1895,13 @@ pz_2:   ld a,c
 
 ; RoboCop's next animation step (the same state's next record, the one before when its
 ; animation runs backwards, the same aim) gets its patterns into free slots before the logic
-; asks for it, through the background queue: its version is then complete at once. Each walk
+; asks for it: its version is then complete at once. Each walk
 ; step has 11-18 patterns of its own (the original redraws the body and arms every step), a
 ; cycle 106 against the 64 slots: loaded only after the change, a step showed 7-12 VBLANKs late
 ; and the steps (2 ticks each) in between were skipped, so the walk looked to go backwards. The
 ; slots it takes are free ones (slot_ref 0, as alloc_slot gives them): no version loses any.
-; After the plan's own work, while the background queue is short (the BOBs' loads first);
-; rcp_id / rcp_ok skip a step already brought in.
+; After the plan's own work; rcp_id / rcp_ok skip a step already brought in.
 rc_prefetch:
-        ld a,(bq_head)
-        ld b,a
-        ld a,(bq_tail)
-        sub b
-        cp 4 * 8
-        ret nc                      ; (4 or more loads waiting)
         ld a,(obj_tab + O_FLAGS)
         rla
         ret nc                      ; (not shown)
@@ -2044,10 +2011,8 @@ rcp_lp: push bc
         ld (rcp_ok),a
         ret
 
-; BC = pattern id: nothing to do when a slot holds it or will (pat_held), else a free slot gets
-; it, used by no entry, its upload into the background queue. C when no slot is free or the
-; queue is full (a slot that got the pattern keeps it: pend_load queues it for a version that
-; wants it).
+; BC = pattern id: nothing to do when a slot holds it (pat_held), else a free slot gets it, used
+; by no entry, the pattern written at once (bq_pat). C when no slot is free.
 slot_warm:
         ld a,b
         and (PAT_HINTS - 1) / 256
@@ -2651,9 +2616,10 @@ pb_none:
         scf
         ret
 
-; IY = the pend record of object pl_obj: its patterns not yet in their slots go into a queue:
-; the frame's (pq) while its units allow, else the background one (bq: they are there by a
-; later frame). NZ when some are still on their way (in bq or a previous frame's bq).
+; IY = the pend record of object pl_obj: its patterns not yet in their slots are written into
+; them now (pat_now: slots no shown entry uses; 2026-10-23, before: through the frame's and the
+; background queues, which the interrupts copied, a version waiting a frame or more for them).
+; Z: all there.
 pend_load:
         ld b,(iy+V_N)
         inc b
@@ -2675,18 +2641,6 @@ pld_cn: ld a,l
 pld_n:  ld a,c                      ; (C = its patterns not in their slots yet: pend_build
         or a                        ; counts them as it builds the version)
         ret z                       ; all there (Z)
-        ld e,QC_PAT                 ; will it be shown in this frame? (its patterns): then they
-        call mul8                   ; take the frame's queue, else the background one (the
-        ex de,hl                    ; frame's units go to those that can be shown)
-        ld hl,(pq_left)
-        or a
-        sbc hl,de
-        ld a,0
-        jr c,pld_q
-        inc a
-pld_q:  ld (pl_pq),a
-        xor a
-        ld (pl_wait),a
         ld b,(iy+V_N)
         call ver_page
         ld l,3
@@ -2696,33 +2650,21 @@ pl_ld:  push bc
         ld d,SLOT_PG
         ld a,(de)                   ; (slot_ok)
         or a
-        jr nz,pl_ok                 ; loaded (or queued in this frame)
+        jr nz,pl_ok                 ; loaded
         inc l
         ld c,(hl)
         inc l
         ld b,(hl)                   ; BC = pattern id
-        ld a,(pl_pq)
-        or a
-        jr z,pl_bq
-        call pq_pat                 ; into this frame's queue (C: no units left)
-        jr nc,pl_ok
-pl_bq:  ld a,e
-        or SO_Q
-        ld l,a
-        ld h,SLOT_PG
-        ld a,(hl)
-        or a
-        call z,bq_pat               ; else the background's, unless it is there (C: full)
-pl_bg:  ld a,1
-        ld (pl_wait),a
+        call pat_now
+        ld a,1
+        ld (de),a                   ; (slot_ok)
 pl_ok:  pop hl
         ld a,l
         add a,ENT_SIZE
         ld l,a
         pop bc
         djnz pl_ld
-        ld a,(pl_wait)
-        or a
+        xor a                       ; (Z: all there)
         ret
 
 ; A, E -> HL = A * E. Keeps BC.
@@ -2737,95 +2679,107 @@ mul8_n: sla e
         rl d
         jr mul8_l
 
-; E = slot, BC = pattern id: into the frame's queue (QC_PAT units; C when they ran out): the
-; slot counts as loaded for the plan (slot_ok 1 now, the queue runs before the frame is shown).
-pq_pat: ld hl,(pq_left)
-        ld a,l
-        sub QC_PAT
-        ld l,a
-        ld a,h
-        sbc a,0
-        ret c
-        ld h,a
-        ld (pq_left),hl
-        ld hl,(pq_wr)
-        ld (hl),Q_PAT
-        inc hl
-        call q_patw
-        ld (pq_wr),hl
+; E = slot, BC = pattern id (slot_warm, RoboCop's next step): the pattern into its slot now,
+; loaded (slot_ok). NC. Keeps BC, DE.
+bq_pat: call pat_now
         ld d,SLOT_PG
         ld a,1
         ld (de),a                   ; (slot_ok)
         or a
         ret
 
-; E = slot, BC = pattern id: into the background queue with the slot's generation (C: full).
-; slot_q marks it queued (the interrupt loads it in a later frame and sets slot_ok).
-bq_pat: ld a,(bq_tail)
-        ld l,a
-        add a,8
-        ld h,a
-        ld a,(bq_head)
-        cp h
-        scf
-        ret z                       ; (full)
-        ld a,h
-        push af                     ; (the next tail)
-        ld h,bq_buf / 256
-        ld (hl),e                   ; slot
-        inc l
-        ld a,e
-        or SO_GEN
+; E = slot, BC = pattern id: its 32 bytes from the pool into the slot now (the slot is free or
+; new: no shown entry uses it, and the pattern table is the same for both sprite sets). The pool's
+; bank at A000h through act_a000 (an interrupt puts it back; sprites_frame restores the window).
+; Keeps BC, DE.
+pat_now:
+        push bc
         push de
-        ld e,a
-        ld d,SLOT_PG
-        ld a,(de)
-        pop de
-        ld (hl),a                   ; its generation
-        inc l
-        call q_patw                 ; (within the entry: no carry into H)
-        pop af
-        ld (bq_tail),a              ; (the interrupt sees it once complete)
-        ld a,e
-        or SO_Q
-        ld l,a
-        ld h,SLOT_PG
-        ld (hl),1                   ; (slot_q)
-        or a
-        ret
-
-; E = slot, BC = pattern id, HL = an entry's five bytes: VRAM address of the slot (low, high |
-; 40h), the pattern's bank and address in the A000h window; HL after them. Keeps BC, DE.
-q_patw: ld a,e
-        rrca
-        rrca
-        rrca
-        push af
-        and 0xE0
-        ld (hl),a                   ; SPR_PAT + 32 * slot: low,
-        inc hl
-        pop af
-        and 0x07
-        add a,((SPR_PAT >> 8) & 0x3F) | 0x40
-        ld (hl),a                   ;   high (write)
-        inc hl
         ld a,b
         add a,SPR_BASE_BANK + SPR_PAT_BANK
-        ld (hl),a                   ; the pool's bank: id / 256,
-        inc hl
+        ld (act_a000),a
+        ld (BANK_A000),a            ; the pool's bank: id / 256,
         ld a,c
         rrca
         rrca
         rrca
-        push af
-        and 0xE0
-        ld (hl),a                   ; A000h + 32 * (id & FFh)
-        inc hl
-        pop af
+        ld l,a
         and 0x1F
         add a,0xA0
-        ld (hl),a
-        inc hl
+        ld h,a
+        ld a,l
+        and 0xE0
+        ld l,a                      ; HL = A000h + 32 * (id & FFh)
+        ld a,e
+        rrca
+        rrca
+        rrca
+        ld d,a
+        and 0xE0
+        ld e,a
+        ld a,d
+        and 0x07
+        add a,((SPR_PAT >> 8) & 0x3F) | 0x40
+        ld d,a                      ; DE = SPR_PAT + 32 * slot (high | 40h: write)
+        call spr_wr
+        ld c,VDP_DATA
+        call outi32
+        pop de
+        pop bc
+        ret
+
+; DE = a VRAM address in 1C000h-1FFFFh (D: high | 40h, E: low): the CPU's writes (port 98h) go
+; there from now on (R#14 = 7). The interrupts off around it: they write registers through port
+; 99h too. Uses A. (The interrupts write no VRAM: every sprite upload is the main program's.)
+spr_wr: di
+        ld a,7
+        out (VDP_CTRL),a
+        ld a,0x8E
+        out (VDP_CTRL),a            ; R#14 = 7
+        ld a,e
+        out (VDP_CTRL),a
+        ld a,d
+        out (VDP_CTRL),a
+        ei
+        ret
+
+; HL = 32 bytes (outi16: 16), C = VDP_DATA: written with OUTIs, 18 T-states a byte. During the
+; display with sprites on the V9938 and V9958 take a CPU write at least every 70 VDP cycles (12
+; T-states; openMSX's access-slot model, from measurements on real chips). Uses B, HL.
+outi32:
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+outi16:
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
         ret
 
 ; ----- commit -----
@@ -3161,6 +3115,8 @@ prm_o:  ld (hl),c                   ; and its new ones
 ; not hold yet (rs_held: that set's col_held) go into the frame's queue. (The two sets: the one on
 ; screen is never written; the other is made complete for the list that switches to it.)
 rows_sync:
+        ld a,0xFF
+        ld (pcr_next),a             ; (no row written yet: pc_rows sets the first address)
         ld iy,disp
         xor a
         ld (pl_obj),a
@@ -3179,10 +3135,10 @@ rsy_n:  ld de,LAY_SIZE
         jr c,rsy_lp
         ret
 
-; IY = a version shown by object pl_obj, pc_start = its run: its colour rows the set does not hold,
-; queued (pq: Q_COL / Q_COLEC, the VRAM address of the entry's row in the set's colour table,
-; the row's bank and address in the A000h window); rs_held follows. (The queue's pointer in the
-; alternate HL.)
+; IY = a version shown by object pl_obj, pc_start = its run: its colour rows the set does not hold
+; written into the set's colour table now (rs_colhi: the set not on screen; consecutive entries'
+; rows follow one another in VRAM, so the address is set only where a run of rows starts:
+; pcr_next); rs_held follows.
 pc_rows:
         call ver_page
         ld l,6
@@ -3193,9 +3149,6 @@ pc_rows:
         add a,e
         ld e,a                      ; (each col_held within a 256-byte page)
         ld b,(iy+V_N)
-        exx
-        ld hl,(pq_wr)
-        exx
 pcr_lp: ld a,(de)
         cp (hl)
         jr nz,pcr_w
@@ -3210,7 +3163,7 @@ pcr_lp: ld a,(de)
         ld l,a
         inc c
         djnz pcr_lp
-        jr pcr_x
+        ret
 pcr_w1: dec e
         dec l
 pcr_w:  ld a,(hl)                   ; the row it wants (bit 15: the early clock): held,
@@ -3225,35 +3178,11 @@ pcr_w:  ld a,(hl)                   ; the row it wants (bit 15: the early clock)
         inc e
         exx
         ld d,a                      ; DE' = the row's id
-        ld (hl),Q_COL
-        rla
-        jr nc,pcr_t
-        ld (hl),Q_COLEC
-pcr_t:  inc hl
-        exx
-        ld a,c
-        exx
-        rlca
-        rlca
-        rlca
-        rlca
-        ld c,a
-        and 0xF0
-        ld (hl),a                   ; the set's colour table + 16 * entry: low,
-        inc hl
-        ld a,c
-        and 0x0F
-        ld b,a
-        ld a,(rs_colhi)
-        add a,b
-        ld (hl),a                   ;   high (write)
-        inc hl
-        ld a,d
         and 0x7E
         rrca
         add a,SPR_BASE_BANK + SPR_COL_BANK
-        ld (hl),a                   ; the pool's bank: (id & 7FFFh) / 512,
-        inc hl
+        ld (act_a000),a
+        ld (BANK_A000),a            ; the pool's bank: (id & 7FFFh) / 512,
         ld a,e
         rlca
         rlca
@@ -3261,25 +3190,61 @@ pcr_t:  inc hl
         rlca
         ld b,a
         and 0xF0
-        ld (hl),a                   ; A000h + 16 * (id & 1FFh)
-        inc hl
+        ld l,a
         ld a,b
         and 0x0F
         bit 0,d
         jr z,pcr_h
         or 0x10
 pcr_h:  add a,0xA0
-        ld (hl),a
-        inc hl
+        ld h,a                      ; HL' = A000h + 16 * (id & 1FFh)
         exx
+        ld a,(pcr_next)
+        cp c
+        call nz,pcr_adr             ; (not right after the last row written: its address)
+        ld a,c
+        inc a
+        ld (pcr_next),a
+        exx
+        ld c,VDP_DATA
+        bit 7,d
+        jr nz,pcr_ec
+        call outi16
+        jr pcr_nx
+pcr_ec: ld b,16                     ; (the early clock: bit 7 of every byte)
+pcr_eb: ld a,(hl)
+        or 0x80
+        out (c),a
+        inc hl
+        djnz pcr_eb
+pcr_nx: exx
         ld a,l
         add a,ENT_SIZE - 1
         ld l,a
         inc c
         djnz pcr_lp
-pcr_x:  exx
-        ld (pq_wr),hl
-        exx
+        ret
+
+; C = SAT entry: the CPU's writes go to its colour row in the set rs_colhi names from now on.
+; Keeps BC, DE, HL.
+pcr_adr:
+        push de
+        ld a,c
+        rlca
+        rlca
+        rlca
+        rlca
+        ld e,a
+        and 0x0F
+        ld d,a
+        ld a,(rs_colhi)
+        add a,d
+        ld d,a                      ; the set's colour table + 16 * entry: high | 40h,
+        ld a,e
+        and 0xF0
+        ld e,a                      ;   low
+        call spr_wr
+        pop de
         ret
 
 ; ----- SAT -----
@@ -3694,6 +3659,8 @@ xpos:   ld e,a
 ; then the SAT when something moved or a version changed (the VBLANK interrupt writes it when
 ; it puts the frame's list on screen).
 sprites_frame:
+        ld a,(act_a000)             ; (the uploads map the pools at A000h: the bank back at the end)
+        push af
         ld a,(hud_msk)              ; non-zero: V9958 engine (R#26/R#27 do not move sprites)
         or a
         ld a,0
@@ -3703,15 +3670,7 @@ sprites_frame:
         sub 8                       ; V9938: R#18 moves sprites by 8 - f
 sf_xadj:
         ld (spr_xadj),a
-        if LOCKSTEP
-        ld a,1                      ; (test builds: the interrupts leave the background queue
-        ld (pl_busy),a              ;  alone while the plan runs, so that its decisions do not
-        endif                       ;  depend on its own speed: exact display comparisons)
         call spr_plan
-        if LOCKSTEP
-        xor a
-        ld (pl_busy),a
-        endif
         call feed_vdp
         ld a,(sat_dirty)
         or a
@@ -3737,267 +3696,36 @@ sf_set: ld (rs_held),hl
         call q_sat                  ; and its SAT
         ld a,1
         ld (spr_vblank),a           ; (the list switches sets: tools/msxframe.py reads it)
-sf_end: ld hl,(pq_wr)
-        ld (hl),0                   ; (the frame's queue ends)
-        ret
+sf_end: pop af
+        jp bank_a000
 
-; The SAT just built (sat_nb, its first half) into the SAT of the set spr_set names: four
-; entries of the frame's queue (32 bytes each, from RAM).
-q_sat:  ld hl,(pq_wr)
-        ld a,(spr_set)
+; The SAT just built (sat_nb, its first half) into the SAT of the set spr_set names, now (that set
+; is not on screen).
+q_sat:  ld a,(spr_set)
         cp R5_SET_A
-        ld c,(((SPR_COL_A + 0x200) >> 8) & 0x3F) | 0x40
+        ld d,(((SPR_COL_A + 0x200) >> 8) & 0x3F) | 0x40
         jr z,qs_a
-        ld c,(((SPR_COL_B + 0x200) >> 8) & 0x3F) | 0x40
-qs_a:   ld de,(sat_nb)
-        ld b,4
-qs_lp:  ld (hl),Q_PAT
-        inc hl
-        ld (hl),e                   ; (the SAT starts at a 256-byte boundary: low byte 32 k)
-        inc hl
-        ld (hl),c
-        inc hl
-        ld a,(act_a000)
-        ld (hl),a                   ; (a source in RAM: the bank does not matter)
-        inc hl
-        ld (hl),e
-        inc hl
-        ld (hl),d
-        inc hl
-        ld a,e
-        add a,32
-        ld e,a
-        djnz qs_lp
-        ld (pq_wr),hl
-        ret
+        ld d,(((SPR_COL_B + 0x200) >> 8) & 0x3F) | 0x40
+qs_a:   ld e,0                      ; (the SATs start at 256-byte boundaries)
+        call spr_wr
+        ld hl,(sat_nb)
+        ld c,VDP_DATA
+        call outi32
+        call outi32
+        call outi32
+        jp outi32
 
 ; ----- the interrupts' side (isr.asm) -----
 
-; From the split interrupt, or from the VBLANK one when no split came: the published list's queue
-; (pq: its patterns into free slots, its colour rows and SAT into the sprite set not on screen),
-; from where the last frame left it, when no VRAM stream of the main program is under way (its
-; address would move); once it is done the list is ready (the VBLANK puts it on screen, its R#5
-; with it); then the background queue (bq) as far as the frame's units go. From the split both
-; stop when the vertical blank begins (the VBLANK interrupt waits for this one: written late,
-; its registers and palette came in the next picture's first lines). Interrupts disabled; uses
-; AF, B, HL (DE kept; C = VDP_CTRL on return, as the interrupt's code expects it).
+; The split interrupt and the VBLANK one: nothing to upload any more (every pattern, colour row and
+; SAT is written by the main program when the plan needs it: pat_now, pc_rows, q_sat; until
+; 2026-10-23 they went through a frame's queue and a background queue that these copied in the
+; HUD's lines and the blank: the queue writing, the copies' set-up and the waiting cost more than
+; the bytes, and a picture reached the screen a VBLANK late). spr_upload keeps C = VDP_CTRL for
+; isr.asm.
 spr_upload:
-        ld a,(vram_busy)
-        or a
-        ret nz
-        push de
-        ld hl,(up_window)
-        ld (su_left),hl
-        ld a,1
-        ld (su_vrchk),a
-su_go:  ld a,7
-        out (VDP_CTRL),a
-        ld a,0x8E
-        out (VDP_CTRL),a            ; R#14 = 7: the sprite tables
-        ld a,(pk_state)
-        cp 1
-        jr nz,su_bg
-        ld hl,(pq_rd)               ; (it goes on where the last frame left it)
-su_pq:  call su_vr
-        jr nz,su_pqs
-        ld a,(su_left+1)
-        rla
-        jr c,su_pqs                 ; (this frame's units are out)
-        ld a,(hl)
-        or a
-        jr z,su_pqd
-        inc hl
-        call su_copy
-        jr su_pq
-su_pqs: ld (pq_rd),hl
-        jr su_bx
-su_pqd: ld (pq_buf),a               ; (done: empty)
-        ld hl,pq_buf
-        ld (pq_rd),hl
-        ld a,2
-        ld (pk_state),a             ; the list goes on screen at the next VBLANK
-su_bg:
-        if LOCKSTEP
-        ld a,(pl_busy)              ; (test builds: not while the plan runs, see sprites_frame)
-        or a
-        jr nz,su_bx
-        endif
-        ld a,(bq_head)
-su_bl:  ld l,a
-        ld a,(bq_tail)
-        cp l
-        jr z,su_bx                  ; (empty)
-        call su_vr
-        jr nz,su_bx
-        ld de,(su_left)
-        bit 7,d
-        jr nz,su_bx                 ; (this frame's units are out)
-        ld a,d
-        or a
-        jr nz,su_bok
-        ld a,e
-        cp QC_PAT
-        jr c,su_bx
-su_bok: ld h,bq_buf / 256
-        ld e,(hl)                   ; slot
-        inc l
-        ld d,(hl)                   ; its generation when it was queued
-        inc l                       ; (HL: the entry's five bytes)
-        push hl
-        ld a,e
-        or SO_GEN
-        ld l,a
-        ld h,SLOT_PG
-        ld a,(hl)                   ; the slot's generation now
-        pop hl
-        cp d
-        jr nz,su_old                ; (taken for another pattern since, which it may show
-        push de                     ; already: not copied)
-        ld a,Q_PAT
-        call su_copy                ; (HL after the five bytes)
-        pop de
-        ld a,e
-        ld e,l
-        ld l,a
-        ld h,SLOT_PG
-        ld (hl),1                   ; slot_ok
-        ld a,e
-        inc a                       ; (past the entry's unused last byte)
-        jr su_nx
-su_old: ld a,l
-        add a,6                     ; (past the five bytes and the unused one)
-su_nx:  ld (bq_head),a
-        jr su_bl
-su_bx:  ld a,(act_a000)
-        ld (BANK_A000),a            ; the main program's bank there again
-        pop de
-        ld c,VDP_CTRL               ; (isr.asm goes on with port 99h in C)
-        ret
-
-; From the VBLANK interrupt once the frame's registers and palette are in: more of the published
-; list's queue and of the background one, BQ_LATE units (they go into the sprite set not on
-; screen and into slots no entry shown uses: harmless whenever they land), unless the main
-; program streams to VRAM.
+        ld c,VDP_CTRL
 spr_late:
-        ld a,(vram_busy)
-        or a
-        ret nz
-        push de
-        ld hl,BQ_LATE
-        ld (su_left),hl
-        xor a
-        ld (su_vrchk),a
-        jp su_go
-
-; -> NZ when the split interrupt's uploads must stop: the vertical blank begun (S#2 VR; the
-; VBLANK interrupt waits for this one). Z from the VBLANK interrupt (su_vrchk 0). Keeps DE, HL.
-su_vr:  ld a,(su_vrchk)
-        or a
-        ret z
-        ld a,2
-        out (VDP_CTRL),a
-        ld a,0x8F
-        out (VDP_CTRL),a
-        in a,(VDP_CTRL)
-        ld b,a
-        xor a
-        out (VDP_CTRL),a
-        ld a,0x8F
-        out (VDP_CTRL),a            ; R#15 = 0
-        bit 6,b
-        ret
-
-; A = bytes (| 80h: bit 7 ORed into each), HL = [VRAM low, high | 40h, bank, source low, high]
-; (R#14 = 7): the copy; HL after the entry; its cost off su_left. Uses AF, BC, DE, HL.
-su_copy:
-        ld c,a
-        ld a,(hl)
-        out (VDP_CTRL),a
-        inc hl
-        ld a,(hl)
-        out (VDP_CTRL),a
-        inc hl
-        ld a,(hl)
-        ld (BANK_A000),a
-        inc hl
-        ld e,(hl)
-        inc hl
-        ld d,(hl)
-        inc hl
-        push hl
-        ld hl,(su_left)
-        ld a,c
-        cp Q_PAT
-        ld a,QC_PAT
-        jr z,sc_u
-        ld a,QC_COL
-        bit 7,c
-        jr z,sc_u
-        ld a,QC_COLEC
-sc_u:   neg
-        add a,l
-        ld l,a
-        jr c,sc_u2
-        dec h
-sc_u2:  ld (su_left),hl
-        ex de,hl
-        ld a,c
-        and 0x7F
-        ld b,a
-        bit 7,c
-        ld c,VDP_DATA
-        jr nz,sc_ec
-        ld a,32                     ; the B bytes (at most 32) through the unrolled OUTIs: 18 T
-        sub b                       ; a byte against OTIR's 23 (the VDP takes a write every 5-9 T
-        add a,a                     ; where the uploads run: the HUD's lines, sprites off, and
-        add a,sc_outi & 0xFF        ; the blank)
-        ld e,a
-        adc a,sc_outi / 256
-        sub e
-        ld d,a
-        push de
-        ret                         ; (jp (de))
-sc_outi:
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        outi
-        pop hl
-        ret
-sc_ec:  ld a,(hl)                   ; (the early clock)
-        or 0x80
-        out (c),a
-        inc hl
-        djnz sc_ec
-        pop hl
         ret
 
 ; A new list on screen (VBLANK) that switched sprite sets (a SAT built for it, prepared in the

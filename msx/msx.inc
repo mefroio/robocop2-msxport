@@ -564,7 +564,9 @@ bo_dirty:   equ 0xF16A              ; 1: an object's identity changed (budget: b
 pl_unl:     equ 0xF16B              ; plan: the slots of the version being built not loaded yet
 su_vrchk:   equ 0xF16C              ; spr_upload: 1 to stop at the vertical blank (split interrupt)
 spr_dsp:    equ 0xF16D              ; R#5 of the sprite set on screen (the interrupt's: sprites.asm iv_sat)
-                                    ; (F16Eh-F190h and F1A0h-F1C2h: free since the alternation went)
+pcr_next:   equ 0xF16E              ; rows_sync: the SAT entry whose colour row follows the last one
+                                    ;   written (FFh: none; pc_rows sets an address only otherwise)
+                                    ; (F16Fh-F190h and F1A0h-F1C2h: free since the alternation went)
 pq_rd:      equ 0xF1C3              ; 2: the published list's queue: where its upload goes on
 rs_held:    equ 0xF1C5              ; 2: rows_sync: the col_held of the set being prepared,
 rs_colhi:   equ 0xF1C7              ;   its colour table's high address byte (port 99h form)
@@ -585,8 +587,6 @@ pl_flp:     equ 0xF19D              ; 2:   the same at the last plan's start
 bu_wsum:    equ 0xF19F              ; budget: the most sprites on a line of each shown object, summed
 fb_busy:    equ 0xF1E0              ; field.asm: 1 while there is work (idle_work calls fb_work)
 fb_bsync:   equ 0xF1E1              ; V9938: the build target whose page holds the BOBs (flip ok)
-pl_busy:    equ 0xF1E2              ; (LOCKSTEP test builds) 1 while spr_plan runs: the interrupts
-                                    ;   leave the background queue alone (sprites.asm su_bg)
 pl_vis:     equ 0xF1E3              ; 2: plan: the objects the look still visits (pl_fl | pl_flp,
                                     ;   shifted out one by one)
 iw_more:    equ 0xF1E5              ; 1 while a scroll engine may have idle work: set once a frame
