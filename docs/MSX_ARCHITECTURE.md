@@ -953,7 +953,87 @@ digit read as an 8 (user's choice). On the V9958 the split turns
 the left-border mask off for the HUD. Positions of the run-time elements (digit cells,
 message line, weapon icon, heads, can) are written to `build/msx/hud_layout.json`.
 
-The split interrupt (`isr.asm` `isr_split`) ends by writing R#19 = `SPLIT_R19`
+The split interrupt (`isr.asm` `isr_split`, V = `VIEW_LINES` = 163) is synchronised to the
+beam (since 2026-10-23):
+
+1. It fires at the right border of display line V-4 (159); the routine polls S#2 HR up to the
+   start of line V-1 and writes R#1 = blank, R#8 = sprites off and R#18 = 0 there (they apply
+   from the next line: lines V..V+3 stay black, and the HR polls below go by the HUD's adjust).
+2. After line V-1's right border (nothing visible changes from there on) it writes R#2 =
+   page 3, R#19 = `SPLIT_R19_ON` (`(HUD_R23 + V + 2) & 255`: a line match at the right border
+   of line V+2) and R#23 = `HUD_R23`, on the V9958 also R#26/R#27 (`split_list`, built by
+   `split_init`). R#19 goes just before R#23, so that the play field's R#19 never meets the
+   HUD's R#23 (such a match, the phantom of 2026-10-21 below, would end the wait at once).
+3. The palette from colour 4 (`hud_palette` = `gen/hud_split.pal`, the HUD's colours 4-15 then
+   0-3; colour 0 is black in both palettes): colours 4-9 with OTIR (the HUD's lines 0-3 use
+   only colours 0 and 4-9: `tools/mkrom.py` stops on a HUD image or an energy can, whose empty
+   tops `hud.asm` draws from line 0 on, that does not, or on a colour 0 that is not the play
+   field's), then one colour at a time while S#1 FH, the line match, is not up.
+4. Once FH is up (the read acknowledges it) and S#2 HR is low again (line V+3 has begun),
+   R#1 = display on, which takes effect at the next line: the HUD shows from line V+4 = 167
+   whatever the CPU's speed and the VDP's I/O waits.
+5. Then the V9958's R#25 (no border mask in the HUD), the colours not written yet (all in by
+   display line ~169 on a 3.58 MHz Z80, before HUD line 4 even at an R800's 8.66 µs per VDP
+   access), R#19 = `SPLIT_R19` with the S#1 read (below) and `isr_fbgo`.
+
+A CPU fast enough to write every colour before FH waits for it with a bound (32 reads, about a
+line at 10 MHz); the bound only matters to a split serviced 3 lines late, whose match was
+behind already (its HUD would then show ~12 lines late at 3.58 MHz). The timelines below found
+the blank in line 162 in every frame on every machine.
+
+Until 8f021e1 the split wrote R#2/R#23/R#18 (R#26/R#27) and the 30 palette bytes with unrolled
+OUTI after line V-1's right border and only then the display-on, "still in line V+3", which held
+for a Z80 at 3.58 MHz without VDP wait states only: on the MSX-ENGINE T9769 (Panasonic
+FS-A1FX/WX/WSX, the turbo R in Z80 mode) every VDP port access takes one more cycle, and the
+V9958 path writes four more bytes, so the ~44 VDP accesses ended after the latch point of line
+V+4 (openMSX applies a display-enable change at the next line's processing start, 144 VDP
+cycles after its sync: `VDP::syncAtNextLine`). The HUD then showed from line 168 (its first
+line black) or jittered 167/168 (its first line flickering), and a faster CPU (Panasonic
+5.37 MHz turbo, R800, OCM custom speeds) landed 1-3 lines off too (a prototype of the same
+sequence, 2026-10-23, landed on 167 at 5.37 and 8.06 MHz, on the FS-A1GT's R800 and with the
+FS-A1FX's turbo on). Measured with EXTJOY builds on `drive_play` (600
+frames each; a breakpoint on the instruction after the display-on write, `sp_on`; the VDP's
+line:cycle there; the display turns on from the next line when the cycle is past 144):
+
+| machine | before (8f021e1) | after |
+|---|---|---|
+| C-BIOS_MSX2 (V9938) | 166:858-1008 → 167 ×600 | 166:798-1236 → 167 ×600 |
+| Gradiente Expert 2.0 (V9938) | 166:852-1002 → 167 ×600 | 166:798-1236 → 167 ×600 |
+| C-BIOS_MSX2+ (V9958) | 166:1206-1362, 167:0-6 → 167 ×600 | 166:966-1170 → 167 ×600 |
+| Sony HB-F1XDJ (V9958, S1985) | 166:1188-1362, 167:0-12 → 167 ×600 | 166:966-1170 → 167 ×600 |
+| Panasonic FS-A1FX (V9958, T9769B) | 167:342-558 → **168 ×600** | 166:906-1122 → 167 ×600 |
+| Panasonic FS-A1GT, Z80 (V9958, T9769C) | 167:78-288 → **167 ×326, 168 ×274** | 166:828-1284 → 167 ×600 |
+
+The other nine machines here land as their twins (the C-BIOS variants, the 64 KiB and CocoaMSX
+Gradientes, the 64 KiB HB-F1XDJ): 167 in 600/600 frames on all 15 now (before, the V9958 ones
+without a T9769 wrote the display-on as late as 167:12, 132 VDP cycles before that line's latch).
+
+A timeline of every register and palette write in lines 159-211 (120 frames on each of the six
+machines) found no write out of place: blank, sprites-off and adjust in line 162 (the FS-A1FX's
+adjust at 163:18 at the latest, before that line's latch), R#2/R#19/R#23 in line 163, colours
+4-9 before the display-on, the last colour by 169:576 (FS-A1FX), R#25 by 167:336 (FS-A1GT).
+
+Cost: ~0.7 lines of the sync (FH to the display-on) and the 10-20 palette bytes that now go
+after the display-on: the split ends ~2 lines later (C-BIOS_MSX2 line 168.9 on average instead
+of 167.0, FS-A1FX 169.6 instead of 167.9), ~440 T a frame, and the frame's uploads start that
+much later (`UPW_60` in `sprites.asm` is kept, so the plan decides as before; the pinned
+LOCKSTEP display records stay identical). `drive_play` pictures/s, the mean of six builds with
+0-5 NOPs after the split (their spread ±0.3 %): C-BIOS_MSX2 13.01 instead of 13.19 (-1.4 %),
+FS-A1FX 12.96 instead of 13.09 (-1.0 %); ticks/s -0.3 % / -0.5 %; `drive_cov0` 860-1340
+-1.4 % / -1.5 %. Fixed area +6 bytes (the palette goes through OTIR: before the sync its speed
+is free, after it OTIR costs 5 T a byte more than OUTI).
+
+The changed cells the engines draw at once while the play area is shown ("a change never waits":
+`scroll9938.asm` `s38r_late`, `scroll9958.asm` `swr_late`) tear when the beam crosses them, and
+how often depends on where in the picture the main program gets to them, which the split's
+length moves. In the 15-machine keyboard plan, FS-A1FX and C-BIOS_MSX2+ together: 0-6 tears
+(2.7 on average) with 8f021e1 and 0-5 NOPs after its split, 5-11 (7.8) with 22-110 NOPs there,
+5-12 (8.6) with the new split and 0-110 NOPs; over seven machines and six builds each, 1.9 tears
+a run before, 3.5 after (the commands drawn into shown lines, ~19 a run, did not change). So it
+is the interrupt time, not the sync (the old split made as long tears as often): those cells
+need drawing where the beam is not.
+
+The split ends by writing R#19 = `SPLIT_R19`
 (`(HUD_R23 + SPLIT_LINE) & 255`, a match already behind) and reading S#1. Fixed 2026-10-21:
 before, the play field's R#19 against the HUD's R#23 (41) matched again at line
 `(cam_y + 118) & 255`; with `cam_y & 255` around 45-94 (level 1's first lift floor, y 720)
