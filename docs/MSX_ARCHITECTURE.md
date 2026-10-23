@@ -384,11 +384,19 @@ which as sprites were striped, cut or left out.
   smoke showed half old, half new for 3-4 pictures); a merged item keeps a BOB's owner over an
   explosion's. A changed cell or a tile the scroll engines draw where a BOB is also becomes an
   item (`fb_cellq`): it is composed with the BOBs over it, never a hole in one.
-- **Composing** (`fb_work`, one VDP command a call while the VDP is idle; the field goes first
-  in `idle_work`): an item is composed in the 64x64 scratch (page 3, x 192, line 112) from its
-  page's list as it was when the item started (`fb_sn`): the background, every BOB over it
-  (LMMM with TIMP, the game's drawing order), then one HMMM onto the page (two to four where
-  the V9958 ring's 256 px or a page's 256 lines are crossed).
+- **Composing** (`fb_work`; the field goes first in `idle_work`): an item is composed in the
+  64x64 scratch (page 3, x 192, line 112) from its page's list as it was when the item started
+  (`fb_sn`): the background, every BOB over it (LMMM with TIMP, the game's drawing order), then
+  one HMMM onto the page (two to four where the V9958 ring's 256 px or a page's 256 lines are
+  crossed). Since 2026-10-23 a call of `fb_work` (the VDP idle) starts the command prepared at
+  the call before, then prepares the next one (`fb_rdy`, up to `FB_STEPS` 3 steps a call) and
+  starts it too when the VDP is idle by then; a command left ready is started by whoever finds
+  the VDP idle first: the next idle point of the main loop or the HUD split and VBLANK interrupts
+  (`ifg_rdy`: composing writes page 3 only, off the screen, so it may start at any beam
+  position). The fill's and the tiles' 16x16 copies go in bursts of up to 16 (`FB_BURST`: the
+  set-up of each takes about as long as the copy before it). Until then every command waited
+  for an idle point of the main loop (one a call, 8-10 ms apart in the busy windows, 23-33 ms
+  for one in ten): an item of 5-6 commands took 65-75 ms from queue to page.
 - **Background caches**: three 64x64 blocks (page 3 x 0, 64, 128) each hold the tiles of a
   4x4-cell window of the map around one owner, cell (r, c) at ((r - oy) & 3, (c - ox) & 3) so
   that a moving owner refills only the cells that come in (one 16x16 HMMM each, `FB_BURST` in a
@@ -419,9 +427,20 @@ which as sprites were striped, cut or left out.
   showed 1 px off for 4 pictures); a hostage may show its next frame a picture early, never
   late. The V9938's old page counts as shown until a flip is on screen (an update in progress
   there ends whole). Measured on the coverage drive: the hold costs about 3 % of pictures in the
-  busiest place (6.6 instead of 6.8 a second, the game's speed the same). Known: a lift's edge
-  and the vehicle on the screen together are copied in two windows, one of them a picture early
-  (2 frames, 1 px; MSX2+ only in the test; two items in the scratch would fix it).
+  busiest place (6.6 instead of 6.8 a second, the game's speed the same). The vehicle window
+  (game frames 860-1340, `sess_fb3.tcl` in the scratchpad), before and after the prepared
+  commands of 2026-10-23: VBLANKs holding a ready list MSX2 12.8 % -> 8.4 %, MSX2+ 9.5 % ->
+  8.2 %; lists held three VBLANKs or more 57 -> 32 of 317 and 39 -> 30 of 242; an item from
+  its queue to the page (median) MSX2 67 -> 55 ms, MSX2+ 73 -> 76 ms; `fb_work` calls per item
+  5.5 -> 2.7. What is left waits for the blank: a copy too long to keep ahead of the beam from
+  the VBLANK (`fb_vok`) starts at the next HUD split, one VBLANK after its list could have
+  gone on screen, since the copy may not start before the list's sprites are uploaded (the
+  same split): 79 of the 110 lists held on the MSX2+. Known: a lift's edge and the vehicle on
+  the screen together are copied in two windows, one of them a picture early (2 frames, 1 px;
+  MSX2+ only in the test; two items in the scratch would fix it). Also known: a copy in two
+  parts (the ring's x 256) whose first part outlasts the split interrupt's wait (about 3 ms)
+  gets its second part from the main loop, outside the blank: the hostage half old, half new
+  for 3 frames, once in the vehicle window (MSX2+; `fieldcheck.py` "hostage torn").
 - **V9938**: the next page is built from a 16 px shifted copy of the displayed one, which brings
   the BOBs in their place as they were when copied: once the copy is done, only where that may
   differ from the BOBs wanted is composed on that page (`fb_bb`: the displayed page's work under
@@ -446,10 +465,29 @@ which as sprites were striped, cut or left out.
   80 x 40 and fire 48 x 16, one item of four 64 x 64 pieces, tile by tile) is erased about 0.2 s
   after it ended. The CPU is the limit there: the logic and the sprite pipeline take about
   95 % of it, the field's work waits 2-15 ms between calls (`idle_work`, `feed_vdp`) while each
-  16 x 16 tile takes the VDP 0.75 ms. Not fixed.
+  16 x 16 tile takes the VDP 0.75 ms. 2026-10-23 (the sprite engine's and the cadence's commits
+  of the day, then the bookkeeping and the prepared commands above; the same three windows,
+  3 x 480 frames): before, MSX2 0 / 0 / 5 frames differ (the 5: a 7 px animated map cell),
+  MSX2+ 0 / 3 (the hostage torn, above) / 0; after, MSX2 0 / 0 / 3 (the same cell), MSX2+ 0 /
+  3 (the same) / 0. On the V9938 the prepared commands let the next page be built sooner (the
+  BOBs synced on it: `fb_bsync`), so the view lags less: frames in which the cadence ran no
+  tick (the view catching up) 68 -> 51 of 315 / 296 in the vehicle window, the 2-tick frames
+  233 -> 235, the game 0.9 % faster; the pictures a second there (7.38 -> 7.00) count those
+  pauses. V9958: 6.02 -> 6.10.
+- **Bookkeeping (2026-10-23)**: `fb_meet` and `fb_union` compare with `sbc` (no `fb_cmp` call:
+  map coordinates never differ by anywhere near 32768); the copies of a BOB list take the count
+  and its entries (`fb_lsz`), and `fb_diff` returns at once when a page already shows the list
+  wanted; `fb_wants` keeps the box around the wanted BOBs' rectangles (`fb_wbx`), copied with
+  the list into the page's box (`fb_pbx0`/`fb_pbx1`), and `fb_bbcell` (V9938: every tile drawn
+  on the page being built) and `fb_cellq` (every cell drawn where a BOB may be) test the cell
+  against the box before walking the BOBs, which 94-96 % of those calls needed not. Decisions
+  identical (LOCKSTEP 24 records 0 differ on both VDPs); the vehicle window: MSX2 7.33 -> 7.38
+  pictures/s, MSX2+ 5.96 -> 6.02; the field's share of that window was 16.6 % (MSX2) / 13.8 %
+  (MSX2+) of the CPU, of which `fb_bbcell` + `fb_cellq` 2.0 % / 2.8 % and `fb_diff` 4.0 % / 3.1 %
+  (`$SP/perf/harvest/field_result.json`).
 - **Code**: a bank of its own at A000h (`BANK_FIELD`, through `field_call`; it also holds the
   scroll engines' set-up); the fixed area keeps only the hooks (`fb_redraw`, `fb_mark`,
-  `fb_pend`, `fb_invf`, the interrupts' `isr_fbgo`).
+  `fb_pend`, `fb_invf`, the interrupts' `isr_fbgo` and `ifg_rdy`).
 
 ## Game logic (`msx/player.asm` and the logic modules)
 

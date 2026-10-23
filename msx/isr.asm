@@ -174,11 +174,12 @@ sp_r19: ld a,SPLIT_R19
 ; A play-field copy for the page shown waiting (field.asm fb_cq 1 or 3), its picture published
 ; (its stamp not fb_tick) with its sprites uploaded (pk_state not 1: both go on screen at the
 ; same VBLANK), the VDP idle and the main program not giving it a command (cmd_lock): it starts
-; now (fb_cq 2 or 4). C = VDP_CTRL (kept), AF, B, HL.
+; now (fb_cq 2 or 4). No copy waiting: a command of theirs for page 3 (ifg_rdy). C = VDP_CTRL
+; (kept), AF, B, HL.
 isr_fbgo:
         ld a,(fb_cq)
         rra
-        ret nc
+        jr nc,ifg_rdy
         ld a,(pk_state)
         dec a
         ret z
@@ -207,6 +208,24 @@ ifg_2:  ld hl,fb_cmd2
         call ifg_send
         ld a,2
         ld (fb_c2),a
+        ret
+
+; A command of the play-field BOBs for page 3 ready (field.asm fb_rdy 1: the scratch, the caches,
+; off the screen, so any time), the VDP idle and the main program not writing a command
+; (cmd_lock): it starts now (fb_rdy 2). C = VDP_CTRL (kept), AF, HL.
+ifg_rdy:
+        ld a,(fb_rdy)
+        dec a
+        ret nz
+        ld a,(cmd_lock)
+        or a
+        ret nz
+        call ifg_idle
+        ret nz
+        ld hl,fb_cmd
+        call ifg_send
+        ld a,2
+        ld (fb_rdy),a
         ret
 
 ; -> Z when the VDP's command engine is idle (S#2 CE). Keeps BC, HL.
@@ -244,11 +263,14 @@ ifg_send:
 isr_vblank:
         ld a,(front_mode)
         or a
-        jr nz,iv_tick
-        ld a,(fb_vok)               ; (a play-field copy that keeps ahead of the beam from here)
-        or a
-        call nz,isr_fbgo
-        ld a,(pk_state)
+        jp nz,iv_tick
+        ld a,(fb_vok)               ; (a play-field copy that keeps ahead of the beam from here,
+        or a                        ;  else a command of theirs for page 3: isr_fbgo, ifg_rdy)
+        jr z,iv_fbr
+        call isr_fbgo
+        jr iv_pk
+iv_fbr: call ifg_rdy
+iv_pk:  ld a,(pk_state)
         cp 1
         jr nz,iv_rdy
         ld a,(split_armed)          ; (no split since the last VBLANK: the display or the line

@@ -250,10 +250,12 @@ s38i_col:
 ; what each page shows (fb_dr0 / fb_dr1, the V9958's ring being page 0) and queues the
 ; rectangles that changed (where a BOB was, where one is now) with their owner; a cell the scroll
 ; engines draw or the game changes where a BOB is goes into the queue too (fb_cellq: the
-; changed cells on the page shown are composed here instead of drawn, never a hole in a BOB).
+; changed cells on the page shown are composed here instead of drawn, never a hole in a BOB; a
+; cell outside the box around a list's BOBs, fb_wbx and fb_pbx0/1, is tested against none).
 ; Rectangles of a page that meet are merged, so that an item always holds every change around
-; it. fb_work composes one item at a time, one VDP command
-; a call when the VDP is idle (rc2.asm idle_work), in the scratch (page 3, 64 x 64 at FB_SX,
+; it. fb_work composes one item at a time, a VDP command after another (each prepared while the
+; one before runs and started by whoever finds the VDP idle first: the main loop's idle points,
+; rc2.asm idle_work, or the interrupts, isr.asm ifg_rdy), in the scratch (page 3, 64 x 64 at FB_SX,
 ; FB_CY): the background, then every BOB the page's list holds over it from the atlas (LMMM
 ; with TIMP, the first drawn by the game first), then the scratch onto the page (HMMM). The
 ; background of an owner's item comes from its cache (one HMMM, up to four where the cache
@@ -281,8 +283,10 @@ FP_TILE:    equ 3                       ;   the background from the tiles,
 FP_BOB:     equ 4                       ;   the BOBs,
 FP_COPY:    equ 5                       ;   the copy onto the page,
 FP_WAIT:    equ 6                       ;   the copy waiting for the blank
-FB_BURST:   equ 4                       ; 16 x 16 copies in a row in one call (each next one set up
-                                        ; while the one before runs: vdp_cmd waits for it)
+FB_BURST:   equ 16                      ; 16 x 16 copies in a row in one call (each next one set up
+                                        ; while the one before runs, which takes about as long:
+                                        ; vdp_cmd waits for it; a piece's 4 x 4 cells at most)
+FB_STEPS:   equ 3                       ; steps of the work in one fb_work call at most
 
 ; At a level's start (engines_init): the pages hold no BOB, no cache holds anything, the dynamic
 ; slot no frame, nothing to do.
@@ -305,6 +309,8 @@ fb_init:
         ld (fb_vok),a
         ld (fb_qlk),a
         ld (fb_stg),a
+        ld (fb_rdy),a
+        ld (fb_shc),a
         ld a,FB_SX
         ld (fb_sbx),a
         ld a,0xFF
@@ -358,13 +364,20 @@ fbf_end:
 ; fb_want from the tick's list (fb_new: frame, the record's x, y, owner): x - 143 (map x, as the
 ; sprites' bf_show) and the frame's offset (a removed frame shown as another, field_tab); the frame
 ; it looks like (field_look), so that a removed frame drawn where the one shown instead was drawn
-; changes nothing (the explosion's and the smoke's other steps).
+; changes nothing (the explosion's and the smoke's other steps). With them fb_wbx, the box around
+; all their rectangles (fb_rect's): a cell outside it meets none of them (fb_bbcell, fb_cellq).
 fb_wants:
         ld a,(fb_n)
         ld (fb_wn),a
         or a
         ret z
         ld b,a
+        ld hl,0x4000                ; (the box: beyond the map on every side until a BOB is in)
+        ld (fb_wbx),hl
+        ld (fb_wbx + 2),hl
+        ld hl,-0x4000
+        ld (fb_wbx + 4),hl
+        ld (fb_wbx + 6),hl
         ld ix,fb_new
         ld iy,fb_want
 fw_lp:  ld e,(ix+0)
@@ -406,16 +419,57 @@ fw_lp:  ld e,(ix+0)
         ld (iy+5),a
         ld a,(ix+6)
         ld (iy+6),a
+        push bc
+        ld a,(iy+0)                 ; the box takes its rectangle in (the frame it looks like, as
+        call fb_tab                 ; fb_rect: x0, y0 the smallest, x1, y1 the largest)
+        inc hl
+        inc hl
+        ld c,(hl)                   ; width
+        inc hl
+        ld b,(hl)                   ; height
+        ld e,(iy+1)
+        ld d,(iy+2)
+        ld hl,(fb_wbx)
+        or a
+        sbc hl,de
+        jp m,fw_bx1
+        ld (fb_wbx),de
+fw_bx1: ld l,c
+        ld h,0
+        add hl,de
+        ex de,hl
+        ld hl,(fb_wbx + 4)
+        or a
+        sbc hl,de
+        jp p,fw_by0
+        ld (fb_wbx + 4),de
+fw_by0: ld e,(iy+3)
+        ld d,(iy+4)
+        ld hl,(fb_wbx + 2)
+        or a
+        sbc hl,de
+        jp m,fw_by1
+        ld (fb_wbx + 2),de
+fw_by1: ld l,b
+        ld h,0
+        add hl,de
+        ex de,hl
+        ld hl,(fb_wbx + 6)
+        or a
+        sbc hl,de
+        jp p,fw_bn
+        ld (fb_wbx + 6),de
+fw_bn:  pop bc
         ld de,FB_ENT
         add ix,de
         add iy,de
-        djnz fw_lp
+        dec b
+        jp nz,fw_lp
         ret
 
-; A = frame -> HL = its field_tab entry (x, y, width, height, dx, dy). Keeps BC, DE.
+; A = frame -> HL = its field_tab entry (x, y, width, height, dx, dy). Keeps BC.
 fb_tab: ld l,a
         ld h,0
-        push de
         ld e,l
         ld d,h
         add hl,hl
@@ -423,7 +477,41 @@ fb_tab: ld l,a
         add hl,hl                   ; * 6
         ld de,field_tab
         add hl,de
-        pop de
+        ret
+
+; A = page (0/1) -> IX = the box around its list's BOBs (fb_pbx0 / fb_pbx1, set with the list:
+; fbx_set; meaningful while the list holds any). Keeps BC, DE, HL.
+fb_bxp: ld ix,fb_pbx0
+        or a
+        ret z
+        ld ix,fb_pbx1
+        ret
+
+; A = page (0/1): its list's box = fb_want's (fb_wbx; the list is a copy of fb_want from now).
+fbx_set:
+        ld hl,fb_wbx
+        ld de,fb_pbx0
+        or a
+        jr z,fxs_c
+        ld de,fb_pbx1
+fxs_c:  ld bc,8
+        ldir
+        ret
+
+; HL = a list -> BC = its bytes: the count, then FB_ENT an entry (a count FFh, unknown: the count
+; only, as no entry of it is read). Keeps DE, HL.
+fb_lsz: ld a,(hl)
+        cp FB_MAX + 1
+        jr c,fls_n
+        xor a
+fls_n:  ld c,a
+        add a,a
+        add a,a
+        add a,a
+        sub c                       ; * FB_ENT (7)
+        inc a
+        ld c,a
+        ld b,0
         ret
 
 ; A = page (0/1) -> HL = its list (count, then the entries). Keeps BC, DE.
@@ -462,7 +550,30 @@ fb_diff:
         ld (fb_dpg),a
         and 1
         call fb_dnp
-        ld a,(hl)
+        ld a,(fb_wn)                ; the page shows the list wanted already: nothing changes
+        cp (hl)
+        jr nz,fd_go
+        or a
+        ret z
+        ld c,a
+        add a,a
+        add a,a
+        add a,a
+        sub c                       ; (FB_ENT bytes an entry)
+        ld b,a
+        ld de,fb_want
+        push hl
+        inc hl
+fd_eq:  ld a,(de)
+        cp (hl)
+        jr nz,fd_ne
+        inc de
+        inc hl
+        djnz fd_eq
+        pop hl
+        ret
+fd_ne:  pop hl
+fd_go:  ld a,(hl)
         inc a
         jr z,fd_unk                 ; (FFh unknown: the sync composes that page)
         dec a
@@ -503,14 +614,16 @@ fd_wlp: push bc
         pop bc
         djnz fd_wlp
 fd_copy:
-        ld a,(fb_dpg)               ; the page's list = fb_want
+        ld a,(fb_dpg)               ; the page's list = fb_want, its box fb_want's
         and 1
+        push af
         call fb_dnp
         ex de,hl
         ld hl,fb_wn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
-        ret
+        pop af
+        jp fbx_set
 
 ; IX = an entry: its rectangle and owner into the queue for fb_diff's page. Keeps IX.
 fb_qent:
@@ -653,65 +766,78 @@ fba_last:
 fba_mrg:
         jp fb_union
 
-; IX = a rectangle (x0, y0, x1, y1) -> C when it meets fb_r (or touches it). Keeps BC, IX.
+; IX = a rectangle (x0, y0, x1, y1) -> C when it meets fb_r (or touches it). Keeps BC, IX. (The
+; sign of a difference of two map coordinates, never near 32768 apart: no fb_cmp here.)
 fb_meet:
-        ld l,(ix+0)
-        ld h,(ix+1)
-        ld de,(fb_r + 4)
-        call fb_cmp                 ; its x0 <= fb_r's x1 (touching counts)
-        jr c,fmt_1
-        ret nz                      ; (NC: past it)
-fmt_1:  ld hl,(fb_r)
-        ld e,(ix+4)
-        ld d,(ix+5)
-        call fb_cmp
-        jr c,fmt_2
-        ret nz
-fmt_2:  ld l,(ix+2)
-        ld h,(ix+3)
-        ld de,(fb_r + 6)
-        call fb_cmp
-        jr c,fmt_3
-        ret nz
-fmt_3:  ld hl,(fb_r + 2)
-        ld e,(ix+6)
-        ld d,(ix+7)
-        call fb_cmp
-        ret c
-        ret nz
+        ld hl,(fb_r + 4)            ; its x0 <= fb_r's x1 (touching counts)
+        ld e,(ix+0)
+        ld d,(ix+1)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld l,(ix+4)                 ; fb_r's x0 <= its x1
+        ld h,(ix+5)
+        ld de,(fb_r)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld hl,(fb_r + 6)            ; its y0 <= fb_r's y1
+        ld e,(ix+2)
+        ld d,(ix+3)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld l,(ix+6)                 ; fb_r's y0 <= its y1
+        ld h,(ix+7)
+        ld de,(fb_r + 2)
+        or a
+        sbc hl,de
+        jp m,fmt_no
         scf
+        ret
+fmt_no: or a
         ret
 
 ; IX = a rectangle: it becomes the union of itself and fb_r. Keeps BC, IX.
 fb_union:
+        ld hl,(fb_r)                ; x0: the smaller
         ld e,(ix+0)
         ld d,(ix+1)
-        ld hl,(fb_r)
-        call fb_cmp
-        jr nc,fu_1
+        or a
+        sbc hl,de
+        jp p,fu_1
+        add hl,de
         ld (ix+0),l
         ld (ix+1),h
-fu_1:   ld e,(ix+2)
+fu_1:   ld hl,(fb_r + 2)            ; y0
+        ld e,(ix+2)
         ld d,(ix+3)
-        ld hl,(fb_r + 2)
-        call fb_cmp
-        jr nc,fu_2
+        or a
+        sbc hl,de
+        jp p,fu_2
+        add hl,de
         ld (ix+2),l
         ld (ix+3),h
-fu_2:   ld l,(ix+4)
-        ld h,(ix+5)
-        ld de,(fb_r + 4)
-        call fb_cmp
-        jr nc,fu_3
-        ld (ix+4),e
-        ld (ix+5),d
-fu_3:   ld l,(ix+6)
-        ld h,(ix+7)
-        ld de,(fb_r + 6)
-        call fb_cmp
-        ret nc
-        ld (ix+6),e
-        ld (ix+7),d
+fu_2:   ld hl,(fb_r + 4)            ; x1: the larger
+        ld e,(ix+4)
+        ld d,(ix+5)
+        or a
+        sbc hl,de
+        jp m,fu_3
+        jr z,fu_3
+        add hl,de
+        ld (ix+4),l
+        ld (ix+5),h
+fu_3:   ld hl,(fb_r + 6)            ; y1
+        ld e,(ix+6)
+        ld d,(ix+7)
+        or a
+        sbc hl,de
+        ret m
+        ret z
+        add hl,de
+        ld (ix+6),l
+        ld (ix+7),h
         ret
 
 ; (scroll9938.asm s38_target) A V9938 build begins: the displayed page's work under way (the item
@@ -1028,15 +1154,48 @@ fqp_d:  push bc
         pop bc
         jr fqp_lp
 
-; Once a VDP command is free (rc2.asm idle_work, the VDP idle): one step of the work.
+; Once a VDP command is free (rc2.asm idle_work, the VDP idle): the command prepared at the call
+; before starts (unless the interrupts started it meanwhile, fb_rdy 2: done by now, the VDP being
+; idle), then a step of the work prepares the next one (fb_rdy 1), which starts here when the VDP
+; is idle by then (or runs a short copy of ours, fb_shc: waited for), else from the interrupts
+; (isr.asm ifg_rdy) or at the next call; FB_STEPS steps a call at most. A step: an item taken
+; (fb_next) and its first command, a phase's next command (the fill's and the tiles' burst counts
+; as one), a copy left waiting for the blank, the item's end. Composing writes page 3 only (the
+; scratch, the caches, the dynamic slot), off the screen: those commands may start at any time;
+; the copy onto the page shown keeps its rules (fb_cq, fb_mayq, the interrupts).
 fb_work:
+        xor a
+        ld (fb_shc),a               ; (the VDP is idle: nothing of ours runs)
+        ld a,FB_STEPS
+        ld (fb_wk),a
+fwk_lp: ld a,(fb_rdy)
+        or a
+        jr z,fwk_st
+        dec a
+        jr z,fwk_go
+        xor a                       ; (the interrupts started it)
+        ld (fb_rdy),a
+        jr fwk_st
+fwk_go: call fb_go
+        ret nz                      ; (a long command of ours still runs: later)
+fwk_st: call fb_step
+        ld a,(fb_rdy)
+        or a
+        ret z                       ; nothing prepared: no work, or a copy waits for the blank
+        ld hl,fb_wk
+        dec (hl)
+        ret z
+        jr fwk_lp
+
+; One step of the work (fb_work).
+fb_step:
         ld a,(fb_ph)
         or a
         jr nz,fwk_ph
         call fb_next
         jr z,fwk_ph
         call fb_sync
-        ret z
+        jr z,fb_step                ; (queued: taken now)
         xor a
         ld (fb_busy),a
         ret
@@ -1127,7 +1286,7 @@ fn_rect:
         ld a,(fb_cur)
         call fb_dnp
         ld de,fb_sn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
         ld a,(fb_sn)
         inc a
@@ -1738,7 +1897,7 @@ ffl_c:  ld d,a
         ld (fb_cmd + 8),hl
         ld (fb_cmd + 10),hl
         ld a,FB_HMMM
-        call fb_issue
+        call fb_issue_now
         ld hl,fb_bn
         dec (hl)
         ret z
@@ -2033,21 +2192,71 @@ ftl_go: ld (fb_rw),a
         ld (fb_cmd + 3),a
         call fb_dscr
         ld a,FB_HMMM
-        call fb_issue
+        call fb_issue_now
         ld hl,fb_bn
         dec (hl)
         ret z
         jp ftl_lp
 
-; A = command: fb_cmd's CLR, ARG and CMD set, the command started (vdp_cmd: once the one before
-; is done).
+; A = command: fb_cmd's CLR, ARG and CMD set, the command ready (fb_rdy 1): fb_work starts it when
+; the VDP is idle, else the interrupts (isr.asm ifg_rdy) or the next call do.
 fb_issue:
         ld (fb_cmd + 14),a
         xor a
         ld (fb_cmd + 12),a
         ld (fb_cmd + 13),a
+        inc a
+        ld (fb_rdy),a
+        ret
+
+; A = command (a burst's 16 x 16 copy): as fb_issue, but started now, once the one before is done
+; (vdp_cmd; both short: the wait is about as long as the set-up of the next); fb_shc notes that
+; the command running is a short one of ours (fb_go waits for it rather than leave the next one
+; to the interrupts).
+fb_issue_now:
+        ld (fb_cmd + 14),a
+        xor a
+        ld (fb_cmd + 12),a
+        ld (fb_cmd + 13),a
+        inc a
+        ld (fb_shc),a
         ld hl,fb_cmd
         jp vdp_cmd
+
+; The command ready (fb_rdy 1) starts now, the VDP idle (a short copy of ours still running is
+; waited for: fb_shc) -> Z; NZ when a long command runs (the interrupts or the next call start
+; it) or the interrupts started it just before (fb_rdy 2). cmd_lock keeps the interrupts off the
+; command registers meanwhile.
+fb_go:  ld a,1
+        ld (cmd_lock),a
+        ld a,(fb_rdy)
+        dec a
+        jr nz,fgo_no
+        ld a,(fb_shc)
+        or a
+        jr z,fgo_b
+        call vdp_wait
+        jr fgo_w
+fgo_b:  call vdp_busy
+        jr nz,fgo_no
+fgo_w:  di
+        ld a,32
+        out (VDP_CTRL),a
+        ld a,0x80+17
+        out (VDP_CTRL),a
+        ei
+        ld hl,fb_cmd
+        ld bc,15*256 + VDP_IND
+        otir                        ; R#32-R#46: it starts
+        xor a
+        ld (fb_rdy),a
+        ld (fb_shc),a
+        ld (cmd_lock),a
+        ret
+fgo_no: xor a
+        ld (cmd_lock),a
+        inc a
+        ret
 
 ; Phase FP_BOB: the next BOB of the page's list (fb_sn) over the piece into the scratch (LMMM with
 ; TIMP: the part inside the piece), from the last in the list (the game drew it first); then the
@@ -2111,7 +2320,11 @@ fbb_sy: add a,FIELD_Y0
 
 ; (fb_bobs) A dynamic frame, IX its entry, fb_r its part inside the piece: the frame resident,
 ; then the part's lines fb_ds..fb_dse strip by strip.
+fbb_df: ld hl,fb_ci                 ; (the frame must be loaded while the VDP is busy: this BOB
+        inc (hl)                    ;  again at the next call, nothing prepared now)
+        ret
 fbb_dy: call fb_dyn
+        jr c,fbb_df
         ld hl,fb_r
         ld de,fb_dpr
         ld bc,8
@@ -2214,7 +2427,8 @@ fbb_ix: ld a,(fb_ci)
 ; A = a dynamic frame (FIELD_DYN0..): its pixels (field_dyn: a frame of dyn_tab) resident in the
 ; dynamic slot (dyn_res), else copied there from the ROM now (bank FIELD_DYN_BANK + its bank at
 ; 8000h, line by line into strips of DYN_H side by side from its atlas x; the VDP idle first: no
-; command may read the slot) and the frames whose place it takes forgotten. Keeps IX.
+; command may read the slot; C when it is busy and nothing was done) and the frames whose place
+; it takes forgotten. Keeps IX.
 fb_dyn: push ix
         ld c,a                      ; (the frame)
         sub FIELD_DYN0
@@ -2238,6 +2452,8 @@ fb_dyn: push ix
         ld a,(ix+1)
         and d
         jp nz,fdy_x                 ; (resident)
+        call vdp_busy
+        jp nz,fdy_bz                ; (a command runs: later)
         ld a,(ix+2)
         cpl
         and e
@@ -2250,9 +2466,6 @@ fb_dyn: push ix
         ld d,a
         ld (dyn_res),de
 fdy_ld:                             ; (a copy)
-        push bc
-        call vdp_wait
-        pop bc
         ld a,c
         call fb_tab                 ; its atlas x, width, height
         ld a,(hl)
@@ -2332,6 +2545,10 @@ fdy_by: add a,c
         pop af
         call bank_8000
 fdy_x:  pop ix
+        or a                        ; (NC)
+        ret
+fdy_bz: pop ix
+        scf
         ret
 
 ; Phase FP_COPY: the next part of the piece from the scratch onto its page (HMMM; the V9958's ring
@@ -2378,8 +2595,9 @@ fcp_part:
         call fb_pcmd
         call fb_shown
         jr z,fcp_wait
-        ld hl,fb_cmd                ; (the hidden page: at once)
-        jp vdp_cmd
+        ld a,1                      ; (the hidden page: no beam to wait for; ready, as fb_issue)
+        ld (fb_rdy),a
+        ret
 fcp_wait:
         xor a                       ; the piece's next part: right after this one (fb_cmd2, the
         ld (fb_c2),a                ; split interrupt), so that both show from the same frame
@@ -2547,17 +2765,19 @@ fcp_next:
         ld (fb_px),hl
         ld de,(fb_cur + 7)
         call fb_cmp
-        jp c,fb_piece
+        jr c,fcn_p
         ld hl,(fb_cur + 3)
         ld (fb_px),hl
         ld hl,(fb_pe + 2)
         ld (fb_px + 2),hl
         ld de,(fb_cur + 9)
         call fb_cmp
-        jp c,fb_piece
+        jr c,fcn_p
         xor a
         ld (fb_ph),a
         ret
+fcn_p:  call fb_piece               ; (its first command in this step)
+        jp fwk_ph
 
 ; The page's window moved: the whole item again.
 fcp_redo:
@@ -2822,15 +3042,17 @@ fmq_ok: xor a
 fmq_no: or 1
         ret
 
-; The prepared copy started now when it is still the time and the split interrupt did not take it
-; (fb_cq 1 or 3, then 2 or 4) -> Z when started. cmd_lock keeps the interrupt off the command
-; registers.
+; The prepared copy started now when it is still the time, the split interrupt did not take it
+; (fb_cq 1 or 3, then 2 or 4) and the VDP is idle (a command this call started may still run) ->
+; Z when started. cmd_lock keeps the interrupt off the command registers.
 fb_qstart:
         ld a,1
         ld (cmd_lock),a
         ld a,(fb_cq)
         and 1
         jr z,fqs_no
+        call vdp_busy
+        jr nz,fqs_no
         di
         ld a,32
         out (VDP_CTRL),a
@@ -2938,12 +3160,14 @@ fs_bl:  push bc
         pop hl
         pop bc
         djnz fs_bl
-fs_m:   ld a,(fb_dpg)               ; its list: fb_want
+fs_m:   ld a,(fb_dpg)               ; its list: fb_want, its box
         call fb_dnp
         ex de,hl
         ld hl,fb_wn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
+        ld a,(fb_dpg)
+        call fbx_set
         ld a,(fb_qn)                ; the marker (its build target), last
         cp FB_QMAX
         jr nc,fs_full
@@ -2963,23 +3187,34 @@ fs_no:  or 1
 
 ; (tiles.asm fb_mark38) D = row, E = column of a tile drawn on the V9938's page being built before
 ; it holds the BOBs (its new column, a new row, a cell the game changed): where it meets a BOB
-; wanted it goes into fb_bb, which the sync composes.
+; wanted it goes into fb_bb, which the sync composes. The box around them first: a cell outside it
+; (most) meets none.
 fb_bbcell:
-        ld a,d
-        call fb_c16
-        ld (fb_tr + 2),hl
-        ld bc,16
-        add hl,bc
-        ld (fb_tr + 6),hl
-        ld a,e
-        call fb_c16
-        ld (fb_tr),hl
-        add hl,bc
-        ld (fb_tr + 4),hl
         ld a,(fb_wn)
         or a
         ret z
         ld b,a
+        ld a,d
+        call fb_c16
+        ld (fb_r + 2),hl
+        ld a,e
+        call fb_c16
+        ld (fb_r),hl
+        ld de,16
+        add hl,de
+        ld (fb_r + 4),hl
+        ld hl,(fb_r + 2)
+        add hl,de
+        ld (fb_r + 6),hl
+        ld ix,fb_wbx
+        call fb_meet
+        ret nc
+        ld hl,fb_r                  ; (fb_rect takes fb_r: the cell into fb_tr)
+        ld de,fb_tr
+        push bc
+        ld bc,8
+        ldir
+        pop bc
         ld ix,fb_want
 fbc_lp: push bc
         call fb_rect
@@ -3051,13 +3286,7 @@ fcq_ql: ld a,(ix+0)
 fcq_qn: ld de,FB_QSZ
         add ix,de
         djnz fcq_ql
-fcq_l:  ld hl,fb_r                  ; a BOB of its list
-        ld de,fb_tr
-        push bc
-        ld bc,8
-        ldir
-        pop bc
-        ld a,c
+fcq_l:  ld a,c                      ; a BOB of its list
         call fb_dnp
         ld a,(hl)
         inc a
@@ -3065,9 +3294,21 @@ fcq_l:  ld hl,fb_r                  ; a BOB of its list
         dec a
         jr z,fcq_no
         ld b,a
+        push hl
+        ld a,c                      ; (the box around them first: a cell outside it meets none)
+        call fb_bxp
+        call fb_meet
+        pop hl
+        jr nc,fcq_no
         inc hl
         push hl
         pop ix
+        ld hl,fb_r                  ; (fb_rect takes fb_r: the cell into fb_tr)
+        ld de,fb_tr
+        push bc
+        ld bc,8
+        ldir
+        pop bc
 fcq_ll: call fb_rect
         push ix
         ld ix,fb_tr
