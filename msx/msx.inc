@@ -251,7 +251,9 @@ ft_tl:      equ 0xE520              ; 3 x 17: budget, the give-way's live object
 ft_tb:      equ 0xE560              ; 3 x 17:   the same in the order of importance (bu_ord: ft_leave_t)
 ft_wp:      equ 0xE5A0              ; 3: ft_lists: each list's next place (low bytes)
 ft_lok:     equ 0xE5A3              ; 1 once ft_lists ran in this budget run
-                                    ; (E5A4h-E5FFh: free, the old background upload ring's)
+fl_mark:    equ 0xE5A4              ; fl_n at the end of the last plan: the slots released up to it
+                                    ;   go at the next plan's start, those after it one plan later
+                                    ; (E5A5h-E5FFh: free, the old background upload ring's)
 pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
                                     ; uploads (sprites.asm Q_...)
 SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:

@@ -1722,11 +1722,14 @@ slot_unref:
         dec (hl)
         ret
 
-; At the start of a plan (the frame it released slots in is on screen): those slots go.
+; At the start of a plan (the frame it released slots in is on screen): those slots go. Slots
+; released since the last plan ended (spr_forget, from bob_flush before this plan: the list on
+; screen still shows them) stay for the next plan: freed now, the plan could write a new pattern
+; into one while the beam draws the sprite that shows it (the plan writes patterns at once).
 slots_free:
-        ld a,(fl_n)
+        ld a,(fl_mark)
         sub SO_FL - 1
-        ret z
+        jr z,sf_keep
         ld b,a
         ld h,SLOT_PG
         ld l,SO_FL
@@ -1737,8 +1740,27 @@ sf_lp:  ld e,(hl)
         ex de,hl
         inc l
         djnz sf_lp
+sf_keep:
+        ld a,(fl_mark)
+        ld e,a                      ; (the last one freed: SO_FL - 1 when none)
+        ld a,(fl_n)
+        sub e
+        ld b,a                      ; those released since
         ld a,SO_FL - 1
-        ld (fl_n),a
+        jr z,sf_x
+        ld h,SLOT_PG
+        ld l,e
+        inc l
+        ld d,h
+        ld e,SO_FL
+sf_mv:  ld a,(hl)                   ; to the list's start
+        ld (de),a
+        inc l
+        inc e
+        djnz sf_mv
+        ld a,e
+        dec a
+sf_x:   ld (fl_n),a
         ret
 
 ; IY = the disp record of object pl_obj: no longer shown once the planned frame is on screen:
@@ -3767,6 +3789,8 @@ sprites_frame:
 sf_xadj:
         ld (spr_xadj),a
         call spr_plan
+        ld a,(fl_n)
+        ld (fl_mark),a              ; (the slots this plan released go at the next one's start)
         call feed_vdp
         ld a,(sat_dirty)
         or a

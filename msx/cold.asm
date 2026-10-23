@@ -89,6 +89,7 @@ spr_init:
         call fill                   ; nothing loaded, nothing queued (slot_ok, slot_q)
         ld a,SO_FL - 1
         ld (fl_n),a                 ; nothing to release
+        ld (fl_mark),a
         ld hl,pat_slot
         ld bc,PAT_HINTS
         ld a,0xFF
