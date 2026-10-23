@@ -250,7 +250,8 @@ s38i_col:
 ; what each page shows (fb_dr0 / fb_dr1, the V9958's ring being page 0) and queues the
 ; rectangles that changed (where a BOB was, where one is now) with their owner; a cell the scroll
 ; engines draw or the game changes where a BOB is goes into the queue too (fb_cellq: the
-; changed cells on the page shown are composed here instead of drawn, never a hole in a BOB).
+; changed cells on the page shown are composed here instead of drawn, never a hole in a BOB; a
+; cell outside the box around a list's BOBs, fb_wbx and fb_pbx0/1, is tested against none).
 ; Rectangles of a page that meet are merged, so that an item always holds every change around
 ; it. fb_work composes one item at a time, one VDP command
 ; a call when the VDP is idle (rc2.asm idle_work), in the scratch (page 3, 64 x 64 at FB_SX,
@@ -358,13 +359,20 @@ fbf_end:
 ; fb_want from the tick's list (fb_new: frame, the record's x, y, owner): x - 143 (map x, as the
 ; sprites' bf_show) and the frame's offset (a removed frame shown as another, field_tab); the frame
 ; it looks like (field_look), so that a removed frame drawn where the one shown instead was drawn
-; changes nothing (the explosion's and the smoke's other steps).
+; changes nothing (the explosion's and the smoke's other steps). With them fb_wbx, the box around
+; all their rectangles (fb_rect's): a cell outside it meets none of them (fb_bbcell, fb_cellq).
 fb_wants:
         ld a,(fb_n)
         ld (fb_wn),a
         or a
         ret z
         ld b,a
+        ld hl,0x4000                ; (the box: beyond the map on every side until a BOB is in)
+        ld (fb_wbx),hl
+        ld (fb_wbx + 2),hl
+        ld hl,-0x4000
+        ld (fb_wbx + 4),hl
+        ld (fb_wbx + 6),hl
         ld ix,fb_new
         ld iy,fb_want
 fw_lp:  ld e,(ix+0)
@@ -406,16 +414,57 @@ fw_lp:  ld e,(ix+0)
         ld (iy+5),a
         ld a,(ix+6)
         ld (iy+6),a
+        push bc
+        ld a,(iy+0)                 ; the box takes its rectangle in (the frame it looks like, as
+        call fb_tab                 ; fb_rect: x0, y0 the smallest, x1, y1 the largest)
+        inc hl
+        inc hl
+        ld c,(hl)                   ; width
+        inc hl
+        ld b,(hl)                   ; height
+        ld e,(iy+1)
+        ld d,(iy+2)
+        ld hl,(fb_wbx)
+        or a
+        sbc hl,de
+        jp m,fw_bx1
+        ld (fb_wbx),de
+fw_bx1: ld l,c
+        ld h,0
+        add hl,de
+        ex de,hl
+        ld hl,(fb_wbx + 4)
+        or a
+        sbc hl,de
+        jp p,fw_by0
+        ld (fb_wbx + 4),de
+fw_by0: ld e,(iy+3)
+        ld d,(iy+4)
+        ld hl,(fb_wbx + 2)
+        or a
+        sbc hl,de
+        jp m,fw_by1
+        ld (fb_wbx + 2),de
+fw_by1: ld l,b
+        ld h,0
+        add hl,de
+        ex de,hl
+        ld hl,(fb_wbx + 6)
+        or a
+        sbc hl,de
+        jp p,fw_bn
+        ld (fb_wbx + 6),de
+fw_bn:  pop bc
         ld de,FB_ENT
         add ix,de
         add iy,de
-        djnz fw_lp
+        dec b
+        jp nz,fw_lp
         ret
 
-; A = frame -> HL = its field_tab entry (x, y, width, height, dx, dy). Keeps BC, DE.
+; A = frame -> HL = its field_tab entry (x, y, width, height, dx, dy). Keeps BC.
 fb_tab: ld l,a
         ld h,0
-        push de
         ld e,l
         ld d,h
         add hl,hl
@@ -423,7 +472,41 @@ fb_tab: ld l,a
         add hl,hl                   ; * 6
         ld de,field_tab
         add hl,de
-        pop de
+        ret
+
+; A = page (0/1) -> IX = the box around its list's BOBs (fb_pbx0 / fb_pbx1, set with the list:
+; fbx_set; meaningful while the list holds any). Keeps BC, DE, HL.
+fb_bxp: ld ix,fb_pbx0
+        or a
+        ret z
+        ld ix,fb_pbx1
+        ret
+
+; A = page (0/1): its list's box = fb_want's (fb_wbx; the list is a copy of fb_want from now).
+fbx_set:
+        ld hl,fb_wbx
+        ld de,fb_pbx0
+        or a
+        jr z,fxs_c
+        ld de,fb_pbx1
+fxs_c:  ld bc,8
+        ldir
+        ret
+
+; HL = a list -> BC = its bytes: the count, then FB_ENT an entry (a count FFh, unknown: the count
+; only, as no entry of it is read). Keeps DE, HL.
+fb_lsz: ld a,(hl)
+        cp FB_MAX + 1
+        jr c,fls_n
+        xor a
+fls_n:  ld c,a
+        add a,a
+        add a,a
+        add a,a
+        sub c                       ; * FB_ENT (7)
+        inc a
+        ld c,a
+        ld b,0
         ret
 
 ; A = page (0/1) -> HL = its list (count, then the entries). Keeps BC, DE.
@@ -462,7 +545,30 @@ fb_diff:
         ld (fb_dpg),a
         and 1
         call fb_dnp
-        ld a,(hl)
+        ld a,(fb_wn)                ; the page shows the list wanted already: nothing changes
+        cp (hl)
+        jr nz,fd_go
+        or a
+        ret z
+        ld c,a
+        add a,a
+        add a,a
+        add a,a
+        sub c                       ; (FB_ENT bytes an entry)
+        ld b,a
+        ld de,fb_want
+        push hl
+        inc hl
+fd_eq:  ld a,(de)
+        cp (hl)
+        jr nz,fd_ne
+        inc de
+        inc hl
+        djnz fd_eq
+        pop hl
+        ret
+fd_ne:  pop hl
+fd_go:  ld a,(hl)
         inc a
         jr z,fd_unk                 ; (FFh unknown: the sync composes that page)
         dec a
@@ -503,14 +609,16 @@ fd_wlp: push bc
         pop bc
         djnz fd_wlp
 fd_copy:
-        ld a,(fb_dpg)               ; the page's list = fb_want
+        ld a,(fb_dpg)               ; the page's list = fb_want, its box fb_want's
         and 1
+        push af
         call fb_dnp
         ex de,hl
         ld hl,fb_wn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
-        ret
+        pop af
+        jp fbx_set
 
 ; IX = an entry: its rectangle and owner into the queue for fb_diff's page. Keeps IX.
 fb_qent:
@@ -653,65 +761,78 @@ fba_last:
 fba_mrg:
         jp fb_union
 
-; IX = a rectangle (x0, y0, x1, y1) -> C when it meets fb_r (or touches it). Keeps BC, IX.
+; IX = a rectangle (x0, y0, x1, y1) -> C when it meets fb_r (or touches it). Keeps BC, IX. (The
+; sign of a difference of two map coordinates, never near 32768 apart: no fb_cmp here.)
 fb_meet:
-        ld l,(ix+0)
-        ld h,(ix+1)
-        ld de,(fb_r + 4)
-        call fb_cmp                 ; its x0 <= fb_r's x1 (touching counts)
-        jr c,fmt_1
-        ret nz                      ; (NC: past it)
-fmt_1:  ld hl,(fb_r)
-        ld e,(ix+4)
-        ld d,(ix+5)
-        call fb_cmp
-        jr c,fmt_2
-        ret nz
-fmt_2:  ld l,(ix+2)
-        ld h,(ix+3)
-        ld de,(fb_r + 6)
-        call fb_cmp
-        jr c,fmt_3
-        ret nz
-fmt_3:  ld hl,(fb_r + 2)
-        ld e,(ix+6)
-        ld d,(ix+7)
-        call fb_cmp
-        ret c
-        ret nz
+        ld hl,(fb_r + 4)            ; its x0 <= fb_r's x1 (touching counts)
+        ld e,(ix+0)
+        ld d,(ix+1)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld l,(ix+4)                 ; fb_r's x0 <= its x1
+        ld h,(ix+5)
+        ld de,(fb_r)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld hl,(fb_r + 6)            ; its y0 <= fb_r's y1
+        ld e,(ix+2)
+        ld d,(ix+3)
+        or a
+        sbc hl,de
+        jp m,fmt_no
+        ld l,(ix+6)                 ; fb_r's y0 <= its y1
+        ld h,(ix+7)
+        ld de,(fb_r + 2)
+        or a
+        sbc hl,de
+        jp m,fmt_no
         scf
+        ret
+fmt_no: or a
         ret
 
 ; IX = a rectangle: it becomes the union of itself and fb_r. Keeps BC, IX.
 fb_union:
+        ld hl,(fb_r)                ; x0: the smaller
         ld e,(ix+0)
         ld d,(ix+1)
-        ld hl,(fb_r)
-        call fb_cmp
-        jr nc,fu_1
+        or a
+        sbc hl,de
+        jp p,fu_1
+        add hl,de
         ld (ix+0),l
         ld (ix+1),h
-fu_1:   ld e,(ix+2)
+fu_1:   ld hl,(fb_r + 2)            ; y0
+        ld e,(ix+2)
         ld d,(ix+3)
-        ld hl,(fb_r + 2)
-        call fb_cmp
-        jr nc,fu_2
+        or a
+        sbc hl,de
+        jp p,fu_2
+        add hl,de
         ld (ix+2),l
         ld (ix+3),h
-fu_2:   ld l,(ix+4)
-        ld h,(ix+5)
-        ld de,(fb_r + 4)
-        call fb_cmp
-        jr nc,fu_3
-        ld (ix+4),e
-        ld (ix+5),d
-fu_3:   ld l,(ix+6)
-        ld h,(ix+7)
-        ld de,(fb_r + 6)
-        call fb_cmp
-        ret nc
-        ld (ix+6),e
-        ld (ix+7),d
+fu_2:   ld hl,(fb_r + 4)            ; x1: the larger
+        ld e,(ix+4)
+        ld d,(ix+5)
+        or a
+        sbc hl,de
+        jp m,fu_3
+        jr z,fu_3
+        add hl,de
+        ld (ix+4),l
+        ld (ix+5),h
+fu_3:   ld hl,(fb_r + 6)            ; y1
+        ld e,(ix+6)
+        ld d,(ix+7)
+        or a
+        sbc hl,de
+        ret m
+        ret z
+        add hl,de
+        ld (ix+6),l
+        ld (ix+7),h
         ret
 
 ; (scroll9938.asm s38_target) A V9938 build begins: the displayed page's work under way (the item
@@ -1127,7 +1248,7 @@ fn_rect:
         ld a,(fb_cur)
         call fb_dnp
         ld de,fb_sn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
         ld a,(fb_sn)
         inc a
@@ -2938,12 +3059,14 @@ fs_bl:  push bc
         pop hl
         pop bc
         djnz fs_bl
-fs_m:   ld a,(fb_dpg)               ; its list: fb_want
+fs_m:   ld a,(fb_dpg)               ; its list: fb_want, its box
         call fb_dnp
         ex de,hl
         ld hl,fb_wn
-        ld bc,1 + FB_MAX * FB_ENT
+        call fb_lsz
         ldir
+        ld a,(fb_dpg)
+        call fbx_set
         ld a,(fb_qn)                ; the marker (its build target), last
         cp FB_QMAX
         jr nc,fs_full
@@ -2963,23 +3086,34 @@ fs_no:  or 1
 
 ; (tiles.asm fb_mark38) D = row, E = column of a tile drawn on the V9938's page being built before
 ; it holds the BOBs (its new column, a new row, a cell the game changed): where it meets a BOB
-; wanted it goes into fb_bb, which the sync composes.
+; wanted it goes into fb_bb, which the sync composes. The box around them first: a cell outside it
+; (most) meets none.
 fb_bbcell:
-        ld a,d
-        call fb_c16
-        ld (fb_tr + 2),hl
-        ld bc,16
-        add hl,bc
-        ld (fb_tr + 6),hl
-        ld a,e
-        call fb_c16
-        ld (fb_tr),hl
-        add hl,bc
-        ld (fb_tr + 4),hl
         ld a,(fb_wn)
         or a
         ret z
         ld b,a
+        ld a,d
+        call fb_c16
+        ld (fb_r + 2),hl
+        ld a,e
+        call fb_c16
+        ld (fb_r),hl
+        ld de,16
+        add hl,de
+        ld (fb_r + 4),hl
+        ld hl,(fb_r + 2)
+        add hl,de
+        ld (fb_r + 6),hl
+        ld ix,fb_wbx
+        call fb_meet
+        ret nc
+        ld hl,fb_r                  ; (fb_rect takes fb_r: the cell into fb_tr)
+        ld de,fb_tr
+        push bc
+        ld bc,8
+        ldir
+        pop bc
         ld ix,fb_want
 fbc_lp: push bc
         call fb_rect
@@ -3051,13 +3185,7 @@ fcq_ql: ld a,(ix+0)
 fcq_qn: ld de,FB_QSZ
         add ix,de
         djnz fcq_ql
-fcq_l:  ld hl,fb_r                  ; a BOB of its list
-        ld de,fb_tr
-        push bc
-        ld bc,8
-        ldir
-        pop bc
-        ld a,c
+fcq_l:  ld a,c                      ; a BOB of its list
         call fb_dnp
         ld a,(hl)
         inc a
@@ -3065,9 +3193,21 @@ fcq_l:  ld hl,fb_r                  ; a BOB of its list
         dec a
         jr z,fcq_no
         ld b,a
+        push hl
+        ld a,c                      ; (the box around them first: a cell outside it meets none)
+        call fb_bxp
+        call fb_meet
+        pop hl
+        jr nc,fcq_no
         inc hl
         push hl
         pop ix
+        ld hl,fb_r                  ; (fb_rect takes fb_r: the cell into fb_tr)
+        ld de,fb_tr
+        push bc
+        ld bc,8
+        ldir
+        pop bc
 fcq_ll: call fb_rect
         push ix
         ld ix,fb_tr

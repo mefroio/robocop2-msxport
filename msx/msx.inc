@@ -673,6 +673,10 @@ fb_sbx:     equ 0x0613              ; the x in page 3 of the piece's 64 x 64 (FB
 fb_spx:     equ 0x0614              ; 32: per staged piece its fb_px and fb_pe (x0, y0, x1, y1)
 fb_bki:     equ 0x0634              ; field.asm fn_take: the best rank so far (fn_key; 0 none),
 fb_bkp:     equ 0x0635              ;   2: its item
+fb_wbx:     equ 0x0637              ; 8: the box around fb_want's rectangles (x0, y0, x1, y1: a cell
+                                    ;   outside it meets no BOB wanted; fb_wants), while fb_wn is not 0
+fb_pbx0:    equ 0x063F              ; 8: the same around page 0's list (fb_dr0), set with it (fbx_set),
+fb_pbx1:    equ 0x0647              ; 8:   around page 1's (fb_dr1); 064Fh-065Fh free
 fb_sn:      equ 0x0660              ; the item being composed: its page's list when it started
 fb_snap:    equ 0x0661              ;   (how many, then FB_MAX entries)
 fb_own:     equ 0x0699              ; 2: the owner of a rectangle going into the queue (FFFFh: none)
