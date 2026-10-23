@@ -643,6 +643,7 @@ budget:
         or a
         call nz,bu_order
         xor a
+        ld (ft_lok),a               ; (the give-way's lists: built at the first give)
         ld (bu_tot),a
         ld (bu_one),a
         ld (bu_cut),a
@@ -1176,26 +1177,31 @@ ft_give:
         jp ft_drop_t                ; (A = 0: the characters)
 
 ; A = tier: the cheapest OR layer of a band of an object of that tier on line ft_line (FFh:
-; anywhere, the spark excluded) is dropped. C when there is none.
+; anywhere, the spark excluded) is dropped. C when there is none. (The tier's live objects in
+; object order, ft_tl: the same candidates in the same order as a walk of all 16 objects.)
 ft_drop_t:
         ld (ft_tier),a
+        ld a,(ft_lok)
+        or a
+        call z,ft_lists
         ld a,0xFF
         ld (ft_best),a
         ld hl,0
         ld (ft_bix),hl
-        ld ix,obj_tab
-        ld b,MAX_OBJ
-fdt_lp: push bc
-        call ft_live
-        jr c,fdt_n
         ld a,(ft_tier)
-        cp (ix+O_TIER)
-        call z,ft_cand
-fdt_n:  ld de,OBJ_SIZE
-        add ix,de
-        pop bc
-        djnz fdt_lp
-        ld hl,(ft_bix)
+        ld hl,ft_tl
+        call ft_tlist
+fdt_lp: ld a,(hl)
+        cp 0xFF
+        jr z,fdt_x
+        inc l
+        push hl
+        call obj_ix
+        call ft_live
+        call nc,ft_cand
+        pop hl
+        jr fdt_lp
+fdt_x:  ld hl,(ft_bix)
         ld a,h
         or l
         scf
@@ -1361,7 +1367,8 @@ fa_lp:  call ft_covers
         ret
 
 ; A = tier: the least important live object of that tier on line ft_line (FFh: anywhere, but the
-; spark) is left out of the tick (the spark first, on a line). C when there is none.
+; spark) is left out of the tick (the spark first, on a line). C when there is none. (The tier's
+; live objects in the order of importance, ft_tb, walked from the end as bu_ord was.)
 ft_leave_t:
         ld (ft_tier),a
         cp 2
@@ -1371,21 +1378,30 @@ ft_leave_t:
         jr c,flt_o
         call ft_anyb
         jr nc,ft_out
-flt_o:  ld hl,bu_ord
+flt_o:  ld a,(ft_lok)
+        or a
+        call z,ft_lists
+        ld a,(ft_tier)
+        ld hl,ft_tb
+        call ft_tlist
+        ld c,l                      ; (its start: the lists do not cross a 256-byte boundary)
 flt_e:  ld a,(hl)
-        inc hl
+        inc l
         cp 0xFF
         jr nz,flt_e
-        dec hl
+        dec l
 flt_lp: ld a,l
-        cp bu_ord & 0xFF
+        cp c
         scf
-        ret z                       ; (none: bu_ord does not cross a 256-byte boundary)
-        dec hl
+        ret z                       ; (none)
+        dec l
         ld a,(hl)
         push hl
+        push bc
         call obj_ix
-        call flt_ok
+        call ft_live
+        call nc,ft_anyb             ; (NC: on the line)
+        pop bc
         pop hl
         jr c,flt_lp
 
@@ -1402,14 +1418,94 @@ ft_out: ld (ix+O_OUT),1
 fo_x:   or a                        ; (NC)
         ret
 
-; IX = object -> NC when it is live, of tier ft_tier and on line ft_line (ft_anyb).
-flt_ok: call ft_live
+; A = tier, HL = ft_tl or ft_tb -> HL = that tier's list (17 bytes a tier). Keeps BC.
+ft_tlist:
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        add a,e                     ; 17 * tier
+        add a,l
+        ld l,a
+        ret
+
+; The give-way's candidates, once a budget run (at its first give: ft_lok): per tier 0-2 the
+; live objects of that tier (RoboCop's tier 3 never gives way) in object order (ft_tl, for
+; ft_drop_t) and in the order of importance (ft_tb, bu_ord's order, for ft_leave_t), FFh after
+; the last. The tiers are the run's (bg_tier); an object left out later in the run stays in
+; them (the walks test ft_live again). Walking every object for each give cost 4-7 % of the CPU
+; in the busy scenes.
+ft_lists:
+        ld a,1
+        ld (ft_lok),a
+        ld hl,ft_tl
+        call ftg_wp
+        ld ix,obj_tab + OBJ_SIZE
+        ld c,1
+ftg_lp: call ftg_one
+        ld de,OBJ_SIZE
+        add ix,de
+        inc c
+        ld a,c
+        cp MAX_OBJ
+        jr c,ftg_lp
+        call ftg_end
+        ld hl,ft_tb
+        call ftg_wp
+        ld hl,bu_ord
+ftg_blp: ld a,(hl)
+        cp 0xFF
+        jp z,ftg_end
+        inc hl
+        push hl
+        ld c,a
+        call obj_ix
+        call ftg_one
+        pop hl
+        jr ftg_blp
+
+; HL = ft_tl or ft_tb: each tier's list empty (ft_wp: their next places).
+ftg_wp: ld de,ft_wp
+        ld a,l
+        ld (de),a
+        add a,17
+        inc de
+        ld (de),a
+        add a,17
+        inc de
+        ld (de),a
+        ret
+
+; IX = object C: into its tier's list when it is live and of tier 0-2. Keeps BC, IX.
+ftg_one:
+        call ft_live
         ret c
-        ld a,(ft_tier)
-        cp (ix+O_TIER)
-        scf
-        ret nz
-        jr ft_anyb
+        ld a,(ix+O_TIER)
+        cp 3
+        ret nc
+        add a,ft_wp & 0xFF
+        ld e,a
+        ld d,ft_wp / 256
+        ld a,(de)
+        ld l,a
+        ld h,ft_tl / 256            ; (ft_tl and ft_tb: one 256-byte page)
+        ld (hl),c
+        inc a
+        ld (de),a
+        ret
+
+; Each list of the kind ftg_wp started: FFh after its last.
+ftg_end:
+        ld de,ft_wp
+        ld b,3
+ftg_elp: ld a,(de)
+        ld l,a
+        ld h,ft_tl / 256
+        ld (hl),0xFF
+        inc de
+        djnz ftg_elp
+        ret
 
 ; ----- versions -----
 

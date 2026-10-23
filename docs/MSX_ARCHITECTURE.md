@@ -274,7 +274,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
      explosions or the spark, one of them left out, an OR layer of the shots, enemy bullets,
      pickups and the characters' small parts (16 px: the vehicle's jets), one of them left out.
      An OR layer is a band's (its B sprites go, its A sprites show A1), the cheapest of its tier
-     covering the line. RoboCop and the characters (enemies, lifts, the vehicle) keep their
+     covering the line. The candidates of each tier come from lists built once a run, at its first
+     give (`ft_lists`: the live objects of tiers 0-2 in object order and in the order of
+     importance), instead of a walk of all 16 objects per give: +2-7 % pictures a second in the
+     busy scenes (2026-10-23). RoboCop and the characters (enemies, lifts, the vehicle) keep their
      look; a line that still passes 8 (two characters and RoboCop on the same lines) is left to
      the VDP, which hides its last sprites: never RoboCop's, whose run comes first in the SAT.
   3. While the total is above 30, the effects give way in the same order, anywhere; only then,

@@ -242,8 +242,16 @@ ln_cnt:     equ 0xE000              ; budget: VIEW_LINES (E000h-E0A2h, 256-byte 
                                     ;   on each line of the play area (E0A3h-E0FFh: free)
 pat_slot:   equ 0xE100              ; 1024 (256-aligned): per pattern id & 3FFh the slot it was put in
                                     ; last (FFh: none; a hint: pat_held says what each slot holds)
-bq_buf:     equ 0xE500              ; 64 x [slot, pattern id (2), slot generation]: patterns of
-                                    ; versions being prepared, loaded by the interrupt (a ring)
+pg_list:    equ 0xE500              ; 16: plan: the BOB objects whose category can have parts, FFh
+                                    ;   after the last (sprites.asm pg_build, pg_each)
+pg_ptr:     equ 0xE510              ;   pg_each's place in it
+pg_new:     equ 0xE511              ;   1: an identity changed since the list was built
+ft_tl:      equ 0xE520              ; 3 x 17: budget, the give-way's live objects of tiers 0-2 in
+                                    ;   object order (ft_drop_t), FFh after the last (ft_lists)
+ft_tb:      equ 0xE560              ; 3 x 17:   the same in the order of importance (bu_ord: ft_leave_t)
+ft_wp:      equ 0xE5A0              ; 3: ft_lists: each list's next place (low bytes)
+ft_lok:     equ 0xE5A3              ; 1 once ft_lists ran in this budget run
+                                    ; (E5A4h-E5FFh: free, the old background upload ring's)
 pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
                                     ; uploads (sprites.asm Q_...)
 SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:
@@ -624,10 +632,6 @@ fb_c2:      equ 0xF1EE              ; 1: fb_cmd2 holds the next part of the copy
                                     ;   interrupt starts it right after fb_cmd's: 2)
 fb_cmd2:    equ 0xF1EF              ; 15: that part's command (R#32-R#46)
 fb_qlk:     equ 0xF1FE              ; 1 while field.asm moves items (queue, work): fb_pend holds
-pg_list:    equ 0xF280              ; 16: plan: the BOB objects whose category can have parts, FFh
-                                    ;   after the last (sprites.asm pg_build, pg_each)
-pg_ptr:     equ 0xF290              ;   pg_each's place in it
-pg_new:     equ 0xF291              ;   1: an identity changed since the list was built
 fb_tr:      equ 0xF240              ; 8: field.asm fb_cellq's cell
 fb_vis:     equ 0xF248              ; 41 (test builds): the play-field BOBs of the list on screen
                                     ;   (tiles.asm fb_visrec: how many, FB_MAX x frame, x, y)
@@ -642,7 +646,7 @@ pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
 ; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F19Bh-F19Fh, F1CFh, F1E2h-F1E6h, F1ECh, F1FFh,
 ; F271h-F27Fh: free; EA60h-EC41h: bob_list,
-; cat_head, hz_ylo..; F280h-F37Fh: the stack)
+; cat_head, hz_ylo..; F280h-F37Fh: the stack: nothing else may live there)
 
 ; --- page 0 RAM (0000h-3FFFh: the main RAM once the BIOS is no longer needed, tiles.asm ram_page0)
 TC_SLOT:    equ 0x0000              ; 512 x 2: slot + 1 holding each tile (0: not in VRAM)
