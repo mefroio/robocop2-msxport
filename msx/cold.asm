@@ -118,6 +118,8 @@ spr_init:
         ld hl,0
         ld (pl_fl),hl
         ld (pl_flp),hl
+        ld a,1
+        ld (pg_new),a               ; (the objects with parts: built at the first plan)
         ld hl,bf_last
         ld bc,MAX_OBJ*6
         ld a,0xFF

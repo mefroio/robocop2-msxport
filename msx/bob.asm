@@ -578,6 +578,7 @@ bf_hl:  ld a,c
         ld (hl),0                   ; no identity
         ld a,1
         ld (bo_dirty),a             ; (the budget's order of importance again)
+        ld (pg_new),a               ; (the plan's objects with parts again: sprites.asm pg_build)
         ld a,c
         call bf_forget
         ld a,c
@@ -755,6 +756,7 @@ bf_hash:
 bf_key: push af
         ld a,1
         ld (bo_dirty),a             ; (the budget's order of importance again)
+        ld (pg_new),a               ; (the plan's objects with parts again: sprites.asm pg_build)
         pop af
         push af
         push bc

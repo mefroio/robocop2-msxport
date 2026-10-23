@@ -1140,22 +1140,24 @@ ls_no:  xor a
 ; (ft_give) until it has 8, or until nothing that may can (the VDP then hides its last
 ; sprites: never RoboCop's, whose run comes first in the SAT).
 ft_lines:
-        ld l,0
-fl_lp:  ld a,l
-        cp VIEW_LINES
-        ret nc
-        ld h,ln_cnt / 256
-        ld a,(hl)
+        ld hl,ln_cnt
+        ld b,VIEW_LINES
+fl_lp:  ld a,(hl)
         cp LINE_LIMIT + 1
-        jr c,fl_nx
-        ld a,l
+        jr nc,fl_hit
+fl_nx:  inc l
+        djnz fl_lp
+        ret
+fl_hit: ld a,l
         ld (ft_line),a
+        push bc
         call ft_give
+        pop bc
         ld a,(ft_line)
         ld l,a
+        ld h,ln_cnt / 256
         jr nc,fl_lp                 ; (the same line again)
-fl_nx:  inc l
-        jr fl_lp
+        jr fl_nx
 
 ; The total phase: while the objects (but the spark) pass BUD_MAX sprites, something gives way
 ; as on a line (ft_line FFh: anywhere).
@@ -1751,6 +1753,9 @@ pu_n:   pop hl
 spr_plan:
         ld hl,pl_seq
         inc (hl)                    ; (pl_stamp)
+        ld a,(pg_new)
+        or a
+        call nz,pg_build            ; (an identity changed: the objects with parts again)
         xor a
         ld (pl_pack),a              ; (no packing yet in this plan)
         call slots_free
@@ -2237,8 +2242,15 @@ pg_each:
         jr z,pge_ok
         xor a                       ; (bullets, pickups, RoboCop's shots: never in parts, and
         ret                         ; the most of the objects)
-pge_ok: ld b,1
-pge_lp: ld a,(pl_obj)
+pge_ok: ld a,pg_list & 0xFF         ; (only the objects whose category can have parts: pg_build;
+pge_lp: ld (pg_ptr),a               ;  no other can hold this key)
+        ld l,a
+        ld h,pg_list / 256
+        ld a,(hl)
+        cp 0xFF
+        jr z,pge_end
+        ld b,a
+        ld a,(pl_obj)
         cp b
         jr z,pge_n
         ld a,b
@@ -2264,15 +2276,46 @@ pge_lp: ld a,(pl_obj)
         call pge_go
         pop de
         pop bc
-pge_n:  inc b
-        ld a,b
-        cp SPARK_OBJ
-        jr c,pge_lp
+pge_n:  ld a,(pg_ptr)
+        inc a
+        jr pge_lp
+pge_end:
         ld a,(pg_or)
         or a
         ret
 pge_go: ld hl,(pg_fn)
         jp (hl)
+
+; The BOB objects whose category can have parts (enemies, lifts, the vehicle, explosions), in
+; object order, FFh after the last (pg_list): what pg_each walks. Built at the plan's start when
+; an identity changed since (pg_new: bob.asm bf_key, bf_hide); with ENEMY_CAP 1 it holds 1-4
+; objects where pg_each used to compare all 14.
+pg_build:
+        xor a
+        ld (pg_new),a
+        ld de,pg_list
+        ld b,1
+pgb_lp: ld a,b
+        add a,a
+        add a,a
+        add a,(obj_key + 3) & 0xFF
+        ld l,a
+        ld h,obj_key / 256
+        ld a,(hl)                   ; its category + 1
+        cp BC_SPECIAL + 1
+        jr nc,pgb_in
+        cp BC_ENEMY + 1
+        jr nz,pgb_n
+pgb_in: ld a,b
+        ld (de),a
+        inc de
+pgb_n:  inc b
+        ld a,b
+        cp SPARK_OBJ
+        jr c,pgb_lp
+        ld a,0xFF
+        ld (de),a
+        ret
 
 ; pg_each's tests: A = a part.
 ; Its state 1 or 2 (changing in this plan).

@@ -204,7 +204,9 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   yet (when no run fits, their parts wait with them), then those that keep their run; a part
   whose smaller new version waited for another that had no room, while its larger old one held
   the entries, had kept the other out for good. Only enemies, lifts, the vehicle and explosions
-  have parts: the other objects skip the search. Measured on the coverage drive (2,500 ticks,
+  have parts: the other objects skip the search, and the search itself walks only the objects
+  whose category can have parts (`pg_list`, built at the plan's start when an identity changed,
+  `pg_new`: 1-4 objects with `ENEMY_CAP` 1 where it compared all 14; 2026-10-23). Measured on the coverage drive (2,500 ticks,
   what the list on screen shows: `pub_spr`), pictures of a character from two ticks went from
   11.4 % to 0.8 % (MSX2) and from 8.2 % to 0 (MSX2+); parts missing 1.0–1.3 %, single plans
   while a new part loads in busy scenes; the game 2 % slower there.

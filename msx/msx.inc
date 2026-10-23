@@ -610,6 +610,10 @@ fb_c2:      equ 0xF1EE              ; 1: fb_cmd2 holds the next part of the copy
                                     ;   interrupt starts it right after fb_cmd's: 2)
 fb_cmd2:    equ 0xF1EF              ; 15: that part's command (R#32-R#46)
 fb_qlk:     equ 0xF1FE              ; 1 while field.asm moves items (queue, work): fb_pend holds
+pg_list:    equ 0xF280              ; 16: plan: the BOB objects whose category can have parts, FFh
+                                    ;   after the last (sprites.asm pg_build, pg_each)
+pg_ptr:     equ 0xF290              ;   pg_each's place in it
+pg_new:     equ 0xF291              ;   1: an identity changed since the list was built
 fb_tr:      equ 0xF240              ; 8: field.asm fb_cellq's cell
 fb_vis:     equ 0xF248              ; 41 (test builds): the play-field BOBs of the list on screen
                                     ;   (tiles.asm fb_visrec: how many, FB_MAX x frame, x, y)
