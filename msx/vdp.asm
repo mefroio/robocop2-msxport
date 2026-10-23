@@ -119,22 +119,10 @@ vram_write:
         ei
         ret
 
-; The end of a VRAM stream: the y's of alternating sprites the VBLANK interrupt left meanwhile
-; go now (sprites.asm sat_mux_out; still early in the frame: the streams are short). Keeps BC,
-; DE, HL.
+; The end of a VRAM stream. Keeps BC, DE, HL.
 vram_done:
-        di
         xor a
         ld (vram_busy),a
-        ld a,(sat_due)
-        or a
-        jr z,vd_x
-        push bc
-        push hl
-        call sat_mux_out
-        pop hl
-        pop bc
-vd_x:   ei
         ret
 
 ; Copies B*256 bytes from HL to port 98h (B = 0: 64 KiB is not supported).

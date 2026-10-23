@@ -232,9 +232,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   list only once its queue is done, then adds `BQ_LATE` units of the background queue
   (`bq_buf`: patterns of versions still being prepared, with the slot's generation checked
   before the copy). Costs in units of 16 T-states (`QC_PAT`, `QC_COL`, `QC_COLEC`).
-- **SAT**: built once per published frame (`sat_build`) for the set it goes to; objects that
-  alternate get a second half (+80h) in which the other phase is parked, and the interrupt
-  writes only their y's on the frames between two lists (`sat_mux_out`).
+- **SAT**: built once per published frame (`sat_build`) for the set it goes to. (Until 2026-10-23
+  the code for objects alternating between frames was still there, a second half of the pair
+  and the interrupt writing their y's, though the budget never set `mux_on` since the user's
+  rule of decision 11: removed, 190 bytes of the fixed area; `pk_mux` and `sat_due` stay 0.)
 - **Y = 216** ends the sprite table: when one of an object's sprites would land on it, the
   whole object moves by the smallest offset (−1, +1, −2, …), never a single part. Objects
   wholly above or below the play area have their entries parked (their 8-bit SAT y would

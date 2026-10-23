@@ -135,8 +135,7 @@ spr_init:
         xor a
         ld (spr_vblank),a
         ld (sat_due),a
-        ld (mux_on),a
-        ld (pk_mux),a
+        ld (pk_mux),a               ; (never set since the alternation went; the Tcl checks read it)
         ld (alloc_p),a
         ld (rcp_ok),a               ; (rc_prefetch: nothing brought in ahead)
         if LOCKSTEP
@@ -303,7 +302,6 @@ isr_init:
         ld (bq_tail),a
         ld (vram_busy),a
         ld (sat_due),a
-        ld (sat_mux_n),a
         ld (spr_vblank),a
         ld (pub_seq),a              ; the list on screen until the first one is published: one
         ld (app_seq),a              ; that changes nothing (R#15 = 0). At power-on the RAM holds
@@ -512,6 +510,26 @@ no_ram: xor a
         call wrreg                  ; display off, no interrupt
         di
         halt
+
+; An MSX1, or an MSX2 with less than 128 KiB of VRAM (rc2.asm init, through front_call): the game
+; cannot run there; a message in SCREEN 0 (the BIOS still serves page 0) and the machine stays
+; on it.
+no_msx2:
+        ei
+        call INITXT
+        ld hl,no2_msg
+nm_lp:  ld a,(hl)
+        or a
+        jr z,nm_x
+        call CHPUT
+        inc hl
+        jr nm_lp
+nm_x:   jr nm_x
+no2_msg:
+        db "ROBOCOP 2 needs an MSX2"
+        db 13, 10
+        db "with 128 KB of VRAM."
+        db 0
 
 ; (tiles.asm) At power-on (rc2.asm init, through front_call).
 ; Page 0 (0000h-3FFFh) switched to the main RAM (the slot of page 3) once the BIOS is not

@@ -10,8 +10,9 @@
 ; Objects (obj_tab): object 0 is RoboCop, SPARK_OBJ the hit spark drawn on him, the others BOB
 ; parts (bob.asm keeps every BOB on the object its identity had: owner and part). The game sets
 ; each object's composition, silhouette and place; the budget adds the OR layers it drops (or
-; leaves it out of the tick): that is the version the object wants. (The SAT's alternating
-; halves, mux_on, stay for a later use: the budget never sets them.)
+; leaves it out of the tick): that is the version the object wants. (Objects never alternate
+; between frames, the user's rule: the code that took turns in the SAT pairs' second halves went
+; on 2026-10-23; the pairs keep their 256 bytes.)
 ;
 ; One sprite set (colour table + SAT) and the 64 pattern slots, written only while no sprite is
 ; on screen: the HUD (sprites off) and the vertical blank. The main loop plans each published
@@ -663,7 +664,6 @@ budget:
         or a
         call nz,bu_order
         xor a
-        ld (mux_on),a
         ld (bu_tot),a
         ld (bu_one),a
         ld (bu_cut),a
@@ -3354,64 +3354,6 @@ sb_onext:
         inc a
         cp MAX_OBJ
         jr c,sb_olp
-        ld a,(mux_on)
-        or a
-        ret z
-        ld hl,(sat_nb)              ; objects alternate: the second SAT
-        ld d,h
-        ld e,0x80
-        ld bc,SAT_MAX*4
-        ldir
-        ld hl,mux_e0                ; and the entries whose y differs in the two (the interrupt
-        ld a,(sat_nb+1)             ; writes only those on the frames between two lists:
-        cp sat_pair0 / 256          ; sat_mux_out)
-        jr z,sb_me
-        ld hl,mux_e1
-sb_me:  ld (hl),0
-        ld (sb_mux),hl
-        xor a
-sb_mlp: ld (sb_obj),a
-        call obj_ix
-        bit 6,(ix+O_FLAGS)
-        jr z,sb_mn
-        ld a,(sb_obj)
-        call ver_iy
-        ld a,(iy+V_ON)
-        or a
-        jr z,sb_mn
-        ld a,(iy+V_RUN)
-        add a,a
-        add a,a
-        bit 0,(ix+O_FLAGS)
-        jr nz,sb_m1
-        or 0x80                     ; phase 0: parked in the second
-sb_m1:  ld l,a
-        ld a,(sat_nb+1)
-        ld h,a
-        ld b,(iy+V_N)
-        ld de,(sb_mux)              ; (the list: count, then 4 * entry each; within a 256-byte
-        ld a,(de)                   ; page)
-        ld c,a
-        add a,b
-        ld (de),a
-        ld a,e
-        add a,c
-        ld e,a
-sb_mp:  inc de
-        ld a,l
-        and 0x7F
-        ld (de),a
-        ld a,(sb_parky)
-        ld (hl),a
-        inc l
-        inc l
-        inc l
-        inc l
-        djnz sb_mp
-sb_mn:  ld a,(sb_obj)
-        inc a
-        cp MAX_OBJ
-        jr c,sb_mlp
         ret
 
 ; IX = object, IY = its disp record, DE = its first SAT entry: writes its entries and its
@@ -3793,8 +3735,6 @@ sf_set: ld (rs_held),hl
         call sat_build
         call feed_vdp
         call q_sat                  ; and its SAT
-        ld a,(mux_on)
-        ld (sat_mux_n),a
         ld a,1
         ld (spr_vblank),a           ; (the list switches sets: tools/msxframe.py reads it)
 sf_end: ld hl,(pq_wr)
@@ -4018,77 +3958,18 @@ sc_ec:  ld a,(hl)                   ; (the early clock)
         pop hl
         ret
 
-; A new list on screen (VBLANK): when it switched sprite sets (a SAT built for it, prepared in
-; the set its R#5 shows), that pair of SAT buffers is the one on screen from now on (sat_cur:
-; the objects alternating take turns in it) and the set (spr_dsp) the one the y's go into.
+; A new list on screen (VBLANK) that switched sprite sets (a SAT built for it, prepared in the
+; set its R#5 shows): that pair of SAT buffers is the one on screen from now on (sat_cur) and
+; the set (spr_dsp). (Interrupt code: keeps DE, which the interrupt does not save.)
 iv_sat: ld a,(spr_vblank)
         or a
-        jr z,iv_same                ; (no SAT of its own: the set on screen goes on)
+        ret z                       ; (no SAT of its own: the set on screen goes on)
         xor a
         ld (spr_vblank),a
         ld hl,(sat_nb)
         ld (sat_cur),hl
         ld a,(spr_set)
         ld (spr_dsp),a
-        ld a,(sat_mux_n)
-        ld (pk_mux),a
-; Every frame while objects alternate: the y of their entries from this frame's half (the rest of
-; the two halves is the same; VRAM holds the other one, or this one), unless the main program
-; streams to VRAM (vram_done writes them then). (Interrupt code: keeps DE, which the interrupt
-; does not save.)
-iv_same:
-        ld a,(pk_mux)
-        or a
-        ret z
-iv_satw:
-        ld a,(tick)
-        ld (sat_ph),a               ; (the frame they are for)
-        ld a,(vram_busy)
-        or a
-        jr z,sat_mux_out
-        ld a,1
-        ld (sat_due),a
-        ret
-sat_mux_out:
-        push de
-        ld a,7
-        out (VDP_CTRL),a
-        ld a,0x8E
-        out (VDP_CTRL),a            ; R#14 = 7 (1C000h-1FFFFh)
-        ld a,(sat_cur+1)
-        ld h,a                      ; the pair on screen
-        ld c,0
-        ld a,(sat_ph)
-        rrca
-        jr nc,smo_h
-        ld c,0x80                   ; (this frame's half)
-smo_h:  ld de,mux_e0
-        ld a,h
-        cp sat_pair0 / 256
-        jr z,smo_l
-        ld de,mux_e1
-smo_l:  ld a,(spr_dsp)              ; the SAT of the set on screen (its high address byte: set B's
-        and 8                       ; R#5 has bit 3, its SAT is 400h on)
-        rrca
-        or (((SPR_COL_A + 0x200) >> 8) & 0x3F) | 0x40
-        ld (smo_hi),a
-        ld a,(de)
-        or a
-        jr z,smo_x
-        ld b,a
-smo_lp: inc de
-        ld a,(de)                   ; 4 * entry
-        out (VDP_CTRL),a            ; (the SATs start at 256-byte boundaries)
-        or c
-        ld l,a
-        ld a,(smo_hi)
-        out (VDP_CTRL),a
-        ld a,(hl)
-        out (VDP_DATA),a            ; its y
-        djnz smo_lp
-smo_x:  xor a
-        ld (sat_due),a
-        pop de
         ret
 
         if DEMO_ACTORS              ; (builds with the demo actors only)

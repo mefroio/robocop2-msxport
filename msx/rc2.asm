@@ -25,19 +25,22 @@ init:   di
         ld hl,dg_log                ;  after each step of the start: sound.asm dg_probe)
         ld (dg_ptr),hl
         endif
+        ld hl,2 + 3 * 256           ; the mapper's banks at power-on in the 8000h and A000h windows
+        ld (act_8000),hl            ; (act_8000, act_a000: the interrupts put act_a000 back)
+        call slot_page2             ; cartridge also in page 2 (8000h-BFFFh)
         ld a,(MSXVER)
         if DIAG
         ld (dg_msxv),a
         endif
         or a
-        jp z,no_msx2                ; (an MSX1)
+        jr z,nm_go                  ; (an MSX1)
         ld a,(MODE)
         and 6
         cp 4
-        jp c,no_msx2                ; (less than 128 KiB of VRAM: the tiles, the HUD and the
-        ld hl,2 + 3 * 256           ;  sprite tables need pages 2-3)           ; the mapper's banks at power-on in the 8000h and A000h windows
-        ld (act_8000),hl            ; (act_8000, act_a000: the interrupts put act_a000 back)
-        call slot_page2             ; cartridge also in page 2 (8000h-BFFFh)
+        jr nc,nm_ok                 ; (less than 128 KiB of VRAM: the tiles, the HUD and the
+nm_go:  ld hl,no_msx2               ;  sprite tables need pages 2-3: cold.asm, a message, and
+        jp front_call               ;  the machine stays on it)
+nm_ok:
         if DIAG
         di
         ld b,'1'
@@ -323,25 +326,6 @@ front_call:
         ld a,BANK_FRONT
         call bank_8000
         jp (hl)
-
-; An MSX1, or an MSX2 with less than 128 KiB of VRAM: the game cannot run there; a message in
-; SCREEN 0 (the BIOS still serves page 0) and the machine stays on it.
-no_msx2:
-        ei
-        call INITXT
-        ld hl,no2_msg
-nm_lp:  ld a,(hl)
-        or a
-        jr z,nm_x
-        call CHPUT
-        inc hl
-        jr nm_lp
-nm_x:   jr nm_x
-no2_msg:
-        db "ROBOCOP 2 needs an MSX2"
-        db 13, 10
-        db "with 128 KB of VRAM."
-        db 0
 
 do_update:
         ld hl,(update_vec)
