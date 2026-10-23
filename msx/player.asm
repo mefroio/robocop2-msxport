@@ -104,7 +104,8 @@ cl_p:   ld de,LAG_MAX
         ret
 
 ; -> NC when the view shown lags behind the one the game wants (x) and RoboCop's sprites reach
-; within RC_EDGE pixels of the screen's left or right edge. Keeps BC.
+; within RC_EDGE pixels of the screen's left or right edge; D = 0 then (the cadence's tick cap).
+; Keeps BC.
 rc_safe:
         ld hl,(v_x)
         ld de,(cam_x)
@@ -140,8 +141,9 @@ rs_r:   ld a,(ix+O_MAXDX)
         add hl,de
         ld de,16 + RC_EDGE - 256
         add hl,de                   ; his right edge + RC_EDGE - 256
-        ld a,h
-        rla                         ; C when it is left of the edge
+        ld d,0                      ; (NC: the cadence takes D as its tick cap, none; with D = FFh
+        ld a,h                      ;  from the load above every due tick ran and he could leave
+        rla                         ; C when it is left of the edge          the screen, 2026-10-23)
         ret
 
 ; One game frame: main_loop's calls that are ported so far, in its order.

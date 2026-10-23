@@ -439,7 +439,10 @@ which as sprites were striped, cut or left out.
   the walk's among them; 2 costs about 5 % of speed in busy scenes, 92 % in the worst 2 s), `CAD_HOLD` = 2 while the V9938 scroll keeps the camera at a
   page's edge, none while the view shown is 32 px or more behind the one wanted, or behind at
   all with RoboCop's sprites within 16 px of the screen's edge (`cam_lag`, `rc_safe`: the scroll
-  catches up first, so he never runs off the screen); a longer delay is lost and only then the
+  catches up first, so he never runs off the screen; until 2026-10-23 `rc_safe` left D = FFh on its
+  right-edge return and the cadence took that as its cap: every due tick ran there instead of
+  none, up to 4 a picture, and his sprites reached 7-9 px past the right edge in 1-4 lists of
+  each busy coverage window; fixed: never above 2, 0 lists beyond); a longer delay is lost and only then the
   game slows down, as the original does when its frame takes 3 VBLs) and the display skips
   their pictures (`bob_skip`: their BOBs are not even recorded). The timer's seconds count
   VBLANKs, not frames.
