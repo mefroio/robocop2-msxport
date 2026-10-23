@@ -253,8 +253,9 @@ s38i_col:
 ; changed cells on the page shown are composed here instead of drawn, never a hole in a BOB; a
 ; cell outside the box around a list's BOBs, fb_wbx and fb_pbx0/1, is tested against none).
 ; Rectangles of a page that meet are merged, so that an item always holds every change around
-; it. fb_work composes one item at a time, one VDP command
-; a call when the VDP is idle (rc2.asm idle_work), in the scratch (page 3, 64 x 64 at FB_SX,
+; it. fb_work composes one item at a time, a VDP command after another (each prepared while the
+; one before runs and started by whoever finds the VDP idle first: the main loop's idle points,
+; rc2.asm idle_work, or the interrupts, isr.asm ifg_rdy), in the scratch (page 3, 64 x 64 at FB_SX,
 ; FB_CY): the background, then every BOB the page's list holds over it from the atlas (LMMM
 ; with TIMP, the first drawn by the game first), then the scratch onto the page (HMMM). The
 ; background of an owner's item comes from its cache (one HMMM, up to four where the cache
@@ -282,8 +283,10 @@ FP_TILE:    equ 3                       ;   the background from the tiles,
 FP_BOB:     equ 4                       ;   the BOBs,
 FP_COPY:    equ 5                       ;   the copy onto the page,
 FP_WAIT:    equ 6                       ;   the copy waiting for the blank
-FB_BURST:   equ 4                       ; 16 x 16 copies in a row in one call (each next one set up
-                                        ; while the one before runs: vdp_cmd waits for it)
+FB_BURST:   equ 16                      ; 16 x 16 copies in a row in one call (each next one set up
+                                        ; while the one before runs, which takes about as long:
+                                        ; vdp_cmd waits for it; a piece's 4 x 4 cells at most)
+FB_STEPS:   equ 3                       ; steps of the work in one fb_work call at most
 
 ; At a level's start (engines_init): the pages hold no BOB, no cache holds anything, the dynamic
 ; slot no frame, nothing to do.
@@ -306,6 +309,8 @@ fb_init:
         ld (fb_vok),a
         ld (fb_qlk),a
         ld (fb_stg),a
+        ld (fb_rdy),a
+        ld (fb_shc),a
         ld a,FB_SX
         ld (fb_sbx),a
         ld a,0xFF
@@ -1149,15 +1154,48 @@ fqp_d:  push bc
         pop bc
         jr fqp_lp
 
-; Once a VDP command is free (rc2.asm idle_work, the VDP idle): one step of the work.
+; Once a VDP command is free (rc2.asm idle_work, the VDP idle): the command prepared at the call
+; before starts (unless the interrupts started it meanwhile, fb_rdy 2: done by now, the VDP being
+; idle), then a step of the work prepares the next one (fb_rdy 1), which starts here when the VDP
+; is idle by then (or runs a short copy of ours, fb_shc: waited for), else from the interrupts
+; (isr.asm ifg_rdy) or at the next call; FB_STEPS steps a call at most. A step: an item taken
+; (fb_next) and its first command, a phase's next command (the fill's and the tiles' burst counts
+; as one), a copy left waiting for the blank, the item's end. Composing writes page 3 only (the
+; scratch, the caches, the dynamic slot), off the screen: those commands may start at any time;
+; the copy onto the page shown keeps its rules (fb_cq, fb_mayq, the interrupts).
 fb_work:
+        xor a
+        ld (fb_shc),a               ; (the VDP is idle: nothing of ours runs)
+        ld a,FB_STEPS
+        ld (fb_wk),a
+fwk_lp: ld a,(fb_rdy)
+        or a
+        jr z,fwk_st
+        dec a
+        jr z,fwk_go
+        xor a                       ; (the interrupts started it)
+        ld (fb_rdy),a
+        jr fwk_st
+fwk_go: call fb_go
+        ret nz                      ; (a long command of ours still runs: later)
+fwk_st: call fb_step
+        ld a,(fb_rdy)
+        or a
+        ret z                       ; nothing prepared: no work, or a copy waits for the blank
+        ld hl,fb_wk
+        dec (hl)
+        ret z
+        jr fwk_lp
+
+; One step of the work (fb_work).
+fb_step:
         ld a,(fb_ph)
         or a
         jr nz,fwk_ph
         call fb_next
         jr z,fwk_ph
         call fb_sync
-        ret z
+        jr z,fb_step                ; (queued: taken now)
         xor a
         ld (fb_busy),a
         ret
@@ -1859,7 +1897,7 @@ ffl_c:  ld d,a
         ld (fb_cmd + 8),hl
         ld (fb_cmd + 10),hl
         ld a,FB_HMMM
-        call fb_issue
+        call fb_issue_now
         ld hl,fb_bn
         dec (hl)
         ret z
@@ -2154,21 +2192,71 @@ ftl_go: ld (fb_rw),a
         ld (fb_cmd + 3),a
         call fb_dscr
         ld a,FB_HMMM
-        call fb_issue
+        call fb_issue_now
         ld hl,fb_bn
         dec (hl)
         ret z
         jp ftl_lp
 
-; A = command: fb_cmd's CLR, ARG and CMD set, the command started (vdp_cmd: once the one before
-; is done).
+; A = command: fb_cmd's CLR, ARG and CMD set, the command ready (fb_rdy 1): fb_work starts it when
+; the VDP is idle, else the interrupts (isr.asm ifg_rdy) or the next call do.
 fb_issue:
         ld (fb_cmd + 14),a
         xor a
         ld (fb_cmd + 12),a
         ld (fb_cmd + 13),a
+        inc a
+        ld (fb_rdy),a
+        ret
+
+; A = command (a burst's 16 x 16 copy): as fb_issue, but started now, once the one before is done
+; (vdp_cmd; both short: the wait is about as long as the set-up of the next); fb_shc notes that
+; the command running is a short one of ours (fb_go waits for it rather than leave the next one
+; to the interrupts).
+fb_issue_now:
+        ld (fb_cmd + 14),a
+        xor a
+        ld (fb_cmd + 12),a
+        ld (fb_cmd + 13),a
+        inc a
+        ld (fb_shc),a
         ld hl,fb_cmd
         jp vdp_cmd
+
+; The command ready (fb_rdy 1) starts now, the VDP idle (a short copy of ours still running is
+; waited for: fb_shc) -> Z; NZ when a long command runs (the interrupts or the next call start
+; it) or the interrupts started it just before (fb_rdy 2). cmd_lock keeps the interrupts off the
+; command registers meanwhile.
+fb_go:  ld a,1
+        ld (cmd_lock),a
+        ld a,(fb_rdy)
+        dec a
+        jr nz,fgo_no
+        ld a,(fb_shc)
+        or a
+        jr z,fgo_b
+        call vdp_wait
+        jr fgo_w
+fgo_b:  call vdp_busy
+        jr nz,fgo_no
+fgo_w:  di
+        ld a,32
+        out (VDP_CTRL),a
+        ld a,0x80+17
+        out (VDP_CTRL),a
+        ei
+        ld hl,fb_cmd
+        ld bc,15*256 + VDP_IND
+        otir                        ; R#32-R#46: it starts
+        xor a
+        ld (fb_rdy),a
+        ld (fb_shc),a
+        ld (cmd_lock),a
+        ret
+fgo_no: xor a
+        ld (cmd_lock),a
+        inc a
+        ret
 
 ; Phase FP_BOB: the next BOB of the page's list (fb_sn) over the piece into the scratch (LMMM with
 ; TIMP: the part inside the piece), from the last in the list (the game drew it first); then the
@@ -2232,7 +2320,11 @@ fbb_sy: add a,FIELD_Y0
 
 ; (fb_bobs) A dynamic frame, IX its entry, fb_r its part inside the piece: the frame resident,
 ; then the part's lines fb_ds..fb_dse strip by strip.
+fbb_df: ld hl,fb_ci                 ; (the frame must be loaded while the VDP is busy: this BOB
+        inc (hl)                    ;  again at the next call, nothing prepared now)
+        ret
 fbb_dy: call fb_dyn
+        jr c,fbb_df
         ld hl,fb_r
         ld de,fb_dpr
         ld bc,8
@@ -2335,7 +2427,8 @@ fbb_ix: ld a,(fb_ci)
 ; A = a dynamic frame (FIELD_DYN0..): its pixels (field_dyn: a frame of dyn_tab) resident in the
 ; dynamic slot (dyn_res), else copied there from the ROM now (bank FIELD_DYN_BANK + its bank at
 ; 8000h, line by line into strips of DYN_H side by side from its atlas x; the VDP idle first: no
-; command may read the slot) and the frames whose place it takes forgotten. Keeps IX.
+; command may read the slot; C when it is busy and nothing was done) and the frames whose place
+; it takes forgotten. Keeps IX.
 fb_dyn: push ix
         ld c,a                      ; (the frame)
         sub FIELD_DYN0
@@ -2359,6 +2452,8 @@ fb_dyn: push ix
         ld a,(ix+1)
         and d
         jp nz,fdy_x                 ; (resident)
+        call vdp_busy
+        jp nz,fdy_bz                ; (a command runs: later)
         ld a,(ix+2)
         cpl
         and e
@@ -2371,9 +2466,6 @@ fb_dyn: push ix
         ld d,a
         ld (dyn_res),de
 fdy_ld:                             ; (a copy)
-        push bc
-        call vdp_wait
-        pop bc
         ld a,c
         call fb_tab                 ; its atlas x, width, height
         ld a,(hl)
@@ -2453,6 +2545,10 @@ fdy_by: add a,c
         pop af
         call bank_8000
 fdy_x:  pop ix
+        or a                        ; (NC)
+        ret
+fdy_bz: pop ix
+        scf
         ret
 
 ; Phase FP_COPY: the next part of the piece from the scratch onto its page (HMMM; the V9958's ring
@@ -2499,8 +2595,9 @@ fcp_part:
         call fb_pcmd
         call fb_shown
         jr z,fcp_wait
-        ld hl,fb_cmd                ; (the hidden page: at once)
-        jp vdp_cmd
+        ld a,1                      ; (the hidden page: no beam to wait for; ready, as fb_issue)
+        ld (fb_rdy),a
+        ret
 fcp_wait:
         xor a                       ; the piece's next part: right after this one (fb_cmd2, the
         ld (fb_c2),a                ; split interrupt), so that both show from the same frame
@@ -2668,17 +2765,19 @@ fcp_next:
         ld (fb_px),hl
         ld de,(fb_cur + 7)
         call fb_cmp
-        jp c,fb_piece
+        jr c,fcn_p
         ld hl,(fb_cur + 3)
         ld (fb_px),hl
         ld hl,(fb_pe + 2)
         ld (fb_px + 2),hl
         ld de,(fb_cur + 9)
         call fb_cmp
-        jp c,fb_piece
+        jr c,fcn_p
         xor a
         ld (fb_ph),a
         ret
+fcn_p:  call fb_piece               ; (its first command in this step)
+        jp fwk_ph
 
 ; The page's window moved: the whole item again.
 fcp_redo:
@@ -2943,15 +3042,17 @@ fmq_ok: xor a
 fmq_no: or 1
         ret
 
-; The prepared copy started now when it is still the time and the split interrupt did not take it
-; (fb_cq 1 or 3, then 2 or 4) -> Z when started. cmd_lock keeps the interrupt off the command
-; registers.
+; The prepared copy started now when it is still the time, the split interrupt did not take it
+; (fb_cq 1 or 3, then 2 or 4) and the VDP is idle (a command this call started may still run) ->
+; Z when started. cmd_lock keeps the interrupt off the command registers.
 fb_qstart:
         ld a,1
         ld (cmd_lock),a
         ld a,(fb_cq)
         and 1
         jr z,fqs_no
+        call vdp_busy
+        jr nz,fqs_no
         di
         ld a,32
         out (VDP_CTRL),a

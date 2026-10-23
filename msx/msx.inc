@@ -598,6 +598,7 @@ iw_more:    equ 0xF1E5              ; 1 while a scroll engine may have idle work
                                     ;   (wait_frame, the engine's update) and when a changed cell is
                                     ;   queued (rq_add), cleared by the engine's idle exit; feed_vdp
                                     ;   looks at the engines only then
+fb_shc:     equ 0xF1E6              ; field.asm fb_work: 1 while a short copy of its burst runs
 fb_eng:     equ 0xF1E7              ; field.asm: 0 the V9958's ring, 1 the V9938's two pages
 fb_cqp:     equ 0xF1E8              ; tiles.asm fb_redraw -> field.asm fb_cellq: the page,
 fb_cqr:     equ 0xF1E9              ;   1: the play-field BOBs draw the cell
@@ -605,11 +606,15 @@ cmd_lock:   equ 0xF1EA              ; 1 while the main program gives the VDP a c
                                     ;   interrupt then starts no play-field copy: isr.asm)
 fb_hold:    equ 0xF1EB              ; VBLANKs a published list has waited for its play-field BOBs
 FB_HOLD:    equ 8                   ;   (isr.asm), at most
+fb_rdy:     equ 0xF1EC              ; field.asm: 1 a command for page 3 is ready in fb_cmd (whoever
+                                    ;   finds the VDP idle starts it: fb_go, isr.asm ifg_rdy), 2 the
+                                    ;   interrupts started it
 fb_vok:     equ 0xF1ED              ; 1: the copy waiting keeps ahead of the beam from the VBLANK
 fb_c2:      equ 0xF1EE              ; 1: fb_cmd2 holds the next part of the copy waiting (the split
                                     ;   interrupt starts it right after fb_cmd's: 2)
 fb_cmd2:    equ 0xF1EF              ; 15: that part's command (R#32-R#46)
 fb_qlk:     equ 0xF1FE              ; 1 while field.asm moves items (queue, work): fb_pend holds
+fb_wk:      equ 0xF1FF              ; field.asm fb_work: steps of the work left in the call
 pg_list:    equ 0xF280              ; 16: plan: the BOB objects whose category can have parts, FFh
                                     ;   after the last (sprites.asm pg_build, pg_each)
 pg_ptr:     equ 0xF290              ;   pg_each's place in it
@@ -626,9 +631,8 @@ ph_h:       equ 0xF166              ; 2:   height
 pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
                                     ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
-; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F19Bh-F19Fh, F1CFh, F1E2h-F1E6h, F1ECh, F1FFh,
-; F271h-F27Fh: free; EA60h-EC41h: bob_list,
-; cat_head, hz_ylo..; F280h-F37Fh: the stack)
+; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F271h-F27Fh: free; EA60h-EC41h: bob_list,
+; cat_head, hz_ylo..; F292h-F37Fh: the stack, from F380h down: rc2.asm)
 
 ; --- page 0 RAM (0000h-3FFFh: the main RAM once the BIOS is no longer needed, tiles.asm ram_page0)
 TC_SLOT:    equ 0x0000              ; 512 x 2: slot + 1 holding each tile (0: not in VRAM)

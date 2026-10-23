@@ -290,7 +290,8 @@ isr_init:
         im 2
         xor a
         ld (split_armed),a
-        ld (fb_cq),a                ; (no play-field copy waits: field.asm)
+        ld (fb_cq),a                ; (no play-field copy or command waits: field.asm)
+        ld (fb_rdy),a
         ld (cmd_lock),a
         ld (fb_vok),a
         ld (fb_qlk),a
