@@ -231,7 +231,7 @@ pl_init:
         ld (j_nojump),a
         ld (j_jumpb),a
         ld (split_dly),a            ; (0 and 1 until display_on's split_cal: 3.58 MHz values
-        inc a                       ;  are 0 and 1-4; the front end shows no split before a level)
+        inc a                       ;  are 0 and 0-1; the front end shows no split before a level)
         ld (split_dly2),a
         ld a,0x7F
         ld (ac_jmask),a             ; ($B02B)

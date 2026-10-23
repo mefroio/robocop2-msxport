@@ -58,16 +58,20 @@ isr_r15:
 ; V9938, the V9958 and the One Chip MSX's ESE-VDP) and delays worked out on this machine
 ; (split_cal), never by S#2 HR, whose window differs between those chips (2026-10-23: the
 ; user's SX-2 flickered at the play field's end). With R#19 at the play field's R#23 + V - 2
-; (split_r19) it polls FH for the end of line V-2, sets R#19 for the end of line V-1, waits
-; split_dly and blanks the display and the sprites: written in the middle of line V-1 (~970 VDP
-; ticks after the match), the blank is past line V-1's latch of R#1 (the next line's sync + 144
-; ticks in openMSX's V9938, the dot before the next line's first pixel on the ESE-VDP: 230 and
-; 344 ticks after the match) and before line V's (1368 later): display off from line V, sprites
-; off there. At FH of line V-1 (its pixels drawn: nothing visible changes any more) the page, the
-; scroll and the HUD's colours 1-15 go in during the blank lines V..V+4 (sp_regs: 36-38 port
-; accesses, 4.0 lines on the T9769 engines, whose VDP ports take cycles more, 3.3 on a plain
-; Z80), then split_dly2 and the display on: ~970 ticks after the end of line V+3 whatever the CPU
-; and its I/O waits (split_cal times sp_regs itself), so the HUD shows from line V+5. The blank
+; (split_r19) it polls FH for the end of line V-2, waits split_dly, blanks the display and at
+; once sets R#19 for the end of line V-1 (the sprites-off between them put that write past
+; the match on the T9769 engines). The blank lands ~650 VDP ticks after the match, mid-line
+; V-1: past that line's latch of R#1 (the next line's sync + 144 ticks in openMSX's V9938,
+; the dot before the next line's first pixel in the ESE-VDP's source: 230 and 344 ticks after
+; the match) and before line V's, which the user's SX-2 takes ~1190 ticks after the match
+; (its HUD's first line was black in 20-40 % of the frames with the display-on written
+; 1000-1230 after its match, from the video of 2026-10-23; openMSX takes it 1598 after):
+; display off from line V. At FH of line V-1 (its pixels drawn: nothing visible changes any
+; more) the sprites go off and the page, the scroll and the HUD's colours 1-15 go in during
+; the blank lines V..V+4 (sp_regs: 36-38 port accesses, 4.0 lines on the T9769 engines, whose
+; VDP ports take cycles more, 3.3 on a plain Z80), then split_dly2 and the display on: ~650
+; ticks after the end of line V+3 whatever the CPU and its I/O waits (split_cal times sp_regs
+; itself), so the HUD shows from line V+5. The blank
 ; lines are five (HUD_BLACK): four held the registers and the palette only with the display-on
 ; just before the HUD's first line (0.1.0's split landed a line late on the FS-A1FX), and the
 ; design of that morning wrote 10 colours while the HUD showed. Colour 0 is not written: the
@@ -88,11 +92,6 @@ isr_split:
         ld (split_armed),a
         call sp_fh                  ; FH of line V-2
         jr nc,sp_late
-        ld a,l
-        inc a
-        out (c),a
-        ld a,0x93
-        out (c),a                   ; R#19: the end of line V-1 (the write clears FH on the ESE-VDP)
         ld a,(split_dly)
         or a
         call nz,sp_wait
@@ -100,11 +99,16 @@ isr_split:
         out (c),a
         ld a,0x81
         out (c),a                   ; display off from line V
+        ld a,l
+        inc a
+        out (c),a
+        ld a,0x93
+        out (c),a                   ; R#19: the end of line V-1 (the write clears FH on the ESE-VDP)
+        call sp_fh                  ; FH of line V-1
         ld a,R8_SPR_OFF
         out (c),a
         ld a,0x88
-        out (c),a                   ; sprites off from line V
-        call sp_fh                  ; FH of line V-1
+        out (c),a                   ; sprites off (the display is)
         ld hl,split_list+1
         call sp_regs                ; the HUD's page, scroll and palette (lines V..V+4 are blank)
         ld a,(split_dly2)
@@ -228,15 +232,16 @@ sp_pal: ld a,1
 ; T-states: I/O waits count as they do in the split's own polls and writes), then, four times
 ; from a match: sp_regs on cal_list (R#16 writes) and the play field's palette, R#23 = 0 and
 ; R#19 for 8 lines on, and the iterations left until that match (M, their mean: a poll's
-; worth of jitter in each). The blank must land ~0.71 line (970 ticks) after its match:
-; split_dly = 0.71 N / 32 - the routine's own time between the match and the write (~116
-; T-states and 4 port accesses, ~3 iterations) - the poll's half = N / 45 - 3, 0 below. The
-; display-on lands ~0.71 line after the end of line V+3, 4.71 lines after the match of line
-; V-1 from which the writes run: split_dly2 = 4.71 N / 32 - (8 N / 32 - M - the 4 accesses
-; after sp_regs here) - the 2 before the display-on there = M - 27 N / 256 + SPLIT_K, 0 below.
-; Any match missing (no VDP): the 3.58 MHz values.
+; worth of jitter in each). The blank must land ~0.5 line (650 ticks) after its match:
+; split_dly = 0.5 N / 32 - the routine's own time between the match and the write (~80
+; T-states and 2 port accesses, 2 iterations) - the poll's half = N / 64 - 2, 0 below. The
+; display-on lands ~0.5 line after the end of line V+3, 4.5 lines after the match of line
+; V-1 from which the writes run: split_dly2 = 4.5 N / 32 - (8 N / 32 - M - the 4 accesses
+; after sp_regs here) - the sprites-off (an iteration at any speed) and the 2 accesses before
+; the display-on there = M - 27 N / 256 + SPLIT_K, 0 below (SPLIT_K measured: 4 put the
+; display-on 1000-1230 after the match). Any match missing (no VDP): the 3.58 MHz values.
 CAL_LINE:   equ 40
-SPLIT_K:    equ 4                   ; (the accesses' difference and the polls' halves, in iterations: measured)
+SPLIT_K:    equ 1                   ; (the accesses' difference and the polls' halves, in iterations: measured)
 split_cal:
         di
         ld c,VDP_CTRL
@@ -307,12 +312,10 @@ sc_none:
         srl h
         rr l                        ; N / 64
         ld a,l                      ; (N below 8192: one byte)
-        srl l                       ; N / 128
-        add a,l                     ; N / 64 + N / 128 = N / 45 (within 1)
-        sub 3
+        sub 2
         jr nc,sc_db
         xor a
-sc_db:  ld (split_dly),a            ; split_dly = N / 45 - 3
+sc_db:  ld (split_dly),a            ; split_dly = N / 64 - 2
         pop hl                      ; N / 8 (one byte: N below 2048)
         ld d,h
         ld e,l
