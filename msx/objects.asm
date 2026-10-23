@@ -1593,6 +1593,24 @@ xu_sl:  ld hl,ac_ediv
         dec (hl)
         xor a
         ld (bob_own+1),a
+        ld hl,AM + 0x0D34           ; (the port) no slot in use: nothing to step or draw; ea_k and
+        or (hl)                     ; bob_own as the loop leaves them
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        jr nz,xu_go
+        ld a,5
+        ld (ea_k),a
+        ld (bob_own),a
+        ret
+xu_go:  xor a
 xu_lp:  ld (ea_k),a
         ld (bob_own),a              ; (the identity of its BOBs: the slot, bob.asm)
         xor 1
@@ -1760,12 +1778,20 @@ EB_ANIM:    equ 0x20
 EB_AX:      equ 0x40
 EB_AY:      equ 0x60
 eb_update:
+        ld hl,AM + 0x0C34 + (0x40 ^ 1)  ; (the port) no bullet in use: nothing to do
+        ld de,4
+        ld b,8
+        xor a
+ebu_t:  or (hl)
+        add hl,de
+        djnz ebu_t
+        ret z                       ; (djnz and add hl,de leave Z)
         ld ix,AM + 0x0C34 + 0x80
         ld b,8
-ebu_lp: ld (bob_own),ix             ; (the identity of its BOB: bob.asm)
-        ld a,(ix+EB_TYPE)
+ebu_lp: ld a,(ix+EB_TYPE)
         or a
         jp z,ebu_nx
+        ld (bob_own),ix             ; (the identity of its BOB: bob.asm)
         push bc
         ld (eb_type),a
         ld a,(ix+EB_VY+2)           ; vy += E0h (each long: high word, then low word)

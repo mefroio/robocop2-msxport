@@ -66,6 +66,14 @@ pl_hits:
         ld hl,(ph_y0)
         add hl,de
         ld (ph_y1),hl               ; D5
+        ld hl,AM + 0x0C34 + (0x40 ^ 1)  ; (the port) none of the 6 bullets in use: the enemies next
+        ld de,4
+        ld b,6
+        xor a
+phb_t:  or (hl)
+        add hl,de
+        djnz phb_t
+        jp z,phb_end                ; (djnz and add hl,de leave Z)
         ld iy,AM + 0x0C34           ; the enemy bullets
         ld b,6
 phb_lp: ld a,(iy + (0x40 ^ 1))
@@ -180,6 +188,7 @@ phb_nx: ld de,4
         add iy,de
         dec b
         jp nz,phb_lp
+phb_end:
         ld ix,OBJ_SLOTS             ; the enemies
         ld b,5
 pht_lp: ld a,(ix+OS_TYPE)
@@ -242,7 +251,16 @@ pht_nx: ld de,4
         add ix,de
         dec b
         jp nz,pht_lp
-php_go: ld b,4                      ; the pickups, slot 3 first
+php_go: ld hl,AM + 0x0D80           ; (the port) no pickup: done
+        ld a,(hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        ret z
+        ld b,4                      ; the pickups, slot 3 first
 php_lp: dec b
         ld a,b
         xor 1
@@ -423,7 +441,18 @@ pk_update:
         ld (bob_cat),a
         xor a
         ld (bob_own+1),a
-        ld b,4
+        ld hl,AM + 0x0D80           ; (the port) no pickup: nothing to move or draw; bob_own as
+        or (hl)                     ; the loop leaves it (slot 0)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        inc l
+        or (hl)
+        jr nz,pku_go
+        ld (bob_own),a
+        ret
+pku_go: ld b,4
 pku_lp: dec b
         ld a,b
         ld (bob_own),a              ; (the identity of its BOB: the slot, bob.asm)

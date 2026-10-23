@@ -544,7 +544,7 @@ ac_jmask:   equ 0xDD16              ; player_move's joystick mask ($B02B: 7Fh, 0
                                     ;   steers; the code's value at power-on, rc2.asm)
 ac_ridest:  equ 0xDD18              ; 2: RoboCop's state on the vehicle ($8C98: 2, or 3)
 ; (the port) the game logic's shortcuts: their caches, worked out again every life (level1.asm
-; sw_init) in the rest of this block
+; sw_init, mapobj.asm ao_sort) in the rest of this block
 sw_list:    equ 0xDD20              ; 33: the spawn walk's candidates this tick (objects.asm
                                     ;   uo_free): the entries' indices in the list's order, FFh
                                     ;   after the last (up to 32 entries: the masks are longs)
@@ -560,6 +560,8 @@ sw_px:      equ 0xDD54              ; 2: sw_prep: the x cell's mask
 sp_rest:    equ 0xDD60              ; SP_REST_N: per special object n (counted from 1) 1 when the
                                     ;   lift was at rest at its last full run (special.asm sp_update)
 SP_REST_N:  equ 12                  ;   (room for 11 records; level 1 has 7)
+ao_calo:    equ 0xDD70              ; 2: activate_objects' candidates stand while camera x is in
+ao_cahi:    equ 0xDD72              ; 2:   (ao_calo, ao_cahi] (mapobj.asm ao_cands)
 AC_VARS_END: equ 0xDD80
 spawn_ram:  equ 0xDD80              ; DD80h-DFFFh: the level's spawn list ($B0E; 14-byte records,
                                     ; words little-endian), copied from the level bank at its start
