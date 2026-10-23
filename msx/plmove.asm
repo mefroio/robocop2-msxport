@@ -159,6 +159,9 @@ pm_jump:
         ld a,(pm_d0)
         bit 4,a
         jp nz,pm_b170               ; up + fire: aims up, no jump
+        ld a,(j_nojump)             ; (the port: the joystick's up only aims, its trigger B jumps:
+        or a                        ;  player.asm stick_bits)
+        jp nz,pm_b170
         ld a,(pm_d1)
         and 1
         add a,4

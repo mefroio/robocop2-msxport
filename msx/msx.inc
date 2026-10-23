@@ -255,7 +255,9 @@ ft_wp:      equ 0xE5A0              ; 3: ft_lists: each list's next place (low b
 ft_lok:     equ 0xE5A3              ; 1 once ft_lists ran in this budget run
 fl_mark:    equ 0xE5A4              ; fl_n at the end of the last plan: the slots released up to it
                                     ;   go at the next plan's start, those after it one plan later
-                                    ; (E5A5h-E5FFh: free, the old background upload ring's)
+j_nojump:   equ 0xE5A5              ; 1: this frame's up came from the joystick without its trigger B:
+                                    ;   it aims, it does not jump (player.asm stick_bits, plmove.asm)
+                                    ; (E5A6h-E5FFh: free, the old background upload ring's)
 pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
                                     ; uploads (sprites.asm Q_...)
 SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:
@@ -653,7 +655,7 @@ ph_h:       equ 0xF166              ; 2:   height
 pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
                                     ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
-; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5A5h-E5FFh, E601h-E6FFh,
+; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5A6h-E5FFh, E601h-E6FFh,
 ; F16Fh-F190h, F1A0h-F1C2h: free; EA60h-EC41h: bob_list,
 ; cat_head, hz_ylo..; F280h-F37Fh: the stack, from F380h down (rc2.asm): nothing else may live there)
 

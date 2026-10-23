@@ -608,10 +608,18 @@ which as sprites were striped, cut or left out.
   `robocop_flash.inc`: entries 2, 3, 7 in level 1), so the background never changes. Every
   colour here is through the colour grade (decision 8): the fade limits the graded palette to
   `fade_cap[step]` (the grade of the original's limit, the same as grading the faded colours).
-- **Controls**: joystick port 1 (trigger A fire, trigger B = the Amiga's F1/right Shift);
-  without joystick input the keyboard as on the Amiga: cursor keys, SPACE/RETURN/TAB/ESC/BS/
-  DEL fire, F1/SHIFT. Read once per game frame at the original's point (the logic sees them
-  one frame later, as on the Amiga).
+- **Controls**: joystick port 1, trigger A fire; without joystick input the keyboard as on the
+  Amiga: cursor keys, SPACE/RETURN/TAB/ESC/BS/DEL fire, F1/SHIFT. Read once per game frame at
+  the original's point (the logic sees them one frame later, as on the Amiga). The joystick's
+  own mapping (the user's choice, 2026-10-23): up only aims, trigger B jumps. The logic still
+  gets the up bit (the aim, the lifts, the up-only stance), and `j_nojump` (set by
+  `stick_bits` for an up without trigger B) keeps `player_move`'s jump (`pm_jump`) from
+  starting; trigger B gives the logic an up, so the jump is the Amiga's: from standing, steered
+  in the air, none while left or right is held. Trigger B was the Amiga's F1/right Shift (20h),
+  which level 1 does not read. The keyboard and the test scripts keep the Amiga's controls (up
+  jumps, up + fire aims up), so the logic traces are unchanged. Checked on the product ROM
+  (both VDPs, simulated port bits): the joystick's up 1.6 s, standing with the up aim and no
+  jump; trigger B, a jump; the keyboard's up, a jump; up + right, a walk aiming diagonally.
 - **RoboCop on screen**: the composition (frame record × aim, or one of the 18 start-of-level
   arm poses added to the sprite data) with its top left at map (x + hotspot_x − 139,
   y + hotspot_y − 71), the original's sprite position against its play field. The hit spark
