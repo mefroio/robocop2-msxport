@@ -612,14 +612,22 @@ which as sprites were striped, cut or left out.
   Amiga: cursor keys, SPACE/RETURN/TAB/ESC/BS/DEL fire, F1/SHIFT. Read once per game frame at
   the original's point (the logic sees them one frame later, as on the Amiga). The joystick's
   own mapping (the user's choice, 2026-10-23): up only aims, trigger B jumps. The logic still
-  gets the up bit (the aim, the lifts, the up-only stance), and `j_nojump` (set by
-  `stick_bits` for an up without trigger B) keeps `player_move`'s jump (`pm_jump`) from
-  starting; trigger B gives the logic an up, so the jump is the Amiga's: from standing, steered
-  in the air, none while left or right is held. Trigger B was the Amiga's F1/right Shift (20h),
-  which level 1 does not read. The keyboard and the test scripts keep the Amiga's controls (up
-  jumps, up + fire aims up), so the logic traces are unchanged. Checked on the product ROM
-  (both VDPs, simulated port bits): the joystick's up 1.6 s, standing with the up aim and no
-  jump; trigger B, a jump; the keyboard's up, a jump; up + right, a walk aiming diagonally.
+  gets the up bit (the aim, the lifts, the up-only stance, rising from a crouch), and
+  `j_nojump` (set by `stick_bits` for the stick's up) keeps `player_move`'s jump (`pm_jump`)
+  from starting. Trigger B is not an up: `j_jumpb` starts the jump itself (`pm_jb`, states 0-3:
+  walking or standing) whatever direction or fire is held, the way of the direction held,
+  after the landing's frame (`p_jwait`) as the Amiga's up; the aim keeps following the stick
+  (B gave the logic an up until 2026-10-23: no jump while walking or firing, the aim went up).
+  Crouched (states 8/9) only an up raises RoboCop on the Amiga: B counts as that up there
+  (`pm_8`), so it rises, then jumps while held (with up only aiming, B had left him crouched,
+  turning but not walking, on the user's SX-2: "static", "B did not jump"). The controls'
+  lock clears `j_jumpb`. Trigger B was the Amiga's F1/right Shift (20h), which level 1 does
+  not read. The keyboard and the test scripts keep the Amiga's controls (up jumps, up + fire
+  aims up), so the logic traces are unchanged. Checked on the product ROM (both VDPs,
+  simulated port bits): the joystick's up, standing with the up aim and no jump; trigger B
+  alone, with right, with left + fire, with fire and with up, a jump (1-3 frames), the aim
+  unchanged (up with up); crouched, B rises and jumps after 5 frames; the keyboard's up, a
+  jump; up + right, a walk aiming diagonally.
 - **RoboCop on screen**: the composition (frame record × aim, or one of the 18 start-of-level
   arm poses added to the sprite data) with its top left at map (x + hotspot_x − 139,
   y + hotspot_y − 71), the original's sprite position against its play field. The hit spark
@@ -1002,14 +1010,19 @@ message line, weapon icon, heads, can) are written to `build/msx/hud_layout.json
 The split interrupt (`isr.asm` `isr_split`, V = `VIEW_LINES` = 163) is synchronised to the
 beam (since 2026-10-23):
 
-1. It fires at the right border of display line V-4 (159); the routine polls S#2 HR up to the
-   start of line V-1 and writes R#1 = blank, R#8 = sprites off and R#18 = 0 there (they apply
-   from the next line: lines V..V+3 stay black, and the HR polls below go by the HUD's adjust).
-2. After line V-1's right border (nothing visible changes from there on) it writes R#2 =
-   page 3, R#19 = `SPLIT_R19_ON` (`(HUD_R23 + V + 2) & 255`: a line match at the right border
-   of line V+2) and R#23 = `HUD_R23`, on the V9958 also R#26/R#27 (`split_list`, built by
-   `split_init`). R#19 goes just before R#23, so that the play field's R#19 never meets the
-   HUD's R#23 (such a match, the phantom of 2026-10-21 below, would end the wait at once).
+1. It fires at the right border of display line V-5 (158); the routine at once writes R#19 =
+   `split_r19` (the play field's R#23 + V - 2: the VBLANK takes it from the list's first pair,
+   which every list makes R#23) and polls S#1 for that match, the end of line V-2 (9-11 polls
+   at 3.58 MHz; at most `SPLIT_POLLS`). From that edge it polls S#2 HR low (line V-1 has begun)
+   and writes R#1 = blank and R#8 = sprites off there (they apply from the next line: lines
+   V..V+3 stay black).
+2. After line V-1's right border (HR up, by the play field's adjust: nothing visible changes
+   from there on) it writes R#2 = page 3, on the V9938 R#18 = 0 (from line V+1: the FH and HR
+   polls below go by the HUD's adjust; the V9958 engine keeps R#18 at 0), R#19 =
+   `SPLIT_R19_ON` (`(HUD_R23 + V + 2) & 255`: a line match at the right border of line V+2)
+   and R#23 = `HUD_R23`, on the V9958 also R#26/R#27 (`split_list`, built by `split_init`).
+   R#19 goes just before R#23, so that the play field's R#19 never meets the HUD's R#23 (such a
+   match, the phantom of 2026-10-21 below, would end the wait at once).
 3. The palette from colour 4 (`hud_palette` = `gen/hud_split.pal`, the HUD's colours 4-15 then
    0-3; colour 0 is black in both palettes): colours 4-9 with OTIR (the HUD's lines 0-3 use
    only colours 0 and 4-9: `tools/mkrom.py` stops on a HUD image or an energy can, whose empty
@@ -1026,6 +1039,47 @@ A CPU fast enough to write every colour before FH waits for it with a bound (32 
 line at 10 MHz); the bound only matters to a split serviced 3 lines late, whose match was
 behind already (its HUD would then show ~12 lines late at 3.58 MHz). The timelines below found
 the blank in line 162 in every frame on every machine.
+
+**The line V-2 edge (2026-10-23, the user's SX-2).** Until then the routine polled HR from
+wherever it was serviced: its first poll ran 1746-2612 VDP cycles after the interrupt
+(`drive_play`, C-BIOS_MSX2; 1832-2612 on the FS-A1FX) and had to come after the HR window of
+line V-2's start. openMSX's HR is 1 for 312 cycles from each line's right border, so that
+window ended 1680 cycles after the interrupt, 132 before the earliest poll. The One Chip MSX's
+VDP (the ESE-VDP of OCM-PLD, which the SX-2 runs; `esemsx3/src/video`, read 2026-10-23) matches
+R#19 the same way (live, against the line + R#23, at the line's last pixel), but its HR is 1
+from the end of the line's right border to 17 cycles into the next line's pixels (H_CNT
+0-235 of 1368; R#18 does not move it): 125 cycles later than openMSX's, so its window ended 84
+cycles (14 T-states) before the earliest poll at R#27 = 0. An interrupt serviced a little
+sooner there, or a faster CPU, caught it and the display went off from line V-1: the play
+field's last line flickered black ("a blinking line in the HUD" on the SX-2 with 0.1.1). From
+the FH edge both models agree: the first HR poll after it runs 330-630 cycles later at 3.58 MHz,
+past openMSX's window and inside or past the ESE-VDP's (which only begins 125 cycles after FH, and
+no CPU polls that soon: the S#2 select alone takes 264 cycles at 3.58 MHz, about 130 with the
+OCM's I/O waits at 10.74 MHz), so HR low marks line V-1's start on both. The interrupt moved
+from line 159 to 158 so that a late service still finds the match ahead (at line 159 the
+fewest polls seen were 2, at 158 they are 9). R#18 had been written in line V-1 before the poll
+of its end: on the V9938 engine that moved openMSX's window there and a split serviced late
+missed it, the HUD a line late (15 of 1500 frames on C-BIOS_MSX2); it now goes with the HUD's
+registers. Cost: about one line (228 T-states) more in the interrupt a frame: `drive_play`
+pictures/s 26.06 instead of 26.32 (C-BIOS_MSX2), 25.31 instead of 25.52 (FS-A1FX), the ticks
+at full speed; the LOCKSTEP display records identical on the FS-A1FX (2999 lists), on
+C-BIOS_MSX2 identical until game frame 1812, where the scroll engine's camera, which takes the
+CPU time left, goes its own way. Measured through the MSX-AI MCP on the product ROM, 1500
+frames each (VDP line:cycle of the writes; a write takes effect from the next line when its
+cycle is past 144):
+
+| machine | display off (R#1 = 22h) | display on (R#1 = 62h) |
+|---|---|---|
+| C-BIOS_MSX2 (V9938) | 162:762-1002 ×1500 | 166:810-1248 ×1500 |
+| Sony HB-F1XDJ (V9958, S1985) | 162:732-972 ×1500 | 166:948-1152 ×1500 |
+| Panasonic FS-A1FX (V9958, T9769B) | 162:792-1044 ×1500 | 166:888-1104 ×1500 |
+| Panasonic FS-A1GT (V9958, T9769C) | 162:762-1008 ×1500 | 166:810-1266 ×1500 |
+
+The 14 machines here that the MCP's openMSX home has (all but the CocoaMSX Gradiente, whose
+twin it runs) through the keyboard plan for 40 s from the title: no freeze, RoboCop never off
+the published camera, guard vbl/cpu/pal 0, the changed-cell tears 1-6 (0-8 before), the field
+copy started in the play area (R#46 at line 82, pc `B777`h) once on the FS-A1FX and the
+C-BIOS MSX2+ machines (before: the FS-A1FX).
 
 Until 8f021e1 the split wrote R#2/R#23/R#18 (R#26/R#27) and the 30 palette bytes with unrolled
 OUTI after line V-1's right border and only then the display-on, "still in line V+3", which held

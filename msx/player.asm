@@ -694,7 +694,7 @@ joy_read:
         ld (g_keys),a
         ld a,(g_lock)
         or a
-        ret nz
+        jr nz,jr_lock
         if INPUT_SCRIPT
         call script_bits
         else
@@ -707,12 +707,17 @@ joy_read:
         ld a,(g_keys)
 jr_set: ld (g_joy),a
         ret
+jr_lock:
+        xor a
+        ld (j_jumpb),a              ; (no jump of trigger B's waits for the end of the lock)
+        ret
 
 ; Joystick port 1 -> A: up 1, down 2, left 4, right 8, trigger A 10h (fire), in the Amiga's order;
 ; and the port's own joystick mapping (the user's choice, 2026-10-23): up only aims (the logic
-; gets its up, j_nojump keeps it from jumping: plmove.asm pm_jump), trigger B jumps (the logic's
-; up, as the Amiga's up: from standing, steered in the air). Trigger B was the Amiga's F1 / right
-; SHIFT (20h), which level 1 does not read; the keyboard keeps the Amiga's controls.
+; gets its up, j_nojump keeps it from jumping: plmove.asm pm_jump), trigger B jumps (j_jumpb:
+; from walking or standing whatever direction or fire is held, plmove.asm pm_jb; the aim keeps
+; following the stick). Trigger B was the Amiga's F1 / right SHIFT (20h), which level 1 does not
+; read; the keyboard keeps the Amiga's controls.
 stick_bits:
         di
         ld a,15
@@ -727,19 +732,20 @@ stick_bits:
         cpl
         and 0x3F
 sb_raw: ld c,0                      ; (the port's bits)
+        ld b,c
         bit 5,a
-        jr nz,sb_jump
-        bit 0,a
-        jr z,sb_set
-        inc c                       ; up without trigger B: it aims only
-        jr sb_set
-sb_jump:
+        jr z,sb_up
+        inc b                       ; trigger B: a jump
         and 0x1F
-        or 0x01                     ; trigger B: the logic's up, a jump
-sb_set: ld b,a
+sb_up:  bit 0,a
+        jr z,sb_set
+        inc c                       ; up: it aims only
+sb_set: push af
+        ld a,b
+        ld (j_jumpb),a
         ld a,c
         ld (j_nojump),a
-        ld a,b
+        pop af
         ret
 
 ; Keyboard -> A: the cursor keys as the joystick; SPACE, RETURN, TAB, ESC, BS and DEL fire; F1 and

@@ -57,7 +57,12 @@ pm_14:  ld a,(pm_d5)
 pm_8:   ld a,(pm_d5)
         cp 8
         jr nz,pm_6
-        ld a,(pm_d0)                ; crouching: only up goes on
+        ld a,(j_jumpb)              ; (the port: the joystick's trigger B rises as the Amiga's up
+        or a                        ;  does, then jumps while held; up only aims there, and B had
+        jr z,pm_8u                  ;  left RoboCop crouched, turning and not walking: 2026-10-23)
+        ld a,1
+        ld (pm_d0),a
+pm_8u:  ld a,(pm_d0)                ; crouching: only up goes on
         cp 1
         jp nz,pm_b170
 pm_6:   ld a,(pm_d5)
@@ -132,7 +137,13 @@ pm_add: ld l,a
         add hl,de
         ld (p_x),hl
 pm_b0fe:
-        ld a,(pm_d0)
+        ld a,(j_jumpb)              ; (the port: the joystick's trigger B jumps from walking or
+        or a                        ;  standing, whatever direction or fire is held: player.asm
+        jr z,pm_nb                  ;  stick_bits)
+        ld a,(pm_d1)
+        cp 4
+        jp c,pm_jb
+pm_nb:  ld a,(pm_d0)
         and 0x0C
         jp nz,pm_b170
         ld a,(pm_d0)
@@ -510,6 +521,34 @@ pm_land:
         ld a,1
         ld (p_jwait),a
         ret
+
+; (pm_b0fe) The joystick's trigger B in states 0-3 (player.asm stick_bits).
+pm_jb:  ld a,(p_jwait)              ; trigger B: just landed, a frame more first (standing unless
+        or a                        ; a direction is held)
+        jr z,pm_jba
+        dec a
+        ld (p_jwait),a
+        ld a,(pm_d0)
+        and 0x0C
+        jp nz,pm_b170
+        ld a,2
+        ld (pm_d2),a
+        jp pm_b170
+pm_jba: ld a,(p_air)
+        or a
+        jp nz,pm_b170
+        ld a,(pm_d2)                ; the jump: state 4/5 the way of the direction held (pm_left,
+        cp 2                        ; pm_right), else of the state
+        jr c,pm_jbw
+        ld a,(pm_d1)
+pm_jbw: and 1
+        add a,4
+        ld (pm_d2),a
+        ld a,0xFF
+        ld (p_air),a
+        xor a
+        ld (p_jwait),a
+        jp pm_b170                  ; (down held too: no crouch)
 
 ; A = state -> NZ for those of the walking/standing set (bits of $C0F: 0-3, 10, 11).
 st_c0f: cp 4

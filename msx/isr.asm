@@ -20,6 +20,10 @@
 ; R#26, R#27 and the palette take effect immediately. HR (S#2 bit 5) is 1 for 312 VDP ticks
 ; from the right border, computed with the current horizontal adjust (so writing R#18 moves
 ; the window); with R#18 = 0 it goes down 226 ticks into the next line, past its latch point.
+; The One Chip MSX's VDP (ESE-VDP, OCM-PLD: the SX-2) matches R#19 the same way (live, against
+; the line + R#23, at the line's last pixel), but its HR is 1 from the end of the line to 17
+; ticks into the next one's pixels (236 ticks, R#18 does not move it): 125 ticks later than
+; openMSX's. Only an edge of FH tells the lines apart on both.
 
 isr:    push af
         push bc
@@ -30,16 +34,17 @@ isr:    push af
         ld a,0x8F
         out (c),a
         in b,(c)                    ; S#1: bit 0 = FH (the read acknowledges it)
+        bit 0,b
+        jr z,isr_r15
+        ld a,(split_armed)
+        or a
+        call nz,isr_split           ; (R#15 still 1: the split polls S#1 first)
+isr_r15:
         xor a
         out (c),a
         ld a,0x8F
         out (c),a                   ; R#15 = 0
-        bit 0,b
-        jr z,isr_s0
-        ld a,(split_armed)
-        or a
-        call nz,isr_split
-isr_s0: in a,(c)                    ; S#0: bit 7 = VBLANK (the read acknowledges it)
+        in a,(c)                    ; S#0: bit 7 = VBLANK (the read acknowledges it)
         or a
         call m,isr_vblank
         pop hl
@@ -48,11 +53,15 @@ isr_s0: in a,(c)                    ; S#0: bit 7 = VBLANK (the read acknowledges
         ei
         reti
 
-; HUD split (V = VIEW_LINES): the interrupt fires at the end of line V-4 and the ISR reaches
-; the first HR poll ~1.1-1.7 lines later, inside line V-2. Blanks the display and the sprites
-; from line V and sets the adjust to 0 there (all three written during line V-1); once line
-; V-1 is complete (its right border) switches page and scroll, sets R#19 for a line match at
-; the right border of line V+2 (written just before the HUD's R#23, so that no match of the
+; HUD split (V = VIEW_LINES): the interrupt fires at the end of line V-5; the routine at once
+; sets R#19 for a match at the end of line V-2 (split_r19, the play field's R#23 + V - 2) and
+; polls S#1 for it. The HR polls go from that edge: they had gone from wherever the ISR came,
+; ~1.3-1.9 lines after the interrupt, 14 T-states after the HR window of the line before on the
+; ESE-VDP, whose window comes later: a quicker ISR blanked line V-1 (the play field's last line
+; flickered on the SX-2; 2026-10-23). Once line V-1 has begun (HR low) it blanks the display and
+; the sprites from line V; once line V-1 is complete (its right border, by the play field's
+; adjust) sets the adjust to 0 from line V+1, switches page and scroll, sets R#19 for a line
+; match at the right border of line V+2 (written just before the HUD's R#23, so that no match of the
 ; play field's R#19 against it comes in between) and loads colours 4-9, all the HUD's first
 ; lines use (with 0, the same in both palettes), then the others pair by pair until the beam
 ; is there (S#1 FH), and once line V+3 has begun (HR low) turns the display back on: the HUD
@@ -65,18 +74,28 @@ isr_s0: in a,(c)                    ; S#0: bit 7 = VBLANK (the read acknowledges
 ; the HUD uses all 256 px. The line interrupt stays enabled: a match created by the HUD's R#23
 ; is acknowledged and ignored.
 isr_split:
+        ld a,(split_r19)
+        out (c),a
+        ld a,0x93
+        out (c),a                   ; R#19: a match at the end of line V-2
         xor a
         ld (split_armed),a
-        ld a,2
+        ld b,SPLIT_POLLS            ; (at most: a split serviced past line V-2 goes on by HR)
+sp_v2:  in a,(c)                    ; S#1
+        rrca
+        jr c,sp_v2f                 ; FH: line V-2 drawn (the read acknowledges it)
+        djnz sp_v2
+sp_v2f: ld a,2
         out (c),a
         ld a,0x8F
-        out (c),a                   ; S#2 (HR polling)
-sp_e1:  in a,(c)
-        and 0x20
-        jr z,sp_e1                  ; right border of line V-2
+        out (c),a                   ; S#2 (HR polling, 330-630 VDP ticks after FH at 3.58 MHz)
 sp_s0:  in a,(c)
         and 0x20
-        jr nz,sp_s0                 ; line V-1 has started
+        jr nz,sp_s0                 ; HR low: line V-1 has started (openMSX's HR goes down 312
+                                    ; ticks after FH, the ESE-VDP's 360; the ESE-VDP's comes up
+                                    ; only 125 ticks after FH, and no CPU polls here that soon:
+                                    ; the S#2 select alone takes 264 ticks at 3.58 MHz, ~130 with
+                                    ; the OCM's I/O waits at 10.74 MHz)
         ld a,R1_BLANK
         out (c),a
         ld a,0x81
@@ -85,27 +104,23 @@ sp_s0:  in a,(c)
         out (c),a
         ld a,0x88
         out (c),a                   ; sprites off from line V
-        xor a
-        out (c),a
-        ld a,0x92
-        out (c),a                   ; R#18 = 0 from line V (the HR polls below go by it)
 sp_e0:  in a,(c)
         and 0x20
-        jr z,sp_e0                  ; right border of line V-1: nothing visible changes now
-        ld hl,split_list+1
+        jr z,sp_e0                  ; right border of line V-1 (by its own adjust): nothing
+        ld hl,split_list+1          ; visible changes now
         outi
         outi
         outi
         outi
         outi
-        outi                        ; R#2 = page 3, R#19 = SPLIT_R19_ON, R#23 = HUD_R23
-        ld a,(split_list)
-        cp 6
+        outi
+        outi
+        outi                        ; R#2 = page 3, V9938: R#18 = 0, R#19 = SPLIT_R19_ON, R#23 =
+        ld a,(split_list)           ; HUD_R23; V9958: R#19, R#23, R#26
+        cp 8
         jr z,sp_pal
         outi
-        outi
-        outi
-        outi                        ; V9958: R#26/R#27 = page 3 unscrolled
+        outi                        ; V9958: R#27 (R#26/R#27: page 3 unscrolled)
 sp_pal: ld a,4
         out (c),a
         ld a,0x90
@@ -158,7 +173,7 @@ sp_msk: ld a,b
 sp_r19: ld a,SPLIT_R19
         out (c),a
         ld a,0x80 + 19
-        out (c),a                   ; R#19 against the HUD's R#23: its match (line V-4) is behind
+        out (c),a                   ; R#19 against the HUD's R#23: its match (line V-5) is behind
         ld a,1                      ; us, so no second line interrupt comes before the VBLANK's
         out (c),a                   ; list (the play field's R#19 against the HUD's R#23 matched
         ld a,0x8F                   ; below the split, while the uploads below kept the interrupts
@@ -308,6 +323,9 @@ iv_list:
         inc hl
         ld b,(hl)
         inc hl
+        ld a,(hl)                   ; (every list starts with R#23, the play field's scroll)
+        add a,VIEW_LINES - 2
+        ld (split_r19),a            ; the split's R#19: a match at the end of line V-2
         otir
         ld a,1
         out (c),a
@@ -336,7 +354,13 @@ split_init:
         inc hl
         ld (hl),0x82
         inc hl
-        ld (hl),SPLIT_R19_ON
+        or a
+        jr nz,si_r19
+        ld (hl),a                   ; V9938: R#18 = 0 from line V+1 (the FH and HR polls after
+        inc hl                      ; it go by it; the V9958 engine keeps R#18 at 0. Written
+        ld (hl),0x92                ; before the split's HR poll of line V-1's end, it moved
+        inc hl                      ; openMSX's window there and a late split missed it: the HUD
+si_r19: ld (hl),SPLIT_R19_ON        ; a line late)
         inc hl
         ld (hl),0x93                ; R#19: a match at the right border of display line V+2
         inc hl
@@ -344,7 +368,7 @@ split_init:
         inc hl
         ld (hl),0x97                ; R#23: HUD_VRAM_LINE shown at display line V+4
         inc hl
-        ld b,6
+        ld b,8
         ld a,(hud_msk)
         or a
         jr z,si_len

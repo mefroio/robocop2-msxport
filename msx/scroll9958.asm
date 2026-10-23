@@ -302,6 +302,16 @@ scroll_publish:
         inc hl
         ld (hl),18                  ; 9 registers
         inc hl
+        ld a,(cam_y)
+        ld (hl),a
+        inc hl
+        ld (hl),0x97                ; R#23 first (isr.asm iv_list: the split's R#19 from it)
+        inc hl
+        add a,SPLIT_LINE
+        ld (hl),a
+        inc hl
+        ld (hl),0x93
+        inc hl
         ld (hl),R25_PLAY
         inc hl
         ld (hl),0x99                ; border mask back on (the split turns it off for the HUD)
@@ -325,16 +335,6 @@ scroll_publish:
         ld (hl),e
         inc hl
         ld (hl),0x9B
-        inc hl
-        ld a,(cam_y)
-        ld (hl),a
-        inc hl
-        ld (hl),0x97
-        inc hl
-        add a,SPLIT_LINE
-        ld (hl),a
-        inc hl
-        ld (hl),0x93
         inc hl
         ld a,(spr_set)
         ld (hl),a

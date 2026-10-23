@@ -229,6 +229,7 @@ pl_init:
         ld (g_lock),a
         ld (jump_pend),a
         ld (j_nojump),a
+        ld (j_jumpb),a
         ld a,0x7F
         ld (ac_jmask),a             ; ($B02B)
         xor a

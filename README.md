@@ -66,9 +66,9 @@ make rom ROMOPTS="JOY=70:30:r,105:10:d"   # test ROM playing a joystick script i
 
 The engine is Z80 assembly in `msx/` (z80asm 1.8). Run it in openMSX with
 `carta insert build/msx/rc2.rom -romtype KonamiSCC`. RoboCop is played with joystick port 1
-(button A fires, button B jumps, up aims) or the keyboard as on the Amiga (cursor keys, up
-jumps; SPACE/RETURN fire), at the PAL original's 25 game frames per second on 50 and 60 Hz
-machines (`msx/player.asm`).
+(button A fires, button B jumps, also while walking or firing and from a crouch, up aims) or
+the keyboard as on the Amiga (cursor keys, up jumps; SPACE/RETURN fire), at the PAL original's
+25 game frames per second on 50 and 60 Hz machines (`msx/player.asm`).
 
 The game logic is checked against the original: `tools/amigaemu.py game --ram
 build/ram/level1_full.bin --gframes N --joy F:C:KEYS ... --trace A.jsonl` runs the Amiga code

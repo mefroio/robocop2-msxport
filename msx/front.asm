@@ -317,11 +317,11 @@ fs_list:
         ex de,hl
         jp list_tail
 fs_regs:
+        db 0, 0x97                  ; R#23 first (isr.asm iv_list: the split's R#19 from it)
+        db SPLIT_LINE, 0x93         ; R#19: the HUD's split
         db R1_ON, 0x81
         db R8_SPR_OFF, 0x88
         db R2_PAGE0, 0x82
-        db 0, 0x97                  ; R#23
-        db SPLIT_LINE, 0x93         ; R#19: the HUD's split
         db 0, 0x92                  ; R#18
 fs_r58: db 0, 0x99                  ; V9958: one page (the split sets the HUD's R#25), unscrolled
         db 0, 0x9A

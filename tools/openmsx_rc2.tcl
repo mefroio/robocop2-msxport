@@ -866,6 +866,7 @@ proc rc2_sprset_col {} {
 #        play area).
 # Pauses when done (::rg_done).
 proc rc2_guard {secs split_line nl vis labels} {
+	catch {set split_line [expr {[rc2_label $labels SPLIT_LINE]}]}   ;# (the build's own split line)
 	set ::rg_split $split_line
 	set ::rg_nl $nl
 	set ::rg_vis $vis
@@ -901,7 +902,7 @@ proc rc2_guard {secs split_line nl vis labels} {
 	}
 	set ::rg_bp [debug set_bp [rc2_label $labels iv_late] {} rc2_rg_vbl]   ;# (the list and its SAT in)
 	set a [rc2_label $labels isr_split]
-	set ::rg_isb [debug set_bp $a "\[peek $a\] == 0xAF" rc2_rg_isr]   ;# (where the split routine really runs)
+	set ::rg_isb [debug set_bp $a "\[peek $a\] == 0x3A" rc2_rg_isr]   ;# (where the split routine really runs: its ld a,(split_r19))
 	after time $secs rc2_rg_end
 	return "guarding"
 }

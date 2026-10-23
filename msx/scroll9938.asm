@@ -643,6 +643,16 @@ s38_publish:
         inc hl
         ld (hl),14                  ; 7 registers
         inc hl
+        ld a,(cam_y)
+        ld (hl),a
+        inc hl
+        ld (hl),0x97                ; R#23 first (isr.asm iv_list: the split's R#19 from it)
+        inc hl
+        add a,SPLIT_LINE
+        ld (hl),a
+        inc hl
+        ld (hl),0x93
+        inc hl
         ld (hl),R1_ON
         inc hl
         ld (hl),0x81
@@ -658,16 +668,6 @@ s38_publish:
         ld (hl),d
         inc hl
         ld (hl),0x92
-        inc hl
-        ld a,(cam_y)
-        ld (hl),a
-        inc hl
-        ld (hl),0x97
-        inc hl
-        add a,SPLIT_LINE
-        ld (hl),a
-        inc hl
-        ld (hl),0x93
         inc hl
         ld a,(spr_set)
         ld (hl),a

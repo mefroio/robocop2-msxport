@@ -22,7 +22,7 @@ BANK_A000:  equ 0xB000              ; selects the bank of the A000h-BFFFh window
 
 ; --- screen layout (SCREEN 5, 212 lines) ---
 VIEW_LINES: equ 163                 ; play area = display lines 0-162
-SPLIT_LINE: equ VIEW_LINES - 4      ; line interrupt at the right border of display line 159
+SPLIT_LINE: equ VIEW_LINES - 5      ; line interrupt at the right border of display line 158
 HUD_BLACK:  equ 4                   ; display lines 163-166 blank (the switch happens there)
 HUD_LINES:  equ 45                  ; HUD = display lines 167-211 (Amiga panel lines 1-45)
 VIEW_ROWS:  equ 14                  ; tile rows kept drawn: [cy-1, cy+12]
@@ -56,6 +56,8 @@ HUD_R23:    equ (HUD_VRAM_LINE - VIEW_LINES - HUD_BLACK) & 255   ; R#23 that sho
 SPLIT_R19:  equ (HUD_R23 + SPLIT_LINE) & 255    ; R#19 after the split: its match is behind (isr.asm)
 SPLIT_R19_ON: equ (HUD_R23 + VIEW_LINES + 2) & 255  ; R#19 during the split: a match at the right
                                     ;   border of display line V+2 times the display-on (isr.asm)
+SPLIT_POLLS: equ 96                 ; the split's polls for its line V-2 match at most (isr.asm:
+                                    ;   about 11 at 3.58 MHz)
 SPR_PAT:    equ 0x1D800             ; R#6 = 3Bh
 SPR_COL_A:  equ 0x1E000             ; SAT = SPR_COL_A + 200h, R#5 = C7h
 SPR_COL_B:  equ 0x1E400             ; SAT = SPR_COL_B + 200h, R#5 = CFh
@@ -255,9 +257,12 @@ ft_wp:      equ 0xE5A0              ; 3: ft_lists: each list's next place (low b
 ft_lok:     equ 0xE5A3              ; 1 once ft_lists ran in this budget run
 fl_mark:    equ 0xE5A4              ; fl_n at the end of the last plan: the slots released up to it
                                     ;   go at the next plan's start, those after it one plan later
-j_nojump:   equ 0xE5A5              ; 1: this frame's up came from the joystick without its trigger B:
-                                    ;   it aims, it does not jump (player.asm stick_bits, plmove.asm)
-                                    ; (E5A6h-E5FFh: free, the old background upload ring's)
+j_nojump:   equ 0xE5A5              ; 1: this frame's up came from the joystick: it aims, it does not
+                                    ;   jump (player.asm stick_bits, plmove.asm)
+split_r19:  equ 0xE5A6              ; the split's R#19 for the frame shown: a match at the end of
+                                    ;   line V-2 (isr.asm iv_list, isr_split)
+j_jumpb:    equ 0xE5A7              ; 1: the joystick's trigger B is held: a jump (plmove.asm pm_jb)
+                                    ; (E5A8h-E5FFh: free, the old background upload ring's)
 pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
                                     ; uploads (sprites.asm Q_...)
 SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:
@@ -655,7 +660,7 @@ ph_h:       equ 0xF166              ; 2:   height
 pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
                                     ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
-; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5A6h-E5FFh, E601h-E6FFh,
+; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5A8h-E5FFh, E601h-E6FFh,
 ; F16Fh-F190h, F1A0h-F1C2h: free; EA60h-EC41h: bob_list,
 ; cat_head, hz_ylo..; F280h-F37Fh: the stack, from F380h down (rc2.asm): nothing else may live there)
 
