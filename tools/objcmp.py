@@ -18,7 +18,7 @@ bf_show). Per list, every drawn BOB is
     "missing, left out" when the sprite budget left that object out of the tick; "missing, no
     frame" when the sprite data has no such frame at all (bob_flush hides it: the ride's pickups
     until 2026-10-21), the hit spark's frames and the play-field BOBs apart;
-BOBs wholly outside the MSX play area (256 x 163, the left 8 columns masked) are not counted;
+BOBs wholly outside the MSX play area (256 x 162, the left 8 columns masked) are not counted;
 and objects showing something the bench did not draw there are extra (wrong places: the worst).
 Objects alternating between frames (budget) count as shown.
 
@@ -34,7 +34,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_OBJ = 16
-VIEW = 163
+VIEW = 162
 
 
 def frame_table() -> tuple[dict[tuple[int, int], int], dict[int, tuple[int, int]], set[tuple[int, int]]]:

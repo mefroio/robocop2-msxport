@@ -19,7 +19,7 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
 | Item | Proposal | Reason |
 |---|---|---|
 | Video mode | SCREEN 5 (256×212, 16 of 512 colours) | same 4 bpp tile format; 9-bit palette ≈ original |
-| Screen layout | SCREEN 5, 212 lines: play area 256×163 (display lines 0–162), 4 blank lines, HUD 256×45 (display lines 167–211, page 3, own palette) | the Amiga panel is 45 visible lines; every HUD element kept 1:1 (user decision: option A) |
+| Screen layout | SCREEN 5, 212 lines: play area 256×162 (display lines 0–161), 5 blank lines, HUD 256×45 (display lines 167–211, page 3, own palette) | the Amiga panel is 45 visible lines; every HUD element kept 1:1 (user decision: option A) |
 | Interrupts | own IM 2 handler: VBLANK applies the register list of the next frame; line interrupt switches to the HUD | no BIOS overhead; split timing under control |
 | Vertical scroll | R#23 (MSX2 and MSX2+) | hardware, zero cost |
 | Horizontal scroll MSX2+ | R#26/R#27 + SP2 (512 px) + MSK | only one new column every 16 px |
@@ -633,7 +633,8 @@ which as sprites were striped, cut or left out.
   y + hotspot_y − 71), the original's sprite position against its play field. The hit spark
   (`$16A0`, four 16 × 16 frames in his colours) is sprite object `SPARK_OBJ`, placed first in
   the SAT so that it shows in front of him as on the Amiga.
-- **View**: the MSX shows 256 × 163 of the game's 288 × 176 camera. The game's camera is kept
+- **View**: the MSX shows 256 × 162 of the game's 288 × 176 camera (163 until 2026-10-23: the
+  fifth blank line gives the HUD split its whole palette before the HUD shows). The game's camera is kept
   exactly (enemies and spawns depend on it); the view runs ahead of it in proportion,
   view = camera + camera × extra / range (per 16 pixels of camera from tables that
   `tools/mkrom.py` writes), so it meets the camera at both ends of the map and never cuts the
@@ -1007,121 +1008,89 @@ digit read as an 8 (user's choice). On the V9958 the split turns
 the left-border mask off for the HUD. Positions of the run-time elements (digit cells,
 message line, weapon icon, heads, can) are written to `build/msx/hud_layout.json`.
 
-The split interrupt (`isr.asm` `isr_split`, V = `VIEW_LINES` = 163) is synchronised to the
-beam (since 2026-10-23):
+The split interrupt (`isr.asm` `isr_split`, V = `VIEW_LINES` = 162) goes by the VDP's line
+match only (since 2026-10-23, third design of the day):
 
-1. It fires at the right border of display line V-5 (158); the routine at once writes R#19 =
+1. It fires at the end of display line V-5 (157); the routine at once writes R#19 =
    `split_r19` (the play field's R#23 + V - 2: the VBLANK takes it from the list's first pair,
-   which every list makes R#23) and polls S#1 for that match, the end of line V-2 (9-11 polls
-   at 3.58 MHz; at most `SPLIT_POLLS`). From that edge it polls S#2 HR low (line V-1 has begun)
-   and writes R#1 = blank and R#8 = sprites off there (they apply from the next line: lines
-   V..V+3 stay black).
-2. After line V-1's right border (HR up, by the play field's adjust: nothing visible changes
-   from there on) it writes R#2 = page 3, on the V9938 R#18 = 0 (from line V+1: the FH and HR
-   polls below go by the HUD's adjust; the V9958 engine keeps R#18 at 0), R#19 =
-   `SPLIT_R19_ON` (`(HUD_R23 + V + 2) & 255`: a line match at the right border of line V+2)
-   and R#23 = `HUD_R23`, on the V9958 also R#26/R#27 (`split_list`, built by `split_init`).
-   R#19 goes just before R#23, so that the play field's R#19 never meets the HUD's R#23 (such a
-   match, the phantom of 2026-10-21 below, would end the wait at once).
-3. The palette from colour 4 (`hud_palette` = `gen/hud_split.pal`, the HUD's colours 4-15 then
-   0-3; colour 0 is black in both palettes): colours 4-9 with OTIR (the HUD's lines 0-3 use
-   only colours 0 and 4-9: `tools/mkrom.py` stops on a HUD image or an energy can, whose empty
-   tops `hud.asm` draws from line 0 on, that does not, or on a colour 0 that is not the play
-   field's), then one colour at a time while S#1 FH, the line match, is not up.
-4. Once FH is up (the read acknowledges it) and S#2 HR is low again (line V+3 has begun),
-   R#1 = display on, which takes effect at the next line: the HUD shows from line V+4 = 167
-   whatever the CPU's speed and the VDP's I/O waits.
-5. Then the V9958's R#25 (no border mask in the HUD), the colours not written yet (all in by
-   display line ~169 on a 3.58 MHz Z80, before HUD line 4 even at an R800's 8.66 µs per VDP
-   access), R#19 = `SPLIT_R19` with the S#1 read (below) and `isr_fbgo`.
+   which every list makes R#23) and polls S#1 for that match, the end of line V-2 (`sp_fh`,
+   ~13 polls at 3.58 MHz; at most `SPLIT_POLLS`), then writes R#19 for the end of line V-1,
+   waits the split delay (`split_dly`, below) and writes R#1 = blank and R#8 = sprites off:
+   ~1000 VDP ticks after the match, in the middle of line V-1, past that line's latch of R#1
+   (openMSX's V9938: the next line's sync + 144 ticks, 230 after the match; the One Chip
+   MSX's ESE-VDP: the dot before the next line's first pixel, 344 after) and before line V's
+   (1368 later): the display and the sprites are off from line V.
+2. At FH of line V-1 (its pixels drawn: nothing visible changes from there on) it writes R#2 =
+   page 3, on the V9938 R#18 = 0 and R#23 = `HUD_R23`, on the V9958 also R#26/R#27
+   (`split_list`, built by `split_init`), then R#16 = 1 and the 30 palette bytes (`hud_palette`
+   = `gen/hud_split.pal`, colours 1-15; colour 0 is the play field's, `tools/mkrom.py` checks)
+   with unrolled OUTIs (`sp_regs`): ~4500 ticks on a plain Z80 at 3.58 MHz, ~5500 on the T9769
+   engines, inside the blank lines V..V+4.
+3. Then the second delay and R#1 = display on, ~1000 ticks after the end of line V+3 as the blank
+   after its match: the HUD shows from line V+5 = 167. Then the V9958's R#25 (no border mask in
+   the HUD), R#19 = `SPLIT_R19` (`(HUD_R23 + SPLIT_LINE) & 255`: a match already behind; one the
+   play field's R#19 made against the HUD's R#23 meanwhile is harmless, the ISR ignores FH with
+   `split_armed` 0), an S#1 read, R#15 = 0 and `isr_fbgo`.
 
-A CPU fast enough to write every colour before FH waits for it with a bound (32 reads, about a
-line at 10 MHz); the bound only matters to a split serviced 3 lines late, whose match was
-behind already (its HUD would then show ~12 lines late at 3.58 MHz). The timelines below found
-the blank in line 162 in every frame on every machine.
+The delays are the machine's: `split_cal` (`display_on`, every level start, the display off)
+sets R#23 = 0, counts the iterations N of the split's own poll loop (`sp_wait`: a port read and
+40 T-states, so a machine's I/O waits count as they do in the split's polls and writes)
+between the FH of line 40 and that of line 72, then four times from a match runs `sp_regs` on
+a list of R#16 writes and the play field's palette (the same timing as the HUD's), sets R#19
+for 8 lines on and counts the iterations M left until that match (their mean). `split_dly` =
+N / 45 - 3 (0 at 3.58 MHz: the routine's own 116 T-states between the match and the blank
+are the delay) and `split_dly2` = M + 4 - 27 N / 256 (4 at 3.58 MHz on a plain Z80, 1 on the
+T9769, 15 at 5.37 MHz, 54 at 10.74), 0 below: the blank and the display-on land ~1000 VDP
+ticks after their match whatever the CPU and its I/O waits. A split serviced past line V-2
+(never seen: the main program's longest DI is ~50 T-states) finds its first match behind
+(`sp_fh` returns NC) and writes everything at once (`sp_late`): the HUD a few lines late that
+frame.
 
-**The line V-2 edge (2026-10-23, the user's SX-2).** Until then the routine polled HR from
-wherever it was serviced: its first poll ran 1746-2612 VDP cycles after the interrupt
-(`drive_play`, C-BIOS_MSX2; 1832-2612 on the FS-A1FX) and had to come after the HR window of
-line V-2's start. openMSX's HR is 1 for 312 cycles from each line's right border, so that
-window ended 1680 cycles after the interrupt, 132 before the earliest poll. The One Chip MSX's
-VDP (the ESE-VDP of OCM-PLD, which the SX-2 runs; `esemsx3/src/video`, read 2026-10-23) matches
-R#19 the same way (live, against the line + R#23, at the line's last pixel), but its HR is 1
-from the end of the line's right border to 17 cycles into the next line's pixels (H_CNT
-0-235 of 1368; R#18 does not move it): 125 cycles later than openMSX's, so its window ended 84
-cycles (14 T-states) before the earliest poll at R#27 = 0. An interrupt serviced a little
-sooner there, or a faster CPU, caught it and the display went off from line V-1: the play
-field's last line flickered black ("a blinking line in the HUD" on the SX-2 with 0.1.1). From
-the FH edge both models agree: the first HR poll after it runs 330-630 cycles later at 3.58 MHz,
-past openMSX's window and inside or past the ESE-VDP's (which only begins 125 cycles after FH, and
-no CPU polls that soon: the S#2 select alone takes 264 cycles at 3.58 MHz, about 130 with the
-OCM's I/O waits at 10.74 MHz), so HR low marks line V-1's start on both. The interrupt moved
-from line 159 to 158 so that a late service still finds the match ahead (at line 159 the
-fewest polls seen were 2, at 158 they are 9). R#18 had been written in line V-1 before the poll
-of its end: on the V9938 engine that moved openMSX's window there and a split serviced late
-missed it, the HUD a line late (15 of 1500 frames on C-BIOS_MSX2); it now goes with the HUD's
-registers. Cost: about one line (228 T-states) more in the interrupt a frame: `drive_play`
-pictures/s 26.06 instead of 26.32 (C-BIOS_MSX2), 25.31 instead of 25.52 (FS-A1FX), the ticks
-at full speed; the LOCKSTEP display records identical on the FS-A1FX (2999 lists), on
-C-BIOS_MSX2 identical until game frame 1812, where the scroll engine's camera, which takes the
-CPU time left, goes its own way. Measured through the MSX-AI MCP on the product ROM, 1500
-frames each (VDP line:cycle of the writes; a write takes effect from the next line when its
-cycle is past 144):
+Why (2026-10-23, the user's SX-2, an OCM-PLD machine). The first design of the day polled S#2
+HR from wherever the interrupt was serviced; the second from the FH edge of line V-2. Both
+turned the display on with the palette half written (colours 4-9 before, the other 10 colours
+during HUD lines 0-2, legal on real chips and glitch-free in openMSX) and both went by HR,
+whose window is not the same on the chips: openMSX's V9938/V9958 raise it for 312 ticks from
+the right border, the ESE-VDP (OCM-PLD `esemsx3/src/video`, read that day) from 125 ticks
+later for 236 (H_CNT 0-235 of 1368, R#18 does not move it), and the SX-2 showed the play field's
+last line flickering with the first design and the HUD's first lines with the second, while
+all 15 machines here were clean. With FH only, the chips agree (R#19 against the line + R#23,
+live, at the line's last pixel) and the two latch points differ by 114 ticks against a write
+placed ~650 from the nearer edge; with the whole palette in the blank, nothing is written to
+the VDP while the HUD is drawn. The fifth blank line (the play area 162 lines instead of 163;
+the view scales to the game's 176 as before) pays for it: four lines held the registers and
+the palette only with the display-on just before the HUD's first line (0.1.0's split did so
+and landed a line late on the T9769 engines, FS-A1FX/WX/WSX, and jittered on the FS-A1GT), and
+an FH sync of the display-on after the palette did not fit either: on the T9769 the palette
+ends after the end of line V+3 (36 port accesses at ~23 T-states), so the writes run from
+the match of line V-1 with the delay measured.
 
-| machine | display off (R#1 = 22h) | display on (R#1 = 62h) |
-|---|---|---|
-| C-BIOS_MSX2 (V9938) | 162:762-1002 ×1500 | 166:810-1248 ×1500 |
-| Sony HB-F1XDJ (V9958, S1985) | 162:732-972 ×1500 | 166:948-1152 ×1500 |
-| Panasonic FS-A1FX (V9958, T9769B) | 162:792-1044 ×1500 | 166:888-1104 ×1500 |
-| Panasonic FS-A1GT (V9958, T9769C) | 162:762-1008 ×1500 | 166:810-1266 ×1500 |
+Measured through the MSX-AI MCP on the product ROM, 1500 frames each (VDP line:cycle of the
+writes, line 0 at the frame's first display line, cycle 0 at the line's sync; a write takes
+effect from the next line when its cycle is past 144; the match of line 160 is at 160:1282,
+that of 165 at 165:1282):
 
-The 14 machines here that the MCP's openMSX home has (all but the CocoaMSX Gradiente, whose
-twin it runs) through the keyboard plan for 40 s from the title: no freeze, RoboCop never off
-the published camera, guard vbl/cpu/pal 0, the changed-cell tears 1-6 (0-8 before), the field
-copy started in the play area (R#46 at line 82, pc `B777`h) once on the FS-A1FX and the
-C-BIOS MSX2+ machines (before: the FS-A1FX).
+| machine | display off (R#1 = 22h) | display on (R#1 = 62h) | split_dly / dly2 |
+|---|---|---|---|
+| C-BIOS_MSX2 (V9938) | 161:816-1044 ×1500 | 166:918-1146 ×1500 | 0 / 4 |
+| C-BIOS_MSX2_EU (V9938, 50 Hz) | 161:816-1044 ×1500 | 166:918-1146 ×1500 | 0 / 4 |
+| Gradiente Expert 2.0 (V9938) | 161:816-1044 ×1500 | 166:918-1146 ×1500 | 0 / 4 |
+| Sony HB-F1XDJ (V9958, S1985) | 161:786-1014 ×1500 | 166:828-1056 ×1500 | 0 / 3 |
+| Panasonic FS-A1FX (V9958, T9769B) | 161:834-1074 ×1500 | 166:936-1176 ×1500 | 0 / 1 |
+| Panasonic FS-A1GT, Z80 (V9958, T9769C) | 161:810-1044 ×1500 | 166:888-1122 ×1500 | 0 / 2 |
+| C-BIOS_MSX2+ at 5.37 MHz | 161:1060-1212 ×1500 | 166:776-928 ×1500 | 3 / 15 |
+| C-BIOS_MSX2+ at 10.74 MHz | 161:978-1054 ×1500 | 166:750-826 ×1500 | 9 / 54 |
+| FS-A1FX at 5.37 MHz | 161:772-932 ×1500 | 166:604-764 ×1500 | 1 / 12 |
+| FS-A1GT at 10.74 MHz | 161:1004-1082 ×1500 | 166:689-767 ×1500 | 9 / 51 |
 
-Until 8f021e1 the split wrote R#2/R#23/R#18 (R#26/R#27) and the 30 palette bytes with unrolled
-OUTI after line V-1's right border and only then the display-on, "still in line V+3", which held
-for a Z80 at 3.58 MHz without VDP wait states only: on the MSX-ENGINE T9769 (Panasonic
-FS-A1FX/WX/WSX, the turbo R in Z80 mode) every VDP port access takes one more cycle, and the
-V9958 path writes four more bytes, so the ~44 VDP accesses ended after the latch point of line
-V+4 (openMSX applies a display-enable change at the next line's processing start, 144 VDP
-cycles after its sync: `VDP::syncAtNextLine`). The HUD then showed from line 168 (its first
-line black) or jittered 167/168 (its first line flickering), and a faster CPU (Panasonic
-5.37 MHz turbo, R800, OCM custom speeds) landed 1-3 lines off too (a prototype of the same
-sequence, 2026-10-23, landed on 167 at 5.37 and 8.06 MHz, on the FS-A1GT's R800 and with the
-FS-A1FX's turbo on). Measured with EXTJOY builds on `drive_play` (600
-frames each; a breakpoint on the instruction after the display-on write, `sp_on`; the VDP's
-line:cycle there; the display turns on from the next line when the cycle is past 144):
-
-| machine | before (8f021e1) | after |
-|---|---|---|
-| C-BIOS_MSX2 (V9938) | 166:858-1008 → 167 ×600 | 166:798-1236 → 167 ×600 |
-| Gradiente Expert 2.0 (V9938) | 166:852-1002 → 167 ×600 | 166:798-1236 → 167 ×600 |
-| C-BIOS_MSX2+ (V9958) | 166:1206-1362, 167:0-6 → 167 ×600 | 166:966-1170 → 167 ×600 |
-| Sony HB-F1XDJ (V9958, S1985) | 166:1188-1362, 167:0-12 → 167 ×600 | 166:966-1170 → 167 ×600 |
-| Panasonic FS-A1FX (V9958, T9769B) | 167:342-558 → **168 ×600** | 166:906-1122 → 167 ×600 |
-| Panasonic FS-A1GT, Z80 (V9958, T9769C) | 167:78-288 → **167 ×326, 168 ×274** | 166:828-1284 → 167 ×600 |
-
-The other nine machines here land as their twins (the C-BIOS variants, the 64 KiB and CocoaMSX
-Gradientes, the 64 KiB HB-F1XDJ): 167 in 600/600 frames on all 15 now (before, the V9958 ones
-without a T9769 wrote the display-on as late as 167:12, 132 VDP cycles before that line's latch).
-
-A timeline of every register and palette write in lines 159-211 (120 frames on each of the six
-machines) found no write out of place: blank, sprites-off and adjust in line 162 (the FS-A1FX's
-adjust at 163:18 at the latest, before that line's latch), R#2/R#19/R#23 in line 163, colours
-4-9 before the display-on, the last colour by 169:576 (FS-A1FX), R#25 by 167:336 (FS-A1GT).
-
-Cost: ~0.7 lines of the sync (FH to the display-on) and the 10-20 palette bytes that now go
-after the display-on: the split ends ~2 lines later (C-BIOS_MSX2 line 168.9 on average instead
-of 167.0, FS-A1FX 169.6 instead of 167.9), ~440 T a frame, and the frame's uploads start that
-much later (`UPW_60` in `sprites.asm` is kept, so the plan decides as before; the pinned
-LOCKSTEP display records stay identical). `drive_play` pictures/s, the mean of six builds with
-0-5 NOPs after the split (their spread ±0.3 %): C-BIOS_MSX2 13.01 instead of 13.19 (-1.4 %),
-FS-A1FX 12.96 instead of 13.09 (-1.0 %); ticks/s -0.3 % / -0.5 %; `drive_cov0` 860-1340
--1.4 % / -1.5 %. Fixed area +6 bytes (the palette goes through OTIR: before the sync its speed
-is free, after it OTIR costs 5 T a byte more than OUTI).
+(openMSX gives a Z80 at 5.37 and 10.74 MHz 21 and 6 T-states of I/O wait an access; the
+OCM's turbo gives 2 and 6.) Cost: the split ends by line ~167 instead of ~169 (`drive_play`
+26.2 pictures/s on C-BIOS_MSX2, 25.6 on the FS-A1FX, the ticks at full speed). The logic traces
+are the Amiga's (4401 and 1400 game frames, 0 differ); 120 recorded pictures on C-BIOS_MSX2,
+the FS-A1FX and the HB-F1XDJ match the map and show RoboCop whole; the 14 machines of the MCP's
+openMSX home (all but the CocoaMSX Gradiente, whose twin it runs) through the keyboard plan for
+40 s from the title: no freeze, RoboCop never off the published camera, guard vbl/pal 0, the
+changed-cell tears 1-8 (as before).
 
 The changed cells the engines draw at once while the play area is shown ("a change never waits":
 `scroll9938.asm` `s38r_late`, `scroll9958.asm` `swr_late`) tear when the beam crosses them, and

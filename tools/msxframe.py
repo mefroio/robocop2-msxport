@@ -7,8 +7,8 @@ ISR applied last (seq == app_seq, msx/isr.asm), whose tail also records the came
 sprite state that list shows; the HUD registers come from split_list (sprites off; on the
 V9958 the border mask off). The main loop writes the SAT of a list right after the VBLANK that
 applies it (msx/sprites.asm, sprites_vblank): a snapshot taken in between (spr_vblank still 1
-with the list already applied) has the previous SAT, so its sprites are not checked. The split itself (display off on lines VIEW..VIEW+3, HUD from
-VIEW+4) was verified separately with the VDP probes. The frame is rendered with
+with the list already applied) has the previous SAT, so its sprites are not checked. The split itself (display off on lines VIEW..VIEW+4, HUD from
+VIEW+5) was verified separately with the VDP probes. The frame is rendered with
 tools/msxscreen.py's model (sprite mode 2 included) and compared with the expected picture:
   - the map at the recorded camera;
   - the HUD as the Amiga panel would be after drawing what msx/hud.asm records as shown
@@ -51,7 +51,7 @@ SPARK_OBJ = MAX_OBJ - 1                         # msx/sprites.asm: first in the 
 SAT_ORDER = [SPARK_OBJ] + list(range(SPARK_OBJ))
 PUB_SPR = {0xC080: 0xC700, 0xC0A0: 0xC780}     # what each list's SAT shows (MAX_OBJ objects x 8 bytes)
 SPLIT_LIST = 0xC0C0
-VIEW, HUD_TOP = 163, 167
+VIEW, HUD_TOP = 162, 167
 TILE_AREA = (0x10000, 0x18000 + 176 * 128)       # page 2 and page 3 lines 0-175: tiles only
 HUD_MSK = 0xC02B
 COLS = 160

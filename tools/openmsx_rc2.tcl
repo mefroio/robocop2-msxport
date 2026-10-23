@@ -866,7 +866,8 @@ proc rc2_sprset_col {} {
 #        play area).
 # Pauses when done (::rg_done).
 proc rc2_guard {secs split_line nl vis labels} {
-	catch {set split_line [expr {[rc2_label $labels SPLIT_LINE]}]}   ;# (the build's own split line)
+	catch {set split_line [expr {[rc2_label $labels SPLIT_LINE]}]}   ;# (the build's own split line and play area)
+	catch {set vis [expr {[rc2_label $labels VIEW_LINES]}]}
 	set ::rg_split $split_line
 	set ::rg_nl $nl
 	set ::rg_vis $vis

@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from msxscreen import render, sprite_line  # noqa: E402
 from planar import write_png  # noqa: E402
 
-VIEW = 163                                      # play-area lines (msx/msx.inc VIEW_LINES)
+VIEW = 162                                      # play-area lines (msx/msx.inc VIEW_LINES)
 COLS = 160                                      # map columns
 RAM_BASE = 0xC000
 APP_SEQ = 0xC006

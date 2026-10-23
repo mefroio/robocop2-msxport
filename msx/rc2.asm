@@ -263,6 +263,7 @@ stk_out:
         endif
 
 display_on:
+        call split_cal              ; the HUD split's delay on this CPU (isr.asm; display off)
         ld a,R0_IE1_ON
         ld b,0
         call wrreg                  ; line interrupt on (R#19 comes with each frame)
@@ -410,8 +411,8 @@ slot_page2:
 palette:
         incbin "level1_grade.pal"   ; (the level's palette through the colour grade: tools/mkrom.py)
         include "robocop_flash.inc" ; RoboCop's palette flashes (tools/msxsprites.py)
-hud_palette:                        ; (the HUD's from colour 4: colours 4-15, then 0-3, as the split
-        incbin "hud_split.pal"      ;  loads them: isr.asm isr_split, tools/mkrom.py)
+hud_palette:                        ; (the HUD's colours 1-15, as the split writes them: isr.asm
+        incbin "hud_split.pal"      ;  isr_split, tools/mkrom.py)
         include "grade.inc"         ; the fade's limits through the colour grade (tools/mkrom.py)
 rowtab:
         include "rowtab.inc"

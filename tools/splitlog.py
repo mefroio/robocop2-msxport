@@ -8,7 +8,7 @@ R#1/R#8/R#18 writes take effect at the next line start (tick ~144); R#2, R#23, R
 and the palette immediately. The checks below assert the expected schedule for a play area
 of VIEW lines: display off written during line VIEW-1, display on during line VIEW+3.
 
-usage: splitlog.py LOG [--view 163] [--show N]
+usage: splitlog.py LOG [--view 162] [--show N]
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ LINE = 1368
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("log")
-    ap.add_argument("--view", type=int, default=163, help="play-area lines (VIEW_LINES)")
+    ap.add_argument("--view", type=int, default=162, help="play-area lines (VIEW_LINES)")
     ap.add_argument("--show", type=int, default=1, help="splits to print in full")
     a = ap.parse_args()
     ev = []

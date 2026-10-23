@@ -33,12 +33,11 @@ with analysis/amiga_tables.tsv, from the level's RAM image build/ram/level1_full
 camera-cell masks of the level's spawn list and hazards (tools/cellmasks.py: cells_l1.inc, the
 game logic's shortcuts), copies the level palette and the HUD's
 (both through the colour grade: level1_grade.pal, hud_grade.pal; the HUD's also from colour 4 on,
-hud_split.pal, the order the HUD split loads it: msx/isr.asm isr_split, whose needs on the HUD
-image and the energy can are checked here), the HUD (tools/msxhud.py) and RoboCop's
+hud_split.pal, the order the HUD split loads it: msx/isr.asm isr_split), the HUD (tools/msxhud.py) and RoboCop's
 logic tables (tools/player.py --inc) into build/msx/gen, assembles with z80asm and writes
 build/msx/rc2.rom.
 
-The view: the MSX shows 256 x 163 of the game's 288 x 176 camera; banks.inc gets the factors of
+The view: the MSX shows 256 x 162 of the game's 288 x 176 camera; banks.inc gets the factors of
 msx/player.asm's mapping (VIEW_KX, VIEW_KY: the extra MSX camera range over the game's, 16.16).
 
 usage: mkrom.py build/msx/level1 build/msx/rc2.rom [NAME=VALUE ...] [JOY=F:C:KEYS,...] [TELE=F:X:Y,...]
@@ -68,7 +67,7 @@ PICTURES = (("title", "title_credit"), ("gameover", "gameover_text"))   # the SC
 ROWS_PER_BANK = 25
 FIELD_ID0 = 0xC8                    # the play-field BOB frames' BOBHASH ids (tools/msxsprites.py)
 COLS = 160
-VIEW_LINES = 163                    # msx/msx.inc
+VIEW_LINES = 162                    # msx/msx.inc
 OPTIONS = {
     "FORCE_V9938": (0, "1 = use the MSX2 scroll engine even on a V9958 (test)"),
     "DEMO_ACTORS": (0, "demo: objects besides RoboCop (0-5, msx/sprites.asm demo_actors)"),
@@ -308,21 +307,14 @@ def main(argv: list[str]) -> int:
     if len(hudrt) > 2 * BANK:
         print("error: hud_rt.bin is larger than two banks", file=sys.stderr)
         return 1
-    # The HUD split (msx/isr.asm isr_split) loads colours 4-9 before it turns the display on for
-    # HUD line 0, the others (colour 0 too: it must be the play field's) as far as the beam leaves
-    # time and the rest after it, all in before HUD line 4 even at an R800's VDP pace: lines 0-3
-    # may use only colours 0 and 4-9, in the image and in what msx/hud.asm draws there (the energy
-    # can from line 2, its empty tops from line 0: all of the can's data is checked).
+    # The HUD split (msx/isr.asm isr_split) loads colours 1-15 while the display is off (the
+    # blank lines are short: colour 0 is not written and must be the play field's).
     hud_pal = (gen / "hud_grade.pal").read_bytes()
-    rt = {k: int(v, 16) - 0x8000 for k, v in
-          re.findall(r"^(HUD_CAN|HUD_HEADS):\s+equ 0x([0-9A-Fa-f]+)", (gen / "hud_rt.inc").read_text(), re.M)}
-    first = {c for b in hud_img[:4 * 128] + hudrt[rt["HUD_CAN"]:rt["HUD_HEADS"]] for c in (b >> 4, b & 15)}
-    if not first <= {0, 4, 5, 6, 7, 8, 9} or hud_pal[:2] != (gen / "level1_grade.pal").read_bytes()[:2]:
-        print(f"error: the HUD's lines 0-3 or its can use colours {sorted(first)} (only 0 and 4-9 are in when "
-              "the split turns the display on) or its colour 0 is not the play field's (msx/isr.asm isr_split)",
+    if hud_pal[:2] != (gen / "level1_grade.pal").read_bytes()[:2]:
+        print("error: the HUD's colour 0 is not the play field's (msx/isr.asm isr_split writes colours 1-15)",
               file=sys.stderr)
         return 1
-    (gen / "hud_split.pal").write_bytes(hud_pal[8:] + hud_pal[:8])
+    (gen / "hud_split.pal").write_bytes(hud_pal[2:])
 
     r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "amitab.py"),
                         str(ROOT / "build" / "ram" / "level1_full.bin"), str(ROOT / "analysis" / "amiga_tables.tsv"),

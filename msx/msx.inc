@@ -21,9 +21,9 @@ BANK_8000:  equ 0x9000              ; selects the bank of the 8000h-9FFFh window
 BANK_A000:  equ 0xB000              ; selects the bank of the A000h-BFFFh window
 
 ; --- screen layout (SCREEN 5, 212 lines) ---
-VIEW_LINES: equ 163                 ; play area = display lines 0-162
-SPLIT_LINE: equ VIEW_LINES - 5      ; line interrupt at the right border of display line 158
-HUD_BLACK:  equ 4                   ; display lines 163-166 blank (the switch happens there)
+VIEW_LINES: equ 162                 ; play area = display lines 0-161
+SPLIT_LINE: equ VIEW_LINES - 5      ; line interrupt at the right border of display line 157
+HUD_BLACK:  equ 5                   ; display lines 162-166 blank (the switch happens there)
 HUD_LINES:  equ 45                  ; HUD = display lines 167-211 (Amiga panel lines 1-45)
 VIEW_ROWS:  equ 14                  ; tile rows kept drawn: [cy-1, cy+12]
 CAM_X_MAX:  equ MAP_COLS*16 - 256
@@ -54,10 +54,8 @@ HUD_VRAM_LINE: equ 208
 VRAM_HUD:   equ 0x18000 + HUD_VRAM_LINE*128
 HUD_R23:    equ (HUD_VRAM_LINE - VIEW_LINES - HUD_BLACK) & 255   ; R#23 that shows it at line 167
 SPLIT_R19:  equ (HUD_R23 + SPLIT_LINE) & 255    ; R#19 after the split: its match is behind (isr.asm)
-SPLIT_R19_ON: equ (HUD_R23 + VIEW_LINES + 2) & 255  ; R#19 during the split: a match at the right
-                                    ;   border of display line V+2 times the display-on (isr.asm)
-SPLIT_POLLS: equ 96                 ; the split's polls for its line V-2 match at most (isr.asm:
-                                    ;   about 11 at 3.58 MHz)
+SPLIT_POLLS: equ 128                ; the split's polls for a line match at most (isr.asm sp_fh:
+                                    ;   its first wait is ~18 at 3.58 MHz, ~47 at 10.74)
 SPR_PAT:    equ 0x1D800             ; R#6 = 3Bh
 SPR_COL_A:  equ 0x1E000             ; SAT = SPR_COL_A + 200h, R#5 = C7h
 SPR_COL_B:  equ 0x1E400             ; SAT = SPR_COL_B + 200h, R#5 = CFh
@@ -149,7 +147,7 @@ disp_page:  equ 0xC04F
 ; register lists (the ISR applies one per VBLANK; the main loop fills the other)
 vbl_list_a: equ 0xC080              ; 32 bytes
 vbl_list_b: equ 0xC0A0              ; 32 bytes
-split_list: equ 0xC0C0              ; [len, value, reg|80h, ...] for the HUD
+split_list: equ 0xC0C0              ; [len, value, reg|80h, ...] for the HUD (6 or 8 bytes)
 
 ; sprites (sprites.asm)
 pk_state:   equ 0xC0E0              ; published frame: 0 on screen, 1 its queue to run (split
@@ -262,7 +260,11 @@ j_nojump:   equ 0xE5A5              ; 1: this frame's up came from the joystick:
 split_r19:  equ 0xE5A6              ; the split's R#19 for the frame shown: a match at the end of
                                     ;   line V-2 (isr.asm iv_list, isr_split)
 j_jumpb:    equ 0xE5A7              ; 1: the joystick's trigger B is held: a jump (plmove.asm pm_jb)
-                                    ; (E5A8h-E5FFh: free, the old background upload ring's)
+split_dly:  equ 0xE5A8              ; the split's delays on this machine (isr.asm split_cal, every
+split_dly2: equ 0xE5A9              ;   level start): before its blank, before its display-on
+sp_palp:    equ 0xE5AA              ; 2: the palette the split writes (hud_palette; split_cal: pf_pal)
+cal_list:   equ 0xE5AC              ; 8: split_cal's register pairs (split_init)
+                                    ; (E5B4h-E5FFh: free, the old background upload ring's)
 pq_buf:     equ 0xE600              ; [type, slot / SAT entry, id (2)] ... 0: the published frame's
                                     ; uploads (sprites.asm Q_...)
 SLOT_PG:    equ 0xE7                ; page of four 64-byte tables per slot:
@@ -660,7 +662,7 @@ ph_h:       equ 0xF166              ; 2:   height
 pf_pal:     equ 0xEA40              ; 32: the play field's palette (V9938 format) the VBLANK loads:
                                     ;   the copper's colours ($1049E, logic.asm pal_fade / pal_robo)
 ; (E100h-E7FFh: pat_slot and the sprite queues; E800h-E8FFh: bf_htab; EA22h-EA3Fh,
-; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5A8h-E5FFh, E601h-E6FFh,
+; C0ECh-C0EEh, C0F2h-C0F3h, CA7Ch, F1CFh, F1E2h, F271h-F27Fh, E5B4h-E5FFh, E601h-E6FFh,
 ; F16Fh-F190h, F1A0h-F1C2h: free; EA60h-EC41h: bob_list,
 ; cat_head, hz_ylo..; F280h-F37Fh: the stack, from F380h down (rc2.asm): nothing else may live there)
 
