@@ -439,6 +439,7 @@ lc2_end:
         org 0xA000
         include "level1.asm"
         include "at_l1.inc"
+        include "cells_l1.inc"      ; the camera-cell masks of its spawn list and hazards (tools/cellmasks.py)
 l1_end:
         ds 0xC000 - l1_end, 0xFF
 

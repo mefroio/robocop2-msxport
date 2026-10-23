@@ -53,9 +53,7 @@ spu_lp: ld e,(hl)
         or e
         ret z
         push hl
-        push de
-        pop ix
-        ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
+        push de                     ; (the record: IX at spu_full)
         ld hl,(AM + 0x168A)
         inc hl
         ld (AM + 0x168A),hl
@@ -68,6 +66,40 @@ spu_lp: ld e,(hl)
         ld a,(AM + 0x168C)
         and 6
         ld (sp_d7),a
+        ; (the port) a lift at rest at its path's end (sp_rest, special.asm spl_rest), RoboCop
+        ; not on it (its flag clear) and out of the camera's x range: its run would change
+        ; nothing (the index stays, no step, not seen: no entry, no BOB, no sound), so it is
+        ; left as it is; the head above is all the original's run does to the shared state
+        ld a,(hl)
+        or a
+        jr nz,spu_full
+        ld a,(AM + 0x168A)
+        add a,sp_rest & 0xFF
+        ld l,a
+        ld h,sp_rest / 256          ; (sp_rest + n within one 256-byte page)
+        ld a,(hl)
+        or a
+        jr z,spu_full
+        ex de,hl                    ; HL = the record
+        inc hl
+        inc hl
+        ld e,(hl)
+        inc hl
+        ld d,(hl)                   ; DE = x
+        ld hl,(gcam_x)
+        ex de,hl
+        scf
+        sbc hl,de
+        ld de,-0x1A0
+        add hl,de                   ; C: not seen (sp_seen's x test)
+        jr nc,spu_full
+        pop de
+        pop hl
+        jr spu_lp
+spu_full:
+        pop ix
+        ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
+        ld a,(sp_d7)
         ld e,a
         ld d,0
         ld iy,AM + 0x0B4C
@@ -87,7 +119,7 @@ spu_lp: ld e,(hl)
 spu_veh:
         call sp_vehicle
 spu_nx: pop hl
-        jr spu_lp
+        jp spu_lp
 
 ; The record's x and y (D0 / D1) against the camera ($B04, $B06): carry when it is not in
 ; (cam_x, cam_x + 1A0h] x (cam_y, cam_y + C4h] (the port: as unsigned distances from the corner).
@@ -215,6 +247,7 @@ spl_y:  ld l,(ix+SR_Y)
         ld (ix+SR_Y+1),h
         xor a
 spl_at: ld (sp_atpt),a              ; (seq D4)
+        call spl_rest               ; (the port: at rest at the path's end, or not)
         call sp_seen
         ret c
         ld a,(sp_atpt)
@@ -259,6 +292,31 @@ spl_tab:
         ld hl,0x604
         ld (bob_d4),hl
         jp bob_draw
+
+; (The port) A = FFh when the lift is at its point after its step: sp_rest[n] = 1 when the path
+; ends beyond that point (with its flag clear the lift then stays there: the step above takes
+; the next point, finds the end and steps back), else 0; sp_update skips the lift's run while it
+; stays so and out of the camera's x range. Keeps IX.
+spl_rest:
+        ld c,0
+        or a
+        jr z,splr_s
+        ld l,(ix+SR_IDX)
+        ld h,(ix+SR_IDX+1)
+        ld de,(spl_bas)
+        add hl,de
+        inc hl
+        inc hl
+        inc hl                      ; the next point's high byte
+        bit 7,(hl)
+        jr z,splr_s
+        inc c
+splr_s: ld a,(AM + 0x168A)
+        add a,sp_rest & 0xFF
+        ld l,a
+        ld h,sp_rest / 256
+        ld (hl),c
+        ret
 
 ; ----- the vehicle ($8B9E, level 1) -----
 
@@ -586,6 +644,42 @@ spv_cmp:
 hz_update:
         ld hl,0
         ld (AM + 0x15F0),hl
+        ; (the port) nothing to do unless a record is within the window's reach from the
+        ; camera's 64-pixel cells (hz_xm, hz_ym: tools/cellmasks.py, in the level's bank with
+        ; sw_cell); a camera outside the tables takes every record (hz_all)
+        ld hl,(gcam_x)
+        ld b,HZ_XN
+        call sw_cell
+        ld hl,hz_all
+        cp 0xFF
+        jr z,hzg_x
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,hz_xm
+        add hl,de
+hzg_x:  push hl
+        ld hl,(gcam_y)
+        ld b,HZ_YN
+        call sw_cell
+        ld hl,hz_all
+        cp 0xFF
+        jr z,hzg_y
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,hz_ym
+        add hl,de
+hzg_y:  pop de
+        ld a,(de)
+        and (hl)
+        ld c,a
+        inc hl
+        inc de
+        ld a,(de)
+        and (hl)
+        or c
+        ret z
         ld hl,(gcam_x)
         ld de,0x73
         add hl,de

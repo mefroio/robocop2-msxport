@@ -542,6 +542,25 @@ ac_ediv:    equ 0xDD15              ; explosions: frame divider ($F07E, a byte: 
 ac_jmask:   equ 0xDD16              ; player_move's joystick mask ($B02B: 7Fh, 0 while the vehicle
                                     ;   steers; the code's value at power-on, rc2.asm)
 ac_ridest:  equ 0xDD18              ; 2: RoboCop's state on the vehicle ($8C98: 2, or 3)
+; (the port) the game logic's shortcuts: their caches, worked out again every life (level1.asm
+; sw_init, mapobj.asm ao_sort) in the rest of this block
+sw_list:    equ 0xDD20              ; 33: the spawn walk's candidates this tick (objects.asm
+                                    ;   uo_free): the entries' indices in the list's order, FFh
+                                    ;   after the last (up to 32 entries: the masks are longs)
+sw_dirty:   equ 0xDD42              ; 4: bit k set while entry k may hold a count or its spawned bit
+sw_key:     equ 0xDD46              ; 6: the camera's cells and the dirty mask sw_list was built for
+sw_lp:      equ 0xDD4C              ; 2: the walk's next candidate (in sw_list)
+sw_k:       equ 0xDD4E              ; the entry visited (its index)
+sw_ci:      equ 0xDD4F              ; the index of the entry $B12 points at
+sw_bc:      equ 0xDD50              ; 2: camera x + 5Eh this tick (the walk's D0 + 1)
+sw_tchg:    equ 0xDD52              ; ENEMY_CAP: not 0 once a slot's type changed since the enemies
+                                    ;   in use were counted (objects.asm uo_cap)
+sw_px:      equ 0xDD54              ; 2: sw_prep: the x cell's mask
+sp_rest:    equ 0xDD60              ; SP_REST_N: per special object n (counted from 1) 1 when the
+                                    ;   lift was at rest at its last full run (special.asm sp_update)
+SP_REST_N:  equ 12                  ;   (room for 11 records; level 1 has 7)
+ao_calo:    equ 0xDD70              ; 2: activate_objects' candidates stand while camera x is in
+ao_cahi:    equ 0xDD72              ; 2:   (ao_calo, ao_cahi] (mapobj.asm ao_cands)
 AC_VARS_END: equ 0xDD80
 spawn_ram:  equ 0xDD80              ; DD80h-DFFFh: the level's spawn list ($B0E; 14-byte records,
                                     ; words little-endian), copied from the level bank at its start

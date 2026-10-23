@@ -100,7 +100,7 @@ l1i_hdr:
         ld (AG + 0x804A),hl         ; (header +30: the timer, BCD minutes and seconds)
         xor a
         ld (AG + (0x804C ^ 1)),a    ; (setup_ciab_timer $F9DC: no time out)
-        ret
+        jp sw_init                  ; (the port: the logic shortcuts' caches from the lists)
 l1i_sp0:
         ld hl,sp_l1                 ; the special objects ($8B54: $8FC0): records into RAM,
         ld de,SP_RAM
@@ -135,6 +135,217 @@ l1i_spe:
         inc de
         ld (de),a
         ret
+
+; ----- the game logic's shortcuts (the port): their caches -----
+
+; The spawn walk's candidates this tick (objects.asm uo_free): the entries the walk's window can
+; reach from the camera's 64-pixel cells (sw_xm, sw_ym: a mask of entries per cell of camera x
+; and per cell of camera y, tools/cellmasks.py, cells_l1.inc) or that may hold a count or their
+; spawned bit (sw_dirty), as indices in the list's order, FFh after the last (sw_list). The
+; others are outside the window with nothing to reset, so the walk leaves them as they are.
+; Built again only when the cells or the dirty mask changed (sw_key). Also sw_bc, the walk's
+; D0 + 1. Called at update_objects' start: nothing moves the camera inside it.
+sw_prep:
+        ld hl,(gcam_x)
+        ld de,0x5E
+        add hl,de
+        ld (sw_bc),hl
+        ld hl,(gcam_x)
+        ld b,SW_XN
+        call sw_cell
+        ld c,a
+        ld hl,(gcam_y)
+        ld b,SW_YN
+        call sw_cell
+        ld b,a                      ; B = the y cell, C = the x cell (FFh: outside the tables)
+        ld hl,sw_key
+        ld a,c
+        cp (hl)
+        jr nz,swp_new
+        inc hl
+        ld a,b
+        cp (hl)
+        jr nz,swp_new
+        inc hl
+        ld de,sw_dirty
+        ld a,(de)
+        cp (hl)
+        jr nz,swp_new
+        inc hl
+        inc de
+        ld a,(de)
+        cp (hl)
+        jr nz,swp_new
+        inc hl
+        inc de
+        ld a,(de)
+        cp (hl)
+        jr nz,swp_new
+        inc hl
+        inc de
+        ld a,(de)
+        cp (hl)
+        ret z                       ; (the same: sw_list stands)
+swp_new:
+        ld hl,sw_key
+        ld (hl),c
+        inc hl
+        ld (hl),b
+        inc hl
+        ex de,hl
+        ld hl,sw_dirty
+        push bc
+        ld bc,4
+        ldir
+        pop bc
+        ld hl,sw_all
+        ld a,c
+        cp 0xFF
+        jr z,swp_x
+        add a,a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,sw_xm
+        add hl,de
+swp_x:  ld (sw_px),hl
+        ld hl,sw_all
+        ld a,b
+        cp 0xFF
+        jr z,swp_y
+        add a,a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,sw_ym
+        add hl,de
+swp_y:  ex de,hl                    ; DE = the y cell's mask
+        ld hl,(sw_px)               ; HL = the x cell's
+        ld ix,sw_dirty
+        ld iy,sw_list
+        ld c,0                      ; the index of the byte's bit 0
+swp_b:  ld a,(de)
+        and (hl)
+        or (ix+0)
+        jr z,swp_nb
+        ld b,c
+swp_bt: srl a
+        jr nc,swp_bn
+        ld (iy+0),b
+        inc iy
+swp_bn: inc b
+        or a
+        jr nz,swp_bt
+swp_nb: inc hl
+        inc de
+        inc ix
+        ld a,c
+        add a,8
+        ld c,a
+        cp 32
+        jr c,swp_b
+        ld (iy+0),0xFF
+        ret
+
+; HL = a camera coordinate, B = a table's cells -> A = its 64-pixel cell (HL / 64), or FFh
+; outside the table (negative, or past the last cell: the callers then take every entry). Uses E.
+sw_cell:
+        ld a,h
+        cp 0x40
+        jr nc,swc_out               ; (negative, or 4000h and more)
+        ld a,l
+        rlca
+        rlca
+        and 3
+        ld e,a
+        ld a,h
+        add a,a
+        add a,a
+        or e
+        cp b
+        ret c
+swc_out:
+        ld a,0xFF
+        ret
+
+; Every life (l1_init): the lifts' rest flags cleared (special.asm sp_update: worked out again
+; at their next run), the spawn walk's dirty mask from the list's contents (a death keeps the
+; list: an entry counting or spawned once is dirty) and the candidates built again at the next
+; tick (sw_key: no cell is FEh).
+sw_init:
+        ld hl,sp_rest
+        ld b,SP_REST_N
+        xor a
+swi_r:  ld (hl),a
+        inc hl
+        djnz swi_r
+        ld hl,sw_dirty
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        inc hl
+        ld (hl),a
+        ld a,0xFE
+        ld (sw_key),a
+        ld hl,spawn_ram + 10
+        xor a
+swi_lp: ld (sw_k),a
+        push af
+        ld a,(hl)                   ; the count (+10, +11) and the spawned byte (+12 ^ 1)
+        inc hl
+        or (hl)
+        inc hl
+        inc hl
+        or (hl)
+        dec hl
+        dec hl
+        dec hl
+        push hl
+        call nz,sw_dset
+        pop hl
+        ld de,14
+        add hl,de
+        pop af
+        inc a
+        cp SW_N
+        jr c,swi_lp
+        ret
+
+; Entry sw_k's dirty bit set (sw_dset) or cleared (sw_dclr). Both use AF, DE, HL.
+sw_dset:
+        call sw_dbit
+        or (hl)
+        ld (hl),a
+        ret
+sw_dclr:
+        call sw_dbit
+        cpl
+        and (hl)
+        ld (hl),a
+        ret
+sw_dbit:                            ; -> HL = the byte of sw_dirty with entry sw_k's bit, A = the bit
+        ld a,(sw_k)
+        ld e,a
+        rrca
+        rrca
+        rrca
+        and 3
+        add a,sw_dirty & 0xFF       ; (sw_dirty's four bytes within one 256-byte page)
+        ld l,a
+        ld h,sw_dirty / 256
+        ld a,e
+        and 7
+        ld e,a
+        ld d,0
+        push hl
+        ld hl,sw_bits
+        add hl,de
+        ld a,(hl)
+        pop hl
+        ret
+sw_bits: db 1,2,4,8,16,32,64,128
 
 ; ----- level_tick_0 ($933A): an electric beam of level 1 -----
 

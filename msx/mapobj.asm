@@ -289,9 +289,24 @@ ao_next:
 ; those with x in [camera x + 60h, camera x + 1ACh) follows the camera (ao_lo..ao_hi), and its
 ; entry numbers, sorted, are the candidates (ao_cand, FFh after the last; ao_cnd the next one).
 ; Entries outside that range do nothing on the Amiga, so visiting only these, in the list's
-; order, is the same.
+; order, is the same. The candidates depend on camera x alone: once built they stand while
+; camera x stays in (ao_calo, ao_cahi], the range where both bounds keep their places.
 ao_cands:
         ld hl,(gcam_x)
+        ld de,(ao_calo)
+        or a
+        sbc hl,de
+        jp m,ac_go
+        jr z,ac_go                  ; (camera x at or below ao_calo: built again)
+        ld hl,(ao_cahi)
+        ld de,(gcam_x)
+        or a
+        sbc hl,de
+        jp m,ac_go                  ; (above ao_cahi)
+        ld hl,ao_cand               ; the same bounds: the same candidates
+        ld (ao_cnd),hl
+        ret
+ac_go:  ld hl,(gcam_x)
         ld de,0x60
         add hl,de
         ld (ao_xlo),hl
@@ -346,6 +361,48 @@ ac_put: ld (hl),c
         djnz ac_ins
 ac_end: ld a,0xFF
         ld (de),a
+        ; the camera x range where lo and hi stay: above so_x[lo - 1] - 60h and so_x[hi - 1] -
+        ; 1ACh (nothing below an index of 0), at most so_x[lo] - 60h and so_x[hi] - 1ACh
+        ; (nothing above the last entry)
+        ld hl,-0x4000
+        ld (ao_calo),hl
+        ld hl,0x3FFF
+        ld (ao_cahi),hl
+        ld a,(ao_lo)
+        ld bc,-0x60
+        call aci_side
+        ld a,(ao_hi)
+        ld bc,-0x1AC                ; (falls into aci_side, whose ret ends ao_cands)
+aci_side:                           ; A = a bound's index, BC = minus the window's offset there
+        push af
+        or a
+        jr z,acs_hi
+        dec a
+        call so_xat
+        add hl,bc                   ; so_x[i - 1] - the offset: the camera is above it
+        ld de,(ao_calo)
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        jp m,acs_hi
+        jr z,acs_hi
+        ld (ao_calo),hl             ; (the larger of the two sides)
+acs_hi: pop af
+        ld e,a
+        ld a,(ao_cnt)
+        cp e
+        ret z                       ; (every entry below the window: nothing above)
+        ld a,e
+        call so_xat
+        add hl,bc                   ; so_x[i] - the offset: the camera is at most it
+        ld de,(ao_cahi)
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        ret p
+        ld (ao_cahi),hl             ; (the smaller)
         ret
 
 ; A = an index into so_x (the bound found last time), DE = x -> A = the first index whose x is
@@ -446,6 +503,10 @@ ast_end:
         xor a
         ld (ao_lo),a
         ld (ao_hi),a
+        ld hl,0x3FFF                ; no candidates yet (ao_cands: an empty range)
+        ld (ao_calo),hl
+        ld hl,-0x4000
+        ld (ao_cahi),hl
         ret
 
 ; A = an index, HL = x: so_x[A] = HL. Keeps BC.
