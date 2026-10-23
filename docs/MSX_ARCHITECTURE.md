@@ -210,31 +210,48 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   what the list on screen shows: `pub_spr`), pictures of a character from two ticks went from
   11.4 % to 0.8 % (MSX2) and from 8.2 % to 0 (MSX2+); parts missing 1.0–1.3 %, single plans
   while a new part loads in busy scenes; the game 2 % slower there.
-- **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work, while the background
-  queue holds fewer than 4 loads): the patterns of his state's next record (the one before when
-  the animation runs backwards; same aim) go into free slots (`slot_warm`: `slot_ref` 0, as
-  `alloc_slot` gives them, so no version loses any) through the background queue, and the
-  step's version is complete as soon as the logic asks for it. A walk step has 11–18 patterns
-  of its own (the original redraws the body and arms every step; a cycle uses 106 against the
-  64 slots); loaded only after the change, a step showed 7–12 VBLANKs late and the steps in
-  between (2 ticks each) were skipped: only 21–27 % of the shown step changes were one step,
-  and the walk looked to go backwards (the user, 2026-10-21). With it 67–79 %; with
+- **RoboCop's next step ahead** (`rc_prefetch`, after the plan's work): the patterns of his
+  state's next record (the one before when the animation runs backwards; same aim) go into free
+  slots (`slot_warm`: `slot_ref` 0, as `alloc_slot` gives them, so no version loses any), and
+  the step's version is complete as soon as the logic asks for it. A walk step has 11–18
+  patterns of its own (the original redraws the body and arms every step; a cycle uses 106
+  against the 64 slots); loaded only after the change, a step showed 7–12 VBLANKs late and the
+  steps in between (2 ticks each) were skipped: only 21–27 % of the shown step changes were one
+  step, and the walk looked to go backwards (the user, 2026-10-21). With it 67–79 %; with
   `CAD_MAX` 2 as well, 93–94 % (the rest: pictures that still carry 3 ticks).
 - **Two sprite sets, double-buffered** (colour table + SAT; R#5 = C7h / CFh). Every published
-  register list that changes the sprites switches R#5 to the other set, which the frame's
-  queue made complete beforehand: its colour rows (`rows_sync`: per entry the row its version
-  wants against `col_held` / `col_held_b`), its SAT (`q_sat`) and the new patterns (slots no
-  shown entry uses). The set on screen is never written, so no change can tear.
-- **Upload queues**: the frame's queue (`pq_buf`: [bytes \| 80h for the early clock, VRAM
-  address, source bank and address]) runs from the split interrupt until the vertical blank
-  begins (S#2 VR: written later, the VBLANK interrupt's registers and palette came in the
-  next picture's first lines) and resumes where it stopped; the VBLANK interrupt applies the
-  list only once its queue is done, then adds `BQ_LATE` units of the background queue
-  (`bq_buf`: patterns of versions still being prepared, with the slot's generation checked
-  before the copy). Costs in units of 16 T-states (`QC_PAT`, `QC_COL`, `QC_COLEC`).
-- **SAT**: built once per published frame (`sat_build`) for the set it goes to; objects that
-  alternate get a second half (+80h) in which the other phase is parked, and the interrupt
-  writes only their y's on the frames between two lists (`sat_mux_out`).
+  register list that changes the sprites switches R#5 to the other set, made complete
+  beforehand: its colour rows (`rows_sync`: per entry the row its version wants against
+  `col_held` / `col_held_b`), its SAT (`q_sat`) and the new patterns (slots no shown entry uses).
+  The set on screen is never written, so no change can tear.
+- **Uploads written by the plan** (2026-10-23): a pattern goes into its slot when the plan needs
+  it (`pat_now`: a free or new slot, which no entry of the list on screen uses; the pattern table
+  serves both sets), the colour rows and the SAT into the set not on screen (`pc_rows`, `q_sat`:
+  `wait_frame` waited for the last list, so that set is not shown; consecutive entries' rows are
+  written without a new address, `pcr_next`), all from the main program during the display
+  (`spr_wr` sets R#14 = 7 and the address with the interrupts off; the interrupts write no VRAM
+  at all now). The copies go through unrolled OUTIs (`outi32`, 18 T-states a byte: during the
+  display with sprites on the V9938 and the V9958 take a CPU write at least every 70 VDP cycles,
+  12 T-states, by openMSX's access-slot model from measurements on real chips). Until then they
+  went through a frame's queue (`pq_buf`) and a background ring (`bq_buf`) that the split and
+  VBLANK interrupts copied in the HUD's lines and the blank: the queue writing, each copy's
+  set-up, the slot generations and the waiting cost more than the bytes (the plan's side about
+  1,080 T-states for a 32-byte pattern, the copy's about 1,300), a version whose patterns went to
+  the background ring waited a frame or more, and nearly every picture reached the screen a
+  VBLANK late (its queue outlived the split's window). Measured: normal play 13.5 -> 17.8
+  pictures a second on the V9938 (17.6 on the V9958), the game at 99 % of its speed, the busy
+  windows +7-11 %; logic traces 0 differ; no write into the set on screen in 30 s of each busy
+  window (`rc2_sprvram`), SAT and patterns right (`rc2_satcheck`, `rc2_patcheck` 0 bad), the
+  product's start check guard 0 on both VDPs. Versions now show a picture or more sooner, so the
+  exact display records differ from the earlier ones by design (new baselines). Known: an enemy
+  drawn from two parts on the same lines as RoboCop (RoboCop 4 + legs 3 + torso 2) still makes
+  9 on a line, which the budget leaves to the VDP (it hides that line's last sprite, never
+  RoboCop's); with the parts now on time this shows in the vehicle window on the V9958 too
+  (151 of 1,800 frames, where a part was still loading before).
+- **SAT**: built once per published frame (`sat_build`) for the set it goes to. (Until 2026-10-23
+  the code for objects alternating between frames was still there, a second half of the pair
+  and the interrupt writing their y's, though the budget never set `mux_on` since the user's
+  rule of decision 11: removed, 190 bytes of the fixed area; `pk_mux` and `sat_due` stay 0.)
 - **Y = 216** ends the sprite table: when one of an object's sprites would land on it, the
   whole object moves by the smallest offset (−1, +1, −2, …), never a single part. Objects
   wholly above or below the play area have their entries parked (their 8-bit SAT y would
@@ -295,10 +312,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   display comparisons of refactors with `LOCKSTEP` builds and `tools/dispcmp.py` (`LOCKSTEP=24`:
   no frame comes late on either VDP, and the same ROM gives the same 3,000 lists twice; the test
   builds also pin the engine's two inputs that depend on its own speed, so that a faster build
-  decides alike: the interrupts load nothing from the background queue while `spr_plan` runs,
-  `pl_busy`, since `rc_prefetch` and `bq_pat` read that queue, and `rc_hold` reads `last_tick`
-  instead of `tick`, the VBLANK count at the moment the budget runs; without the pins a build
-  that is only faster differed in 2,300-2,500 of 3,000 lists); what the MSX
+  decides alike: `rc_hold` reads `last_tick` instead of `tick`, the VBLANK count at the moment
+  the budget runs; until the uploads moved into the plan the interrupts also had to leave the
+  background queue alone while `spr_plan` ran; without the pins a build that is only faster
+  differed in 2,300-2,500 of 3,000 lists); what the MSX
   shows against the bench's BOBs with `tools/objcmp.py` (exact, late, missing: loading, left
   out, or no frame at all in the sprite data, which `bob_flush` hides: the ride's pickups until
   2026-10-21). For the product ROM on a fresh machine (title, keyboard plans `rc2_keys`): `rc2_guard`
@@ -311,7 +328,7 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   `VDP.commandExecuting` probe: a play-area line it wrote was drawn while it ran; this probe
   slows a run about threefold); the
   VBLANK check is taken at `isr.asm` `iv_late`, the list's registers and SAT in, not at
-  `iv_tick`, which comes after `spr_late`'s uploads), `rc2_camcheck` (at every `list_tail`,
+  `iv_tick`, which came after `spr_late`'s uploads until 2026-10-23), `rc2_camcheck` (at every `list_tail`,
   RoboCop's `O_X`/`O_Y` must be `p_x + p_hotx + SPR_X_OFS + 8 − cam_x` /
   `p_y + p_hoty + SPR_Y_OFS − cam_y` with the camera that list publishes), `rc2_overlines`
   (every frame with a line above 8, wanted against shown versions), `rc2_viewlag`, and
@@ -514,6 +531,40 @@ which as sprites were striped, cut or left out.
   (`hits.asm`), but the missile, enemy bullet types 1 and 2 (damage 40h, fired only by the
   enemies of types 3 and 27: REA, the 28 calls of `ebullet_add` `$F5BC`), at most twice its
   damage: 192 of the 258 energy points was too much (the user's choice, 2026-10-22).
+- **Shortcuts (2026-10-23)**: bookkeeping the original does every frame is skipped where it can
+  change nothing, so the logic's decisions stay the Amiga's tick for tick (logic traces 0 differ
+  on the bench's cov1, cov0 and death-and-restart drives, the cracked wall's relocation drive and
+  the product configuration's traces the same as without them; the pinned LOCKSTEP 24 display
+  records 0 differ). (1) The spawn walk (`objects.asm` `uo_free`) visits only the tick's candidates
+  (`level1.asm` `sw_prep`: `sw_list`): the entries the walk's window can reach from the camera's
+  64-pixel cells (`tools/cellmasks.py` writes a mask of entries per cell of camera x and per cell
+  of camera y into `cells_l1.inc`, in the level's bank, from the routine's own window tests) or
+  that may hold a count or their spawned bit (`sw_dirty`, set when an entry's x is in the window,
+  cleared with its reset); an entry left out is outside the window and already reset, so the
+  original's visit would write zeros over zeros. The list is built again only when the cells or
+  the dirty mask change; `$B12` follows the original (the spawning entry; the last entry at the
+  end). (2) With `ENEMY_CAP` the enemies in use are counted again only once a slot's type changed
+  (`sw_tchg`). (3) A lift at rest at its path's end (`special.asm` `spl_rest`, `sp_rest`), RoboCop
+  not on it and out of the camera's x range skips its run: the original's steps back to the same
+  point and, unseen, does nothing else. (4) The hazards' scan runs only when a record is within
+  the window's reach from the camera's cells (`hz_xm`, `hz_ym`, the same tool). (5)
+  `activate_objects`' candidates (`mapobj.asm` `ao_cands`) depend on camera x alone: once built
+  they stand while camera x stays in the range where both bounds of the sorted x list keep their
+  places (`ao_calo`, `ao_cahi`; `act_10`'s jump leaves it). (6) The loops whose slots are all
+  empty return at once (`eb_update`, `expl_update`, `pl_fire`'s effects, `pl_hits`' bullets and
+  pickups, `pk_update`), leaving `ea_k` and `bob_own` as the loop would; `bob_own` is set only for
+  the slots in use (it names the owner of the BOBs drawn, and only those draw). Every life
+  `sw_init` derives the dirty mask from the list (a death keeps it) and clears the rest flags;
+  `ao_sort` empties the candidates' range. Measured (`drive_play`, over the sprite plan, budget
+  and `feed_vdp` items of the same day): (1)-(4) MSX2 13.20 → 16.70 pictures/s and
+  23.98 → 24.60 ticks/s, MSX2+ 13.13 → 16.49 and 23.85 → 24.42; in the busy `c860` window
+  mostly as ticks: MSX2 7.16 → 7.20 pictures/s and 11.06 → 11.56 ticks/s, MSX2+ 5.93 → 6.19 and
+  11.78 → 12.25; with (5)-(6) `drive_play` MSX2 16.86 and 24.69, MSX2+ 16.61 and 24.68, `c860`
+  MSX2 7.73 and 11.54, MSX2+ 6.26 and 12.42. Fixed area +0 bytes; `LC1` +147 (39 bytes left),
+  `LC2` +125, `LC3` +137, `L1` +681 (380 of tables). The caches live in `AC_VARS`' tail
+  (`DD20h-DD73h`). The next levels need their own `cells_lN.inc` and the level header's
+  convention (`lv_init`, `lv_hz`) extended to `sw_prep`, `sw_cell` and the tables `special.asm`
+  names.
 - **The cracked wall** (map object 25 of level 1, type 5Ch, activator `obj_relocate` `$9FC4`,
   `mapobj.asm` `act_10`): after 80 ticks of "up" in front of it RoboCop and the camera go to
   the level header's +20/+22 (`$15D6`/`$15D8`, set by `level1.asm` `l1i_hdr` as `level_init`
@@ -653,7 +704,7 @@ which as sprites were striped, cut or left out.
   run while the published list waits, BOBs not recorded for skipped pictures, category lists
   and a 512-slot hash for the BOBs, the budget's line phase on difference arrays, `bob_draw`'s
   quick test, the attribute reads, the view's tables, the spawn list walk, the lifts' path
-  stepping, the hazards' window.
+  stepping, the hazards' window, the shortcuts above (2026-10-23).
 
 ## Front end (`msx/front.asm`, bank `BANK_FRONT` at `8000h`)
 

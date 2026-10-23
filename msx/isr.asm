@@ -304,12 +304,7 @@ iv_list:
         ld a,1
         ld (split_armed),a
         pop af
-        jr nz,iv_new
-        ld a,(pk_mux)               ; the same frame: objects alternating take turns
-        or a
-        call nz,iv_satw
-        jr iv_late
-iv_new: call iv_sat                 ; (sprites.asm)
+        call nz,iv_sat              ; (sprites.asm: a new list, its sprite set from now on)
 iv_late:
         call spr_late               ; more of the sprites' background uploads
 iv_tick:

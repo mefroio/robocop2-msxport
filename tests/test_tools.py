@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import cellmasks  # noqa: E402
 import hudmodel  # noqa: E402
 import mkrom  # noqa: E402
 import msxconv  # noqa: E402
@@ -93,6 +94,28 @@ class GameLogicToolTests(unittest.TestCase):
         self.assertIn("        dw 115, 3\n        db 0x11", inc)
         self.assertTrue(inc.rstrip().endswith("dw 0xFFFF"))
         self.assertEqual(mkrom.input_inc("").count("dw"), 1)
+
+    def test_cell_masks_from_the_routines_windows(self):
+        import struct
+        # one spawn entry at (200h, 100h), one beam at (2B0h, 60h): big-endian, as the RAM image is
+        img = struct.pack(">hh", 0x200, 0x100) + bytes(10) + struct.pack(">h", -1)
+        img += struct.pack(">hhhh", 0x2B0, 0x60, 0x2B0, 2) + struct.pack(">h", -1)
+        entries, recs = cellmasks.spawn_entries(img, 0), cellmasks.hazard_records(img, 16)
+        self.assertEqual((entries, recs), ([(0x200, 0x100)], [(0x2B0, 0x60, 0x2B0, 2)]))
+
+        def cells(items, n, test):
+            return [c for c, m in enumerate(cellmasks.cell_masks(items, n, test)) if m]
+        # the walk's window: camera x + 5Eh <= x <= camera x + 1AFh (camera x 81..418), camera y - 28h
+        # < y <= camera y + A8h (88..295); the hazards': window x >= camera x + 73h and x < camera x
+        # + 1A0h (273..573), camera y - 64h <= y < camera y + ACh (0..196); 64-pixel cells
+        self.assertEqual(cells(entries, 40, cellmasks.spawn_x), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(cells(entries, 13, cellmasks.spawn_y), [1, 2, 3, 4])
+        self.assertEqual(cells(recs, 40, cellmasks.hazard_x), [4, 5, 6, 7, 8])
+        self.assertEqual(cells(recs, 13, cellmasks.hazard_y), [0, 1, 2, 3])
+        inc = cellmasks.inc_text("l1", entries, recs, 40, 13, "test")
+        self.assertIn("SW_N:       equ 1 ", inc)
+        self.assertIn("sw_all:  db 0x01,0x00,0x00,0x00", inc)
+        self.assertIn("hz_all:  db 0x01,0x00", inc)
 
     def test_msx_trace_rows_are_signed_where_the_amiga_is(self):
         import tempfile

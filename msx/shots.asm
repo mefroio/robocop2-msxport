@@ -223,9 +223,11 @@ pf_fx:  xor a
         ld (ht_ok),a                ; (hit_test: the boxes of this tick)
         ld ix,FX_SLOTS              ; every slot's handler ($AECA + type)
         ld b,8
-pfx_lp: ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
+pfx_lp: ld a,(ix+0)
+        or a
+        jr z,pfx_e                  ; (the port: an empty slot at once)
+        ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
         push bc
-        ld a,(ix+0)
         cp 4
         jr nz,pfx_8
         call fx_shot
@@ -233,7 +235,7 @@ pfx_lp: ld (bob_own),ix             ; (the identity of its BOBs: bob.asm)
 pfx_8:  cp 8
         call z,fx_punch
 pfx_nx: pop bc
-        inc ix
+pfx_e:  inc ix
         inc ix
         djnz pfx_lp
         ret

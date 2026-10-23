@@ -151,13 +151,11 @@ split_list: equ 0xC0C0              ; [len, value, reg|80h, ...] for the HUD
 pk_state:   equ 0xC0E0              ; published frame: 0 on screen, 1 its queue to run (split
                                     ; interrupt: sprites.asm spr_upload), 2 ready for the VBLANK
 pk_list:    equ 0xC0E1              ; 2: its register list (vbl_ptr once on screen)
-pk_mux:     equ 0xC0E3              ; 1: the frame on screen has objects alternating (VBLANK:
-                                    ; its SAT pair's halves in turn)
-sat_mux_n:  equ 0xC0E4              ;   the same for the frame being published
+pk_mux:     equ 0xC0E3              ; always 0 (objects alternating between frames: the code went
+                                    ; on 2026-10-23; the Tcl checks still read it)
 spr_vblank: equ 0xC0E5              ; 1: the frame being published has a new SAT (sat_nb)
 spr_xadj:   equ 0xC0E6              ; SAT x correction of the frame (V9938: f - 8, V9958: 0)
 sat_dirty:  equ 0xC0E7              ; 1: sat_buf must be built again
-mux_on:     equ 0xC0E8              ; objects alternating between frames
 spr_n:      equ 0xC0E9              ; SAT entries the last sat_buf used
 pub_vec:    equ 0xC0EA              ; 2 bytes: engine publish
 bu_tot:     equ 0xC0EF              ; budget: sprites of all the objects shown,
@@ -415,7 +413,8 @@ snd_fm:     equ 0xEC42              ; 1: an OPLL was found (sound.asm snd_detect
 snd_slot:   equ 0xEC43              ;   the slot searched / found
 vram_busy:  equ 0xEC50              ; 1 while the main program streams to VRAM (vram_write ...
                                     ;   vram_done): the VBLANK interrupt leaves the SAT to vram_done
-sat_due:    equ 0xEC51              ; 1: the SAT of the list just put on screen waits for vram_done
+sat_due:    equ 0xEC51              ; always 0 (the alternation's SAT write waiting for vram_done
+                                    ;   went on 2026-10-23; the Tcl checks still read it)
 sat_vaddr:  equ 0xEC52              ; 2: that SAT's address as port 99h writes it (low, high | 40h;
                                     ;   R#14 = 7)
 sat_len:    equ 0xEC54              ; bytes of sat_buf it takes
@@ -543,6 +542,25 @@ ac_ediv:    equ 0xDD15              ; explosions: frame divider ($F07E, a byte: 
 ac_jmask:   equ 0xDD16              ; player_move's joystick mask ($B02B: 7Fh, 0 while the vehicle
                                     ;   steers; the code's value at power-on, rc2.asm)
 ac_ridest:  equ 0xDD18              ; 2: RoboCop's state on the vehicle ($8C98: 2, or 3)
+; (the port) the game logic's shortcuts: their caches, worked out again every life (level1.asm
+; sw_init, mapobj.asm ao_sort) in the rest of this block
+sw_list:    equ 0xDD20              ; 33: the spawn walk's candidates this tick (objects.asm
+                                    ;   uo_free): the entries' indices in the list's order, FFh
+                                    ;   after the last (up to 32 entries: the masks are longs)
+sw_dirty:   equ 0xDD42              ; 4: bit k set while entry k may hold a count or its spawned bit
+sw_key:     equ 0xDD46              ; 6: the camera's cells and the dirty mask sw_list was built for
+sw_lp:      equ 0xDD4C              ; 2: the walk's next candidate (in sw_list)
+sw_k:       equ 0xDD4E              ; the entry visited (its index)
+sw_ci:      equ 0xDD4F              ; the index of the entry $B12 points at
+sw_bc:      equ 0xDD50              ; 2: camera x + 5Eh this tick (the walk's D0 + 1)
+sw_tchg:    equ 0xDD52              ; ENEMY_CAP: not 0 once a slot's type changed since the enemies
+                                    ;   in use were counted (objects.asm uo_cap)
+sw_px:      equ 0xDD54              ; 2: sw_prep: the x cell's mask
+sp_rest:    equ 0xDD60              ; SP_REST_N: per special object n (counted from 1) 1 when the
+                                    ;   lift was at rest at its last full run (special.asm sp_update)
+SP_REST_N:  equ 12                  ;   (room for 11 records; level 1 has 7)
+ao_calo:    equ 0xDD70              ; 2: activate_objects' candidates stand while camera x is in
+ao_cahi:    equ 0xDD72              ; 2:   (ao_calo, ao_cahi] (mapobj.asm ao_cands)
 AC_VARS_END: equ 0xDD80
 spawn_ram:  equ 0xDD80              ; DD80h-DFFFh: the level's spawn list ($B0E; 14-byte records,
                                     ; words little-endian), copied from the level bank at its start
@@ -561,21 +579,19 @@ dg_log:     equ 0xE910              ;   176: the SCC tests' reads (sound.asm scc
 dg_txt:     equ 0xEE00              ;   32 x 24: the screen's text (objl_ram, before the level)
 sp_ptrs:    equ 0xEA00              ; their list as MSX pointers (0 after the last; up to 16)
 lk_over:    equ 0xF168              ; LOCKSTEP test builds: frames that started late
-sat_ph:     equ 0xF169              ; sat_out: the tick of the VBLANK its SAT is for (its half)
 bo_dirty:   equ 0xF16A              ; 1: an object's identity changed (budget: bu_order again)
 pl_unl:     equ 0xF16B              ; plan: the slots of the version being built not loaded yet
 su_vrchk:   equ 0xF16C              ; spr_upload: 1 to stop at the vertical blank (split interrupt)
 spr_dsp:    equ 0xF16D              ; R#5 of the sprite set on screen (the interrupt's: sprites.asm iv_sat)
-smo_hi:     equ 0xF16E              ; sat_mux_out: the SAT's high address byte
+pcr_next:   equ 0xF16E              ; rows_sync: the SAT entry whose colour row follows the last one
+                                    ;   written (FFh: none; pc_rows sets an address only otherwise)
+                                    ; (F16Fh-F190h and F1A0h-F1C2h: free since the alternation went)
 pq_rd:      equ 0xF1C3              ; 2: the published list's queue: where its upload goes on
 rs_held:    equ 0xF1C5              ; 2: rows_sync: the col_held of the set being prepared,
 rs_colhi:   equ 0xF1C7              ;   its colour table's high address byte (port 99h form)
 sp_cam_x:   equ 0xF1C8              ; 2: the camera the objects' screen places were taken against
 sp_cam_y:   equ 0xF1CA              ; 2:   (cam_follow)
 col_held_b: equ 0xF200              ; 32 x 2: col_held of sprite set B (col_held: set A's)
-mux_e0:     equ 0xF170              ; 33: the entries that alternate in SAT pair 0 (count, then 4 *
-mux_e1:     equ 0xF1A0              ; 33:   entry each; sat_build, sat_mux_out), in pair 1
-sb_mux:     equ 0xF1C1              ; 2: sat_build: the list being filled
 rc_hold:    equ 0xF191              ; budget: RoboCop's one-layer sprites the totals count (the
 rc_hold_t:  equ 0xF192              ;   largest of his recent versions), the tick it was set at
 pl_pack:    equ 0xF193              ; plan: 1 once the BOBs' runs were packed (sat_pack: once a plan)
@@ -590,8 +606,6 @@ pl_flp:     equ 0xF19D              ; 2:   the same at the last plan's start
 bu_wsum:    equ 0xF19F              ; budget: the most sprites on a line of each shown object, summed
 fb_busy:    equ 0xF1E0              ; field.asm: 1 while there is work (idle_work calls fb_work)
 fb_bsync:   equ 0xF1E1              ; V9938: the build target whose page holds the BOBs (flip ok)
-pl_busy:    equ 0xF1E2              ; (LOCKSTEP test builds) 1 while spr_plan runs: the interrupts
-                                    ;   leave the background queue alone (sprites.asm su_bg)
 pl_vis:     equ 0xF1E3              ; 2: plan: the objects the look still visits (pl_fl | pl_flp,
                                     ;   shifted out one by one)
 iw_more:    equ 0xF1E5              ; 1 while a scroll engine may have idle work: set once a frame
