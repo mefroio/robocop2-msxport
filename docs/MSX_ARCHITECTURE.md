@@ -231,7 +231,10 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   next picture's first lines) and resumes where it stopped; the VBLANK interrupt applies the
   list only once its queue is done, then adds `BQ_LATE` units of the background queue
   (`bq_buf`: patterns of versions still being prepared, with the slot's generation checked
-  before the copy). Costs in units of 16 T-states (`QC_PAT`, `QC_COL`, `QC_COLEC`).
+  before the copy). Costs in units of 16 T-states (`QC_PAT`, `QC_COL`, `QC_COLEC`). The copies go through 32
+  unrolled OUTIs (18 T-states a byte against OTIR's 23; the VDP takes a write every 5-9 T-states
+  where the uploads run, the HUD's lines with the sprites off and the blank: openMSX's access-slot
+  model from real-hardware measurements), +1.3 % pictures a second (2026-10-23).
 - **SAT**: built once per published frame (`sat_build`) for the set it goes to. (Until 2026-10-23
   the code for objects alternating between frames was still there, a second half of the pair
   and the interrupt writing their y's, though the budget never set `mux_on` since the user's

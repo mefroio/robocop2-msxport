@@ -3947,7 +3947,49 @@ sc_u2:  ld (su_left),hl
         bit 7,c
         ld c,VDP_DATA
         jr nz,sc_ec
-        otir
+        ld a,32                     ; the B bytes (at most 32) through the unrolled OUTIs: 18 T
+        sub b                       ; a byte against OTIR's 23 (the VDP takes a write every 5-9 T
+        add a,a                     ; where the uploads run: the HUD's lines, sprites off, and
+        add a,sc_outi & 0xFF        ; the blank)
+        ld e,a
+        adc a,sc_outi / 256
+        sub e
+        ld d,a
+        push de
+        ret                         ; (jp (de))
+sc_outi:
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
+        outi
         pop hl
         ret
 sc_ec:  ld a,(hl)                   ; (the early clock)
