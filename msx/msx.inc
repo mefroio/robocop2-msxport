@@ -585,8 +585,14 @@ ft_bix:     equ 0xF196              ;   2: its object (0: none),
 ft_tier:    equ 0xF198              ;   the tier looked at (O_TIER),
 ft_bbit:    equ 0xF199              ;   the band found (its bit),
 ln_neg:     equ 0xF19A              ;   1: ln_obj / ln_add take sprites away from the lines
+pl_fl:      equ 0xF19B              ; 2: plan: the objects wanted (O_FLAGS bit 7), a bit each (fl_bit)
+pl_flp:     equ 0xF19D              ; 2:   the same at the last plan's start
 fb_busy:    equ 0xF1E0              ; field.asm: 1 while there is work (idle_work calls fb_work)
 fb_bsync:   equ 0xF1E1              ; V9938: the build target whose page holds the BOBs (flip ok)
+pl_busy:    equ 0xF1E2              ; (LOCKSTEP test builds) 1 while spr_plan runs: the interrupts
+                                    ;   leave the background queue alone (sprites.asm su_bg)
+pl_vis:     equ 0xF1E3              ; 2: plan: the objects the look still visits (pl_fl | pl_flp,
+                                    ;   shifted out one by one)
 fb_eng:     equ 0xF1E7              ; field.asm: 0 the V9958's ring, 1 the V9938's two pages
 fb_cqp:     equ 0xF1E8              ; tiles.asm fb_redraw -> field.asm fb_cellq: the page,
 fb_cqr:     equ 0xF1E9              ;   1: the play-field BOBs draw the cell

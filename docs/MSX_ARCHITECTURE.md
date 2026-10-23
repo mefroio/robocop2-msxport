@@ -265,7 +265,11 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   (`BOBHASH`). Objects without a record are hidden and forget their identity.
 - **Frame structure** (main loop): wait for the last list's VBLANK; keys, seconds, HUD; after
   ticks: scroll update, `cam_mark`, RoboCop's composition, BOBs to objects, budget; without a
-  tick: scroll update, `cam_follow`; then the plan (`spr_plan`: versions, queues, commits),
+  tick: scroll update, `cam_follow`; then the plan (`spr_plan`: versions, queues, commits; its
+  look visits only the objects wanted now or at its last run, one bit each in `pl_fl` / `pl_flp`,
+  set by `obj_set` and cleared by `obj_hide`: any other object shows and prepares nothing and
+  keeps `pl_st` and `pl_gs` 0, so the look would do nothing for it; 2.1 of the 16 objects are
+  live in normal play, and the skip gave +1.9 % pictures a second, 2026-10-23),
   colour rows, SAT; publish; then the ticks due. `feed_vdp` gives the scroll engine its next
   VDP command at many points (the tick's stages, each object the plan works on, the budget, the
   BOB lists): its pages are built only from these points.
@@ -280,7 +284,13 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
   (no displayed line with more than 8 sprites), `rc2_satcheck` (the SAT on screen is the one
   built for it), `rc2_patcheck` (every shown entry's pattern and colour row in VRAM),
   `rc2_sprvram` (no write into the set on screen during the play area), `rc2_lateirq`; exact
-  display comparisons of refactors with `LOCKSTEP` builds and `tools/dispcmp.py`; what the MSX
+  display comparisons of refactors with `LOCKSTEP` builds and `tools/dispcmp.py` (`LOCKSTEP=24`:
+  no frame comes late on either VDP, and the same ROM gives the same 3,000 lists twice; the test
+  builds also pin the engine's two inputs that depend on its own speed, so that a faster build
+  decides alike: the interrupts load nothing from the background queue while `spr_plan` runs,
+  `pl_busy`, since `rc_prefetch` and `bq_pat` read that queue, and `rc_hold` reads `last_tick`
+  instead of `tick`, the VBLANK count at the moment the budget runs; without the pins a build
+  that is only faster differed in 2,300-2,500 of 3,000 lists); what the MSX
   shows against the bench's BOBs with `tools/objcmp.py` (exact, late, missing: loading, left
   out, or no frame at all in the sprite data, which `bob_flush` hides: the ride's pickups until
   2026-10-21). For the product ROM on a fresh machine (title, keyboard plans `rc2_keys`): `rc2_guard`

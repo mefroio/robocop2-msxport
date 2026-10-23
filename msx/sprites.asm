@@ -364,6 +364,7 @@ os_bn:  inc hl
         djnz os_bm
         ld (ix+O_BMASK),c
         set 7,(ix+O_FLAGS)
+        call fl_on                  ; (the plan's look visits it: pl_fl)
 os_mode_set:
         ld a,(ix+O_EC)
         and 0x80
@@ -396,7 +397,59 @@ obj_hide:
         ld (ix+O_HOLD),0            ; (its look is decided anew when it shows again)
         ld a,1
         ld (bu_dirty),a
+        jp fl_off                   ; (the plan's look visits it once more, then no longer)
+
+; The objects wanted (O_FLAGS bit 7), one bit each (pl_fl): the plan's look visits only those and
+; the ones wanted at its last run (pl_flp); any other shows and prepares nothing and keeps
+; pl_st and pl_gs 0, so that visit would do nothing (measured: 2.1 of the 16 objects live in play).
+; IX = the object -> DE = its bit, HL = pl_fl. Keeps BC.
+fl_bit: push ix
+        pop hl
+        ld a,h
+        sub obj_tab / 256           ; (obj_tab: 256-byte aligned, OBJ_SIZE 32)
+        add a,a
+        add a,a
+        add a,a
+        ld e,a
+        ld a,l
+        rlca
+        rlca
+        rlca
+        and 7
+        or e
+        add a,a
+        add a,fl_bits & 0xFF
+        ld l,a
+        adc a,fl_bits / 256
+        sub l
+        ld h,a
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld hl,pl_fl
         ret
+fl_on:  call fl_bit
+        ld a,(hl)
+        or e
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        or d
+        ld (hl),a
+        ret
+fl_off: call fl_bit
+        ld a,e
+        cpl
+        and (hl)
+        ld (hl),a
+        inc hl
+        ld a,d
+        cpl
+        and (hl)
+        ld (hl),a
+        ret
+fl_bits:
+        dw 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 
 ; A = object, HL = screen x, DE = screen y of its composition's top-left (obj_pos_ix: IX =
 ; the object).
@@ -644,7 +697,11 @@ bg_rn:  ld de,OBJ_SIZE
 bg_sp:  ld ix,obj_tab               ; RoboCop (whole: nothing of his is ever dropped) counts with
         bit 7,(ix+O_FLAGS)          ; the largest of his recent versions (held RC_HOLD VBLANKs),
         jr z,bg_rc1                 ; so that what the BOBs drop does not change with each of
+        if LOCKSTEP
+        ld a,(last_tick)            ; (test builds: the frame's start, not the VBLANK count
+        else                        ;  at this moment: exact display comparisons)
         ld a,(tick)                 ; his frames
+        endif
         ld hl,rc_hold_t
         sub (hl)
         cp RC_HOLD
@@ -654,7 +711,11 @@ bg_sp:  ld ix,obj_tab               ; RoboCop (whole: nothing of his is ever dro
         cp (hl)
         jr c,bg_rhk                 ; (fewer than the one held)
 bg_rhn: ld (hl),a
+        if LOCKSTEP
+        ld a,(last_tick)
+        else
         ld a,(tick)
+        endif
         ld (rc_hold_t),a
 bg_rhk: ld a,(hl)
         sub (ix+O_NSPR)
@@ -1682,11 +1743,31 @@ spr_plan:
         ld hl,pl_wb                 ; go into the work lists: first those showing nothing yet
         ld (pl_pb),hl               ; (a BOB that just came is invisible until its first
                                     ; version), then the rest; in each by importance
+        ld hl,(pl_fl)               ; the look visits the objects wanted now or at its last run
+        ld de,(pl_flp)              ; (fl_bit): any other shows and prepares nothing and keeps
+        ld (pl_flp),hl              ; pl_st and pl_gs 0
+        ld a,l
+        or e
+        ld e,a
+        ld a,h
+        or d
+        ld d,a
+        ld (pl_vis),de
         ld ix,obj_tab
         ld iy,disp
         xor a
 pc_lp:  ld (pl_obj),a
-        ld c,0                      ; (pl_st: 0 no work, 1 the first list, 2 the second)
+        ld hl,pl_vis + 1
+        srl (hl)
+        dec hl
+        rr (hl)
+        jr c,pc_vis
+        ld a,(hl)
+        inc hl
+        or (hl)
+        jr z,pc_end                 ; (none left to visit)
+        jr pc_skip
+pc_vis: ld c,0                      ; (pl_st: 0 no work, 1 the first list, 2 the second)
         ld a,(ix+O_OUT)
         or a
         jr nz,pc_not
@@ -1740,6 +1821,7 @@ pc_st:  ld a,(pl_obj)
         jr z,pc_gs
         ld a,2
 pc_gs:  ld (hl),a
+pc_skip:
         ld de,OBJ_SIZE
         add ix,de
         ld de,LAY_SIZE
@@ -1747,8 +1829,8 @@ pc_gs:  ld (hl),a
         ld a,(pl_obj)
         inc a
         cp MAX_OBJ
-        jr c,pc_lp
-        xor a                       ; the work lists by importance: RoboCop, the spark, the BOBs
+        jp c,pc_lp
+pc_end: xor a                       ; the work lists by importance: RoboCop, the spark, the BOBs
         call pl_put                 ; in the budget's order, then any other
         ld a,SPARK_OBJ
         call pl_put
@@ -3615,7 +3697,15 @@ sprites_frame:
         sub 8                       ; V9938: R#18 moves sprites by 8 - f
 sf_xadj:
         ld (spr_xadj),a
+        if LOCKSTEP
+        ld a,1                      ; (test builds: the interrupts leave the background queue
+        ld (pl_busy),a              ;  alone while the plan runs, so that its decisions do not
+        endif                       ;  depend on its own speed: exact display comparisons)
         call spr_plan
+        if LOCKSTEP
+        xor a
+        ld (pl_busy),a
+        endif
         call feed_vdp
         ld a,(sat_dirty)
         or a
@@ -3722,7 +3812,13 @@ su_pqd: ld (pq_buf),a               ; (done: empty)
         ld (pq_rd),hl
         ld a,2
         ld (pk_state),a             ; the list goes on screen at the next VBLANK
-su_bg:  ld a,(bq_head)
+su_bg:
+        if LOCKSTEP
+        ld a,(pl_busy)              ; (test builds: not while the plan runs, see sprites_frame)
+        or a
+        jr nz,su_bx
+        endif
+        ld a,(bq_head)
 su_bl:  ld l,a
         ld a,(bq_tail)
         cp l

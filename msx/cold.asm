@@ -107,6 +107,17 @@ spr_init:
         ld bc,MAX_OBJ*4
         xor a
         call fill                   ; no BOB identity (bob.asm)
+        ld hl,pl_st                 ; (the plan's look skips the objects not wanted: their work
+        ld bc,MAX_OBJ               ;  and parts' states must start at 0)
+        xor a
+        call fill
+        ld hl,pl_gs
+        ld bc,MAX_OBJ
+        xor a
+        call fill
+        ld hl,0
+        ld (pl_fl),hl
+        ld (pl_flp),hl
         ld hl,bf_last
         ld bc,MAX_OBJ*6
         ld a,0xFF
@@ -126,6 +137,9 @@ spr_init:
         ld (pk_mux),a
         ld (alloc_p),a
         ld (rcp_ok),a               ; (rc_prefetch: nothing brought in ahead)
+        if LOCKSTEP
+        ld (pl_busy),a
+        endif
         ld a,(RG9SAV)
         and 2
         ld hl,UPW_60
