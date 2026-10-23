@@ -587,6 +587,7 @@ ft_bbit:    equ 0xF199              ;   the band found (its bit),
 ln_neg:     equ 0xF19A              ;   1: ln_obj / ln_add take sprites away from the lines
 pl_fl:      equ 0xF19B              ; 2: plan: the objects wanted (O_FLAGS bit 7), a bit each (fl_bit)
 pl_flp:     equ 0xF19D              ; 2:   the same at the last plan's start
+bu_wsum:    equ 0xF19F              ; budget: the most sprites on a line of each shown object, summed
 fb_busy:    equ 0xF1E0              ; field.asm: 1 while there is work (idle_work calls fb_work)
 fb_bsync:   equ 0xF1E1              ; V9938: the build target whose page holds the BOBs (flip ok)
 pl_busy:    equ 0xF1E2              ; (LOCKSTEP test builds) 1 while spr_plan runs: the interrupts

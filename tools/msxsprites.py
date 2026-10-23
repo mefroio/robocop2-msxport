@@ -1508,6 +1508,7 @@ def main() -> int:
         f"SPR_RC_ARM: equ {4 * len(level.records)}                ; id of the first start-of-level arm pose\n"
         f"SPR_RC_ARMS: equ {len(player.ARM_POSES)}\n"
         f"SPR_MAX: equ {max(stats['sprites'])}                    ; most sprites in one composition\n"
+        f"RC_CAP: equ {RC_CAP}                      ; RoboCop: the most sprites on a line (msx/sprites.asm RC_LINE)\n"
         f"SPR_RC_ONE: equ {max(stats['one_layer'])}                 ; most sprites of RoboCop on one layer\n"
         f"SPR_MAX_LINES: equ {max(stats['lines'] + [f['lines'] for f in bobs])}              ; most lines covered by one composition\n"
         f"SPR_BOBS: equ {len(bobs)}                   ; BOB frames (<out>.json \"bobs\")\n"

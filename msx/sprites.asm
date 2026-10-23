@@ -100,6 +100,8 @@ PAT_HINTS:  equ 1024                ; pat_slot entries: a hint per pattern id & 
                                     ; tells whether the slot still holds that id)
 SLOT_LOAD:  equ 0x80                ; slot_ref bit: its pattern (pat_held) is still to be queued
 LINE_LIMIT: equ 8
+RC_LINE:    equ 5                   ; the most sprites on a line of any composition of RoboCop's
+                                    ; (tools/msxsprites.py RC_CAP: his OR layers are never dropped)
 SAT_MAX:    equ 32
 BUD_MAX:    equ SAT_MAX - 2         ; the budget's total: entries 0-1 stay the spark's (the BOBs'
                                     ; runs are packed when no hole fits: sat_pack)
@@ -657,6 +659,7 @@ budget:
         ld (bu_tot),a
         ld (bu_one),a
         ld (bu_cut),a
+        ld (bu_wsum),a
         ld ix,obj_tab
         ld b,MAX_OBJ
 bg_r:   push bc
@@ -678,6 +681,9 @@ bg_r:   push bc
         ld a,(hl)
         add a,(ix+O_NA)
         ld (hl),a
+        ld a,(bu_wsum)              ; (the bands of a composition lie one under the other, so
+        add a,(ix+O_MFULL)          ;  O_MFULL bounds its count on every line: no line can pass
+        ld (bu_wsum),a              ;  8 while these sum to 8 at most)
 bg_rn:  ld de,OBJ_SIZE
         add ix,de
         pop bc
@@ -733,9 +739,16 @@ bg_rc1: ld a,(bu_one)
         cp BUD_MAX + 1
         call nc,bg_cut
         call feed_vdp
-        call ln_fill                ; every line's sprites
+        ld ix,obj_tab               ; RoboCop counts RC_LINE on every line whatever versions he
+        ld a,(bu_wsum)              ; wants, shows and prepares (ln_rc): his O_MFULL is only the
+        bit 7,(ix+O_FLAGS)          ; wanted one's
+        jr z,bg_ws
+        sub (ix+O_MFULL)
+bg_ws:  cp LINE_LIMIT - RC_LINE + 1
+        jr c,bg_tot                 ; no line can pass 8: nothing to count (82 % of the runs in
+        call ln_fill                ; every line's sprites                         normal play)
         call ft_lines               ; the line phase
-        call feed_vdp
+bg_tot: call feed_vdp
         jp ft_total                 ; the total phase
 
 ; IX = shown object -> O_TIER: 3 RoboCop (never touched), 2 the spark and the explosions (they

@@ -246,7 +246,9 @@ S#1) and used when present. Source facts in `docs/AMIGA_ANALYSIS.md`; measuremen
      runs are packed when no hole fits), the BOBs that do not fit in their order of importance (lifts and the vehicle,
      enemies, enemy bullets, pickups, effects, explosions) are left out of the tick. RoboCop
      counts whole with the largest version of his last 2 s (`rc_hold`).
-  2. Every line's sprites are counted (`ln_cnt`, one byte per play-area line): RoboCop with,
+  2. When a line could pass 8 at all (the shown BOBs' most sprites on a line, `O_MFULL`, summed,
+     with RoboCop as `RC_LINE` = 5, his cap, above 8; in normal play 82 % of the runs stop here,
+     +9.8 % pictures a second, 2026-10-23), every line's sprites are counted (`ln_cnt`, one byte per play-area line): RoboCop with,
      per line, the most of the versions he wants, shows and prepares (his new frame goes on
      screen a picture or two after the budget planned for it), the BOBs band by band. A line
      above 8 makes the effects give way (`ft_give`), in this order: an OR layer of the
